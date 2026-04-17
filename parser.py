@@ -205,3 +205,24 @@ Literaturverzeichnis
         print(f"  publisher: {e.publisher}")
         print(f"  url:       {e.url}")
         print(f"  issues:    {e.completeness_issues}")
+
+
+def validate_lni_key(key: str) -> list[str]:
+    """
+    Validates if a key like [Ab00] or [ABC01] follows LNI rules.
+    Rules: 2-3 letters + 2 digits + optional suffix (a, b).
+    """
+    errors = []
+    # Regex: 2-6 letters followed by 2 digits and an optional lowercase letter
+    match = re.match(r'^([A-Za-z]+)(\d{2})([a-z])?$', key)
+    
+    if not match:
+        errors.append(f"Key '{key}' does not follow LNI format [AuthorYear].")
+    else:
+        letters = match.group(1)
+        if len(letters) < 2 or len(letters) > 6:
+            errors.append(f"Author initials in key '{key}' should be 2-6 characters.")
+            
+    return errors
+
+

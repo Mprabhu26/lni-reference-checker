@@ -12,7 +12,7 @@ from flask import Flask, request, jsonify, send_from_directory
 
 from extractor import extract
 from parser import parse_bibliography, entries_to_dict
-from checker import extract_citations_from_body, cross_check, verify_all_references
+from checker import extract_citations_from_body, cross_check, verify_all_references, check_lni_macros
 
 app = Flask(__name__, static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024  # 30MB
@@ -62,6 +62,7 @@ def check():
         # ── Step 2: Parse bibliography ───────────────────────────
         bib_list = parse_bibliography(bib_text)
         bib_dict = entries_to_dict(bib_list)
+        style_suggestions = check_lni_macros(body)
 
         # ── Step 3: Cross-check ──────────────────────────────────
         # For LaTeX, also find \cite{key} style citations
@@ -110,6 +111,7 @@ def check():
                 "cited_not_in_bib": xcheck.cited_not_in_bib,
                 "in_bib_not_cited": xcheck.in_bib_not_cited,
             },
+            "style_suggestions": style_suggestions,
             "verification": [
                 {
                     "key": vr.key,
@@ -129,6 +131,7 @@ def check():
                 "incomplete_entries": sum(1 for e in bib_list if e.completeness_issues),
                 "fake_candidates":   sum(1 for vr in verification_results if vr.status == "not_found"),
                 "verified":          sum(1 for vr in verification_results if vr.status == "verified"),
+                "style_issues": len(style_suggestions),
                 "open_access":       sum(1 for vr in verification_results if vr.open_access_url),
             }
         }

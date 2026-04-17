@@ -307,3 +307,29 @@ def verify_all_references(bib_entries: dict, delay: float = 0.5) -> list[Verific
         results.append(result)
         time.sleep(delay)  # Be polite to APIs
     return results
+
+def check_lni_macros(body_text: str) -> list[dict]:
+    """
+    Scans body text for manual abbreviations that should be LNI macros.
+    Returns a list of suggestion dictionaries.
+    """
+    suggestions = []
+    
+    # Mapping of plain text to the recommended LNI macro
+    macro_rules = {
+        r'\be\.g\.': r'\eg',
+        r'\bi\.e\.': r'\ie',
+        r'\bcf\.': r'\cf',
+        r'\bet al\.': r'\etal',
+    }
+    
+    for pattern, macro in macro_rules.items():
+        matches = re.findall(pattern, body_text, re.IGNORECASE)
+        if matches:
+            suggestions.append({
+                "type": "Style",
+                "message": f"Found '{matches[0]}'. In LNI, use the macro '{macro}' for correct spacing.",
+                "count": len(matches)
+            })
+            
+    return suggestions
