@@ -262,8 +262,10 @@ def _verify_website(entry: BibEntry) -> VerificationResult:
 
 def _check_unpaywall(doi: str) -> Optional[str]:
     """Check Unpaywall for open access full text URL."""
+    import os
+    contact_email = os.environ.get("UNPAYWALL_EMAIL", "lni-checker@uni-project.de")
     try:
-        url = f"https://api.unpaywall.org/v2/{doi}?email=lni-checker@student.project"
+        url = f"https://api.unpaywall.org/v2/{doi}?email={contact_email}"
         resp = requests.get(url, timeout=8)
         if resp.status_code == 200:
             data = resp.json()
@@ -277,26 +279,35 @@ def _check_unpaywall(doi: str) -> Optional[str]:
 
 
 def _title_similarity(title1: str, title2: str) -> float:
-    """Simple word-overlap similarity between two titles."""
+    """
+    Compute title similarity using rapidfuzz token_set_ratio when available,
+    falling back to difflib SequenceMatcher.  Both handle abbreviations,
+    word reordering, and minor spelling differences far better than Jaccard.
+    Returns a float in [0.0, 1.0].
+    """
     if not title1 or not title2:
         return 0.0
 
-    def normalize(t):
+    def _normalize(t: str) -> str:
         t = t.lower()
-        t = re.sub(r'[^\w\s]', '', t)
+        t = re.sub(r'[^\w\s]', ' ', t)
         stopwords = {'the', 'a', 'an', 'in', 'of', 'for', 'on', 'and', 'to', 'with',
-                     'der', 'die', 'das', 'und', 'für', 'von', 'mit', 'im', 'an'}
-        return set(t.split()) - stopwords
+                     'der', 'die', 'das', 'und', 'fur', 'von', 'mit', 'im', 'an'}
+        return ' '.join(w for w in t.split() if w not in stopwords)
 
-    words1 = normalize(title1)
-    words2 = normalize(title2)
+    t1 = _normalize(title1)
+    t2 = _normalize(title2)
 
-    if not words1 or not words2:
+    if not t1 or not t2:
         return 0.0
 
-    intersection = words1 & words2
-    union = words1 | words2
-    return len(intersection) / len(union)  # Jaccard similarity
+    try:
+        from rapidfuzz import fuzz
+        # token_set_ratio handles word reordering and partial matches well
+        return fuzz.token_set_ratio(t1, t2) / 100.0
+    except ImportError:
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, t1, t2).ratio()
 
 
 def verify_all_references(bib_entries: dict, delay: float = 0.5) -> list[VerificationResult]:

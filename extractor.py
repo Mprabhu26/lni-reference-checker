@@ -41,6 +41,27 @@ def extract_pdf(path: str) -> dict:
             t = page.extract_text()
             if t:
                 text += t + "\n"
+
+    # ── Normalize cross-page bibliography entry breaks ───────────────────────
+    # 1. Rejoin words split by end-of-line hyphenation: "Refer-\nence" → "Reference"
+    text = re.sub(r'-\n(\S)', r'\1', text)
+    # 2. Within the bibliography section, a soft newline inside an entry is NOT
+    #    a new entry (new entries always start with [Key]).  Collapse those so
+    #    the entry regex in parser.py can match the full entry on one logical line.
+    #    Strategy: replace any \n NOT followed by [ or a section heading with a space.
+    bib_marker = re.search(
+        r'(Literaturverzeichnis|References|Literatur\b|Bibliography)',
+        text, re.IGNORECASE
+    )
+    if bib_marker:
+        body_part = text[:bib_marker.start()]
+        bib_part  = text[bib_marker.start():]
+        # In bib section: collapse newlines that are NOT before a new [Key] entry
+        bib_part = re.sub(r'\n(?!\[)', ' ', bib_part)
+        # Re-introduce newlines before each [Key] so the parser can split entries
+        bib_part = re.sub(r'\s+(\[[A-Za-z]{2,6}\d{2}[a-z]?\])', r'\n\1', bib_part)
+        text = body_part + bib_part
+
     result = split_body_bib(text)
     result["format"] = "pdf"
     return result
@@ -107,26 +128,72 @@ def _clean_latex(tex: str) -> str:
     return tex.strip()
 
 
+def _parse_bibtex_fields(body: str) -> dict:
+    """
+    Parse BibTeX field assignments from an entry body, correctly handling
+    nested braces such as title = {An {Introduction} to X}.
+    Returns a dict of lowercase field name → cleaned string value.
+    """
+    fields = {}
+    # Find each field start: word = { or word = "
+    field_start = re.compile(r'(\w+)\s*=\s*([{"])', re.DOTALL)
+    pos = 0
+    while pos < len(body):
+        m = field_start.search(body, pos)
+        if not m:
+            break
+        field_name = m.group(1).lower()
+        delimiter  = m.group(2)
+        close      = '}' if delimiter == '{' else '"'
+        content_start = m.end()
+
+        if delimiter == '{':
+            # Walk forward counting brace depth
+            depth = 1
+            i = content_start
+            while i < len(body) and depth > 0:
+                if body[i] == '{':
+                    depth += 1
+                elif body[i] == '}':
+                    depth -= 1
+                i += 1
+            value = body[content_start:i - 1]  # exclude closing brace
+            pos = i
+        else:
+            # Quoted value: find closing " not preceded by backslash
+            end = body.find('"', content_start)
+            while end != -1 and body[end - 1] == '\\':
+                end = body.find('"', end + 1)
+            if end == -1:
+                break
+            value = body[content_start:end]
+            pos = end + 1
+
+        # Collapse inner braces used for case-protection: {Word} → Word
+        value = re.sub(r'\{([^{}]*)\}', r'\1', value)
+        fields[field_name] = re.sub(r'\s+', ' ', value).strip()
+
+    return fields
+
+
 def _bibtex_to_lni_text(bibtex: str) -> str:
     """
     Convert BibTeX entries to LNI-style [Key] text so our parser can read them.
     Example: @Book{Ez10, author={...}, title={...}} → [Ez10] author: title. year.
     Resolves crossref fields so child entries inherit missing fields from parent.
+    Handles nested braces correctly via _parse_bibtex_fields().
     """
     lines = ["Literaturverzeichnis\n"]
     entry_pattern = re.compile(
         r'@\w+\{(\w+),(.*?)\}(?=\s*@|\s*$)', re.DOTALL
     )
-    field_pattern = re.compile(r'(\w+)\s*=\s*[\{"](.*?)[\}"]', re.DOTALL)
 
     # ── Pass 1: parse all entries into a raw fields dict ────────────────────
     all_fields: dict[str, dict] = {}
     for entry_match in entry_pattern.finditer(bibtex):
-        key = entry_match.group(1)
-        body = entry_match.group(2)
-        fields = {}
-        for fm in field_pattern.finditer(body):
-            fields[fm.group(1).lower()] = re.sub(r'\s+', ' ', fm.group(2)).strip()
+        key    = entry_match.group(1)
+        body   = entry_match.group(2)
+        fields = _parse_bibtex_fields(body)
         all_fields[key] = fields
 
     # ── Pass 2: resolve crossref inheritance ────────────────────────────────
