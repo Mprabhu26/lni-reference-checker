@@ -599,6 +599,7 @@ main{
         <div class="tab active" data-tab="bib">Bibliography <span class="tab-badge" id="badgeBib">0</span></div>
         <div class="tab" data-tab="xcheck">Cross-Check <span class="tab-badge" id="badgeX">0</span></div>
         <div class="tab" data-tab="verify">Verification <span class="tab-badge" id="badgeV">0</span></div>
+        <div class="tab" data-tab="style">Style <span class="tab-badge" id="badgeStyle">0</span></div>
       </div>
 
       <!-- Tab panels -->
@@ -620,6 +621,12 @@ main{
         <div class="tab-panel" id="tab-verify">
           <div class="sec-heading">Reference Verification (CrossRef + Semantic Scholar)</div>
           <div id="verifyList"></div>
+        </div>
+
+        <!-- Style suggestions tab -->
+        <div class="tab-panel" id="tab-style">
+          <div class="sec-heading">LNI Style Compliance</div>
+          <div id="styleList"></div>
         </div>
 
       </div>
@@ -770,6 +777,7 @@ function renderResults(data) {
   renderBib(data.bibliography || []);
   renderXCheck(data.cross_check || {});
   renderVerify(data.verification || []);
+  renderStyleSuggestions(data.style_suggestions || []);
 
   // Badge counts
   document.getElementById('badgeBib').textContent = (data.bibliography || []).length;
@@ -783,6 +791,11 @@ function renderResults(data) {
   const vBadge = document.getElementById('badgeV');
   vBadge.textContent = (data.verification || []).length;
   vBadge.className = 'tab-badge' + (vIssues > 0 ? ' red' : '');
+
+  const styleCount = (data.style_suggestions || []).length;
+  const sBadge = document.getElementById('badgeStyle');
+  sBadge.textContent = styleCount;
+  sBadge.className = 'tab-badge' + (styleCount > 0 ? ' yellow' : '');
 }
 
 function renderSummary(data) {
@@ -899,6 +912,22 @@ function renderVerify(verif) {
         <div class="entry-meta" style="margin-top:4px;font-size:10px">Match confidence: ${confPct}%</div>
       </div>`;
   }).join('');
+}
+
+function renderStyleSuggestions(suggestions) {
+  const el = document.getElementById('styleList');
+  if (!suggestions.length) {
+    el.innerHTML = '<div class="empty-section" style="color:var(--green)">No style issues found — LNI macros used correctly. ✔</div>';
+    return;
+  }
+  el.innerHTML = suggestions.map(s => `
+    <div class="entry-card warn">
+      <div class="entry-top">
+        <span class="type-tag" style="background:var(--yellow-dim);color:var(--yellow)">${esc(s.type || 'Style')}</span>
+        <span class="entry-title">${esc(s.message)}</span>
+        ${s.count > 1 ? `<span class="tab-badge yellow">${s.count}×</span>` : ''}
+      </div>
+    </div>`).join('');
 }
 
 function esc(str) {

@@ -111,6 +111,7 @@ def _bibtex_to_lni_text(bibtex: str) -> str:
     """
     Convert BibTeX entries to LNI-style [Key] text so our parser can read them.
     Example: @Book{Ez10, author={...}, title={...}} → [Ez10] author: title. year.
+    Resolves crossref fields so child entries inherit missing fields from parent.
     """
     lines = ["Literaturverzeichnis\n"]
     entry_pattern = re.compile(
@@ -118,33 +119,48 @@ def _bibtex_to_lni_text(bibtex: str) -> str:
     )
     field_pattern = re.compile(r'(\w+)\s*=\s*[\{"](.*?)[\}"]', re.DOTALL)
 
+    # ── Pass 1: parse all entries into a raw fields dict ────────────────────
+    all_fields: dict[str, dict] = {}
     for entry_match in entry_pattern.finditer(bibtex):
         key = entry_match.group(1)
         body = entry_match.group(2)
         fields = {}
         for fm in field_pattern.finditer(body):
             fields[fm.group(1).lower()] = re.sub(r'\s+', ' ', fm.group(2)).strip()
+        all_fields[key] = fields
 
-        author  = fields.get("author", "")
-        title   = fields.get("title", "")
-        year    = fields.get("year", "")
-        pub     = fields.get("publisher", "")
-        journal = fields.get("journal", "")
-        pages   = fields.get("pages", "")
-        url     = fields.get("url", "")
-        urldate = fields.get("urldate", "")
+    # ── Pass 2: resolve crossref inheritance ────────────────────────────────
+    for key, fields in all_fields.items():
+        parent_key = fields.get("crossref", "").strip()
+        if parent_key and parent_key in all_fields:
+            parent = all_fields[parent_key]
+            # Child inherits any field the parent has that the child is missing
+            for field_name, value in parent.items():
+                if field_name != "crossref" and field_name not in fields:
+                    fields[field_name] = value
+
+    # ── Pass 3: render to LNI text ──────────────────────────────────────────
+    for key, fields in all_fields.items():
+        author    = fields.get("author", "")
+        title     = fields.get("title", "")
+        year      = fields.get("year", "")
+        pub       = fields.get("publisher", "")
+        journal   = fields.get("journal", "")
+        pages     = fields.get("pages", "")
+        url       = fields.get("url", "")
+        urldate   = fields.get("urldate", "")
         booktitle = fields.get("booktitle", "")
 
         parts = []
-        if author:  parts.append(f"{author}:")
-        if title:   parts.append(title + ".")
-        if journal: parts.append(journal + ".")
+        if author:    parts.append(f"{author}:")
+        if title:     parts.append(title + ".")
+        if journal:   parts.append(journal + ".")
         if booktitle and not journal: parts.append(f"In: {booktitle}.")
-        if pub:     parts.append(pub + ".")
-        if pages:   parts.append(f"S. {pages}.")
-        if url:     parts.append(url)
-        if urldate: parts.append(f"Stand: {urldate}")
-        if year:    parts.append(year + ".")
+        if pub:       parts.append(pub + ".")
+        if pages:     parts.append(f"S. {pages}.")
+        if url:       parts.append(url)
+        if urldate:   parts.append(f"Stand: {urldate}")
+        if year:      parts.append(year + ".")
 
         line = f"[{key}] {' '.join(parts)}"
         lines.append(line)

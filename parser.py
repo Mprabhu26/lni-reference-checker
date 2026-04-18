@@ -162,8 +162,30 @@ def _classify_and_parse(entry: BibEntry, raw: str):
             entry.journal = j_match.group(1).strip()
 
 
+def validate_lni_key(key: str) -> list[str]:
+    """
+    Validates if a key like [Ab00] or [ABC01] follows LNI rules.
+    Rules: 2-6 letters + 2 digits + optional lowercase suffix (a, b, c...).
+    """
+    errors = []
+    match = re.match(r'^([A-Za-z]+)(\d{2})([a-z])?$', key)
+    if not match:
+        errors.append(f"Key '{key}' does not follow LNI format [AuthorYear] (e.g. Ez10, ABC01).")
+    else:
+        letters = match.group(1)
+        if len(letters) < 2 or len(letters) > 6:
+            errors.append(f"Author initials in key '{key}' should be 2-6 characters, got {len(letters)}.")
+    return errors
+
+
 def _check_completeness(entry: BibEntry):
-    """Check if all required fields are present for this entry type."""
+    """Check if all required fields are present for this entry type, and validate the key format."""
+    # Validate LNI citation key format
+    key_errors = validate_lni_key(entry.key)
+    for err in key_errors:
+        entry.completeness_issues.append(f"Invalid key format: {err}")
+
+    # Validate required fields per entry type
     required = REQUIRED_FIELDS.get(entry.entry_type, REQUIRED_FIELDS["unknown"])
     for field_name in required:
         val = getattr(entry, field_name, None)
@@ -205,24 +227,3 @@ Literaturverzeichnis
         print(f"  publisher: {e.publisher}")
         print(f"  url:       {e.url}")
         print(f"  issues:    {e.completeness_issues}")
-
-
-def validate_lni_key(key: str) -> list[str]:
-    """
-    Validates if a key like [Ab00] or [ABC01] follows LNI rules.
-    Rules: 2-3 letters + 2 digits + optional suffix (a, b).
-    """
-    errors = []
-    # Regex: 2-6 letters followed by 2 digits and an optional lowercase letter
-    match = re.match(r'^([A-Za-z]+)(\d{2})([a-z])?$', key)
-    
-    if not match:
-        errors.append(f"Key '{key}' does not follow LNI format [AuthorYear].")
-    else:
-        letters = match.group(1)
-        if len(letters) < 2 or len(letters) > 6:
-            errors.append(f"Author initials in key '{key}' should be 2-6 characters.")
-            
-    return errors
-
-
