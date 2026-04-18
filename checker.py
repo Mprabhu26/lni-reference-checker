@@ -96,10 +96,15 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     if result.status == "verified":
         return result
 
-    # Fallback: Semantic Scholar
+    # Fallback 1: Semantic Scholar
     result2 = _query_semantic_scholar(entry)
     if result2.status in ("verified", "partial_match"):
         return result2
+
+    # Fallback 2: Google Scholar (scrape, no API key needed)
+    result3 = _query_google_scholar(entry)
+    if result3.status in ("verified", "partial_match"):
+        return result3
 
     return result  # Return CrossRef result even if not found
 
@@ -229,6 +234,78 @@ def _query_semantic_scholar(entry: BibEntry) -> VerificationResult:
         )
 
 
+def _query_google_scholar(entry: BibEntry) -> VerificationResult:
+    """
+    Query Google Scholar as a last-resort fallback by scraping the search page.
+    No API key required. Returns a VerificationResult based on title matching
+    the first result snippet. Rate-limited and may be blocked under heavy use.
+    """
+    try:
+        query = entry.title or ""
+        if entry.authors:
+            query += " " + entry.authors.split(';')[0].split(',')[0].strip()
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; LNI-Checker/1.0; "
+                "+https://github.com/lni-reference-checker)"
+            )
+        }
+        resp = requests.get(
+            "https://scholar.google.com/scholar",
+            params={"q": query, "hl": "en", "num": 3},
+            headers=headers,
+            timeout=10,
+        )
+
+        if resp.status_code == 429:
+            return VerificationResult(
+                key=entry.key, title=entry.title,
+                status="error", confidence=0.0,
+                note="Google Scholar rate-limited (429) — try again later"
+            )
+        if resp.status_code != 200:
+            return VerificationResult(
+                key=entry.key, title=entry.title,
+                status="error", confidence=0.0,
+                note=f"Google Scholar returned HTTP {resp.status_code}"
+            )
+
+        # Extract result titles from <h3 class="gs_rt"> tags (no external parser needed)
+        found_titles = re.findall(r'class="gs_rt"[^>]*>.*?<(?:a[^>]*>)?(.*?)</(?:a|h3)>', resp.text)
+        # Strip any remaining HTML tags from extracted titles
+        found_titles = [re.sub(r'<[^>]+>', '', t).strip() for t in found_titles if t.strip()]
+
+        if not found_titles:
+            return VerificationResult(
+                key=entry.key, title=entry.title,
+                status="not_found", confidence=0.0,
+                note="No results found on Google Scholar"
+            )
+
+        best_title = found_titles[0]
+        similarity = _title_similarity(entry.title, best_title)
+        status = (
+            "verified"      if similarity >= 0.75 else
+            "partial_match" if similarity >= 0.40 else
+            "not_found"
+        )
+
+        return VerificationResult(
+            key=entry.key, title=entry.title,
+            status=status, confidence=similarity,
+            matched_title=best_title,
+            note="Found via Google Scholar"
+        )
+
+    except Exception as e:
+        return VerificationResult(
+            key=entry.key, title=entry.title,
+            status="error", confidence=0.0,
+            note=f"Google Scholar error: {str(e)}"
+        )
+
+
 def _verify_website(entry: BibEntry) -> VerificationResult:
     """Check if a website URL is reachable."""
     url = entry.url
@@ -301,13 +378,8 @@ def _title_similarity(title1: str, title2: str) -> float:
     if not t1 or not t2:
         return 0.0
 
-    try:
-        from rapidfuzz import fuzz
-        # token_set_ratio handles word reordering and partial matches well
-        return fuzz.token_set_ratio(t1, t2) / 100.0
-    except ImportError:
-        from difflib import SequenceMatcher
-        return SequenceMatcher(None, t1, t2).ratio()
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, t1, t2).ratio()
 
 
 def verify_all_references(bib_entries: dict, delay: float = 0.5) -> list[VerificationResult]:
@@ -318,6 +390,126 @@ def verify_all_references(bib_entries: dict, delay: float = 0.5) -> list[Verific
         results.append(result)
         time.sleep(delay)  # Be polite to APIs
     return results
+
+
+# ─── Duplicate detection ─────────────────────────────────────────────────────
+
+def find_duplicates(bib_entries: dict, similarity_threshold: float = 0.85) -> list[dict]:
+    """
+    Detect duplicate or near-duplicate bibliography entries.
+    Compares every pair of entries using title similarity.
+    Returns a list of duplicate groups, each with the two conflicting keys,
+    their titles, and the similarity score.
+    """
+    entries = list(bib_entries.values())
+    duplicates = []
+    seen_pairs = set()
+
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            a = entries[i]
+            b = entries[j]
+
+            # Skip if either has no title
+            if not a.title or not b.title:
+                continue
+
+            pair = tuple(sorted([a.key, b.key]))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+
+            score = _title_similarity(a.title, b.title)
+            if score >= similarity_threshold:
+                duplicates.append({
+                    "key_a":      a.key,
+                    "key_b":      b.key,
+                    "title_a":    a.title,
+                    "title_b":    b.title,
+                    "similarity": round(score, 2),
+                    "type":       "exact" if score >= 0.97 else "near-duplicate",
+                })
+
+    return duplicates
+
+
+# ─── Quality scoring / grading rubric ────────────────────────────────────────
+
+def compute_score(bib_list: list, xcheck, verification_results: list,
+                  style_suggestions: list, duplicates: list) -> dict:
+    """
+    Compute a 0–100 reference quality score with per-category breakdown.
+
+    Penalty weights (total deductions cannot exceed 100):
+      - Missing citations (cited but not in bib):  -10 pts each, max -30
+      - Orphaned entries (in bib but not cited):   -5  pts each, max -20
+      - Incomplete entries (missing fields):        -5  pts each, max -20
+      - Fake / unverified references:              -8  pts each, max -24
+      - Duplicate entries:                         -5  pts each, max -10
+      - Style issues (wrong macros):               -2  pts each, max -6
+    """
+    score = 100
+
+    penalties = []
+
+    # Missing citations
+    missing = len(xcheck.cited_not_in_bib)
+    p = min(missing * 10, 30)
+    if p:
+        penalties.append({"category": "Missing from bibliography", "count": missing, "deduction": p})
+    score -= p
+
+    # Orphaned entries
+    orphaned = len(xcheck.in_bib_not_cited)
+    p = min(orphaned * 5, 20)
+    if p:
+        penalties.append({"category": "Cited nowhere in text", "count": orphaned, "deduction": p})
+    score -= p
+
+    # Incomplete entries
+    incomplete = sum(1 for e in bib_list if e.completeness_issues)
+    p = min(incomplete * 5, 20)
+    if p:
+        penalties.append({"category": "Incomplete entries", "count": incomplete, "deduction": p})
+    score -= p
+
+    # Fake / not found references
+    fake = sum(1 for vr in verification_results if vr.status == "not_found")
+    p = min(fake * 8, 24)
+    if p:
+        penalties.append({"category": "Unverified / fake references", "count": fake, "deduction": p})
+    score -= p
+
+    # Duplicates
+    p = min(len(duplicates) * 5, 10)
+    if p:
+        penalties.append({"category": "Duplicate entries", "count": len(duplicates), "deduction": p})
+    score -= p
+
+    # Style issues
+    p = min(len(style_suggestions) * 2, 6)
+    if p:
+        penalties.append({"category": "LNI style violations", "count": len(style_suggestions), "deduction": p})
+    score -= p
+
+    score = max(score, 0)
+
+    grade = (
+        "A" if score >= 90 else
+        "B" if score >= 75 else
+        "C" if score >= 60 else
+        "D" if score >= 45 else
+        "F"
+    )
+
+    return {
+        "score":    score,
+        "grade":    grade,
+        "penalties": penalties,
+        "max_score": 100,
+    }
+
+
 
 def check_lni_macros(body_text: str) -> list[dict]:
     """

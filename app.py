@@ -12,7 +12,10 @@ from flask import Flask, request, jsonify, send_from_directory
 
 from extractor import extract
 from parser import parse_bibliography, entries_to_dict
-from checker import extract_citations_from_body, cross_check, verify_all_references, check_lni_macros
+from checker import (
+    extract_citations_from_body, cross_check, verify_all_references,
+    check_lni_macros, find_duplicates, compute_score
+)
 
 app = Flask(__name__, static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024  # 30MB
@@ -81,6 +84,13 @@ def check():
         if verify and bib_dict:
             verification_results = verify_all_references(bib_dict, delay=0.4)
 
+        # ── Step 5: Duplicates ───────────────────────────────────
+        duplicates = find_duplicates(bib_dict)
+
+        # ── Step 6: Score ────────────────────────────────────────
+        score = compute_score(bib_list, xcheck, verification_results,
+                              style_suggestions, duplicates)
+
         # ── Build response ───────────────────────────────────────
         result = {
             "filename": filename,
@@ -112,6 +122,8 @@ def check():
                 "in_bib_not_cited": xcheck.in_bib_not_cited,
             },
             "style_suggestions": style_suggestions,
+            "duplicates": duplicates,
+            "score": score,
             "verification": [
                 {
                     "key": vr.key,
@@ -126,13 +138,14 @@ def check():
                 for vr in verification_results
             ],
             "summary": {
-                "missing_from_bib":  len(xcheck.cited_not_in_bib),
-                "uncited_entries":   len(xcheck.in_bib_not_cited),
+                "missing_from_bib":   len(xcheck.cited_not_in_bib),
+                "uncited_entries":    len(xcheck.in_bib_not_cited),
                 "incomplete_entries": sum(1 for e in bib_list if e.completeness_issues),
-                "fake_candidates":   sum(1 for vr in verification_results if vr.status == "not_found"),
-                "verified":          sum(1 for vr in verification_results if vr.status == "verified"),
-                "style_issues": len(style_suggestions),
-                "open_access":       sum(1 for vr in verification_results if vr.open_access_url),
+                "fake_candidates":    sum(1 for vr in verification_results if vr.status == "not_found"),
+                "verified":           sum(1 for vr in verification_results if vr.status == "verified"),
+                "style_issues":       len(style_suggestions),
+                "open_access":        sum(1 for vr in verification_results if vr.open_access_url),
+                "duplicates":         len(duplicates),
             }
         }
         return jsonify(result)
@@ -144,6 +157,80 @@ def check():
     finally:
         # Cleanup temp files
         import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+
+
+@app.route("/batch", methods=["POST"])
+def batch_check():
+    """
+    Accept multiple PDF uploads (field name: 'files') and run the full
+    check pipeline on each. Returns a list of per-file results plus an
+    aggregate leaderboard sorted by score descending.
+    """
+    import re as _re
+    import shutil
+
+    uploaded = request.files.getlist("files")
+    verify   = request.form.get("verify", "true").lower() == "true"
+
+    if not uploaded:
+        return jsonify({"error": "No files uploaded"}), 400
+
+    results  = []
+    tmpdir   = tempfile.mkdtemp()
+
+    try:
+        for main_file in uploaded:
+            filename = main_file.filename
+            ext      = Path(filename).suffix.lower()
+            if ext not in {".pdf", ".docx", ".tex", ".latex"}:
+                results.append({"filename": filename, "error": f"Unsupported format '{ext}'"})
+                continue
+
+            file_path = os.path.join(tmpdir, filename)
+            main_file.save(file_path)
+
+            try:
+                sections          = extract(file_path)
+                body              = sections["body"]
+                bib_text          = sections["bibliography"]
+                fmt               = sections["format"]
+                bib_list          = parse_bibliography(bib_text)
+                bib_dict          = entries_to_dict(bib_list)
+                style_suggestions = check_lni_macros(body)
+                cited_keys        = extract_citations_from_body(body)
+                xcheck            = cross_check(bib_dict, cited_keys)
+                verification_results = verify_all_references(bib_dict, delay=0.3) if verify and bib_dict else []
+                duplicates        = find_duplicates(bib_dict)
+                score             = compute_score(bib_list, xcheck, verification_results,
+                                                  style_suggestions, duplicates)
+                results.append({
+                    "filename": filename,
+                    "format":   fmt.upper(),
+                    "score":    score,
+                    "summary": {
+                        "bib_entry_count":    len(bib_dict),
+                        "citation_count":     len(cited_keys),
+                        "missing_from_bib":   len(xcheck.cited_not_in_bib),
+                        "uncited_entries":    len(xcheck.in_bib_not_cited),
+                        "incomplete_entries": sum(1 for e in bib_list if e.completeness_issues),
+                        "fake_candidates":    sum(1 for vr in verification_results if vr.status == "not_found"),
+                        "duplicates":         len(duplicates),
+                        "style_issues":       len(style_suggestions),
+                    },
+                })
+            except Exception as e:
+                import traceback
+                results.append({"filename": filename, "error": str(e),
+                                 "trace": traceback.format_exc()})
+
+        # Sort by score descending (errors go to the bottom)
+        results.sort(key=lambda r: r.get("score", {}).get("score", -1), reverse=True)
+        return jsonify({"files": results, "count": len(results)})
+
+    finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
