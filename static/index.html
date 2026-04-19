@@ -489,8 +489,23 @@ function showState(s){
 function showError(msg){$('errorMsg').textContent=msg;showState('error');}
 function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
+function renderFeedback(data){
+  const sc=data.score||{};
+  if(!sc.student_feedback||!sc.student_feedback.length)return;
+  const existing=$('feedbackPanel');
+  if(existing)existing.remove();
+  const panel=document.createElement('div');
+  panel.id='feedbackPanel';
+  panel.style.cssText='margin:0 24px 16px;background:var(--blue-light);border:1px solid var(--blue);border-radius:var(--r);padding:14px 16px;';
+  const pfNote=sc.professor_note?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--text3)"><strong>For professor:</strong> ${esc(sc.professor_note)}</div>`:'';
+  panel.innerHTML=`<div style="font-size:12px;font-weight:600;color:var(--blue);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.8px">AI Feedback for Student</div>`
+    +sc.student_feedback.map(f=>`<div style="font-size:13px;color:var(--text2);margin-bottom:4px">• ${esc(f)}</div>`).join('')
+    +pfNote;
+  $('resultsPanel').prepend(panel);
+}
+
 function renderResults(data){
-  _lastCheckData=data;renderSummary(data);renderBib(data.bibliography||[]);renderXCheck(data.cross_check||{},data.citation_contexts||{});
+  _lastCheckData=data;renderSummary(data);renderFeedback(data);renderBib(data.bibliography||[]);renderXCheck(data.cross_check||{},data.citation_contexts||{});
   renderVerify(data.verification||[]);renderStyleSuggestions(data.style_suggestions||[]);renderDuplicates(data.duplicates||[]);renderSelfCitations(data.self_citations||[]);
   const xIss=(data.cross_check?.cited_not_in_bib?.length||0)+(data.cross_check?.in_bib_not_cited?.length||0);
   const vIss=(data.verification||[]).filter(v=>v.status==='not_found').length;
@@ -506,15 +521,19 @@ function renderSummary(data){
   const s=data.summary||{},sc=data.score||{};
   const ti=(s.missing_from_bib||0)+(s.uncited_entries||0)+(s.incomplete_entries||0)+(s.fake_candidates||0)+(s.duplicates||0);
   const gm={A:'pill-green',B:'pill-teal',C:'pill-yellow',D:'pill-red',F:'pill-red'};
+  const vm={'PASS':'pill-green','FLAG':'pill-yellow','FAIL':'pill-red'};
   $('summaryBar').innerHTML=`
     <span class="file-name">${esc(data.filename)}</span>
     <span class="file-fmt fmt-${(data.format||'').toLowerCase()}">${esc(data.format)}</span>
     ${sc.score!==undefined?`<span class="stat-pill ${gm[sc.grade]||'pill-blue'}"><span class="num">${sc.score}</span>/100 &nbsp;<strong>${sc.grade}</strong></span>`:''}
+    ${sc.verdict?`<span class="stat-pill ${vm[sc.verdict]||'pill-blue'}">${esc(sc.verdict)}</span>`:''}
     ${ti===0?`<span class="stat-pill pill-green">✓ All checks passed</span>`:`<span class="stat-pill pill-red"><span class="num">${ti}</span> issue${ti!==1?'s':''}</span>`}
     <span class="stat-pill pill-blue"><span class="num">${s.bib_entry_count||0}</span> references</span>
     ${s.incomplete_entries>0?`<span class="stat-pill pill-yellow"><span class="num">${s.incomplete_entries}</span> incomplete</span>`:''}
-    ${s.fake_candidates>0?`<span class="stat-pill pill-red"><span class="num">${s.fake_candidates}</span> unverified</span>`:''}
+    ${(s.fake_candidates||0)>0?`<span class="stat-pill pill-red"><span class="num">${s.fake_candidates}</span> FAKE</span>`:''}
+    ${(s.suspicious||0)>0?`<span class="stat-pill pill-yellow"><span class="num">${s.suspicious}</span> suspicious</span>`:''}
     ${s.open_access>0?`<span class="stat-pill pill-teal"><span class="num">${s.open_access}</span> open access</span>`:''}
+    ${sc.verdict_reason?`<span class="stat-pill" style="background:var(--surface2);color:var(--text3);font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(sc.verdict_reason)}">${esc(sc.verdict_reason)}</span>`:''}
     <div class="s-actions">
       <button class="action-btn btn-ai" id="aiReviewBtn" onclick="runAiReview()">🤖 AI Verdict</button>
       <button class="action-btn btn-export" onclick="exportReport()">⬇ Export</button>
@@ -560,29 +579,35 @@ function renderXCheck(x,contexts){
 function renderVerify(verif){
   const el=$('verifyList');
   if(!verif.length){el.innerHTML='<div class="empty-sec"><span class="empty-sec-icon">🔍</span>Verification skipped or no entries to verify.</div>';return;}
-  const vf=verif.filter(v=>v.status==='verified').length,pm=verif.filter(v=>v.status==='partial_match').length,nf=verif.filter(v=>v.status==='not_found').length,er=verif.filter(v=>v.status==='error').length;
+  const vReal=verif.filter(v=>v.ai_verdict==='REAL').length;
+  const vSusp=verif.filter(v=>v.ai_verdict==='SUSPICIOUS').length;
+  const vFake=verif.filter(v=>v.ai_verdict==='FAKE').length;
+  const vf=verif.filter(v=>v.status==='verified').length,pm=verif.filter(v=>v.status==='partial_match').length,nf=verif.filter(v=>v.status==='not_found').length;
   const sc={'CrossRef':'var(--blue)','CrossRef (DOI)':'var(--blue)','Semantic Scholar':'var(--teal)','OpenAlex':'var(--green)','arXiv':'var(--teal)','Google Scholar':'var(--yellow)','Web (DDG)':'var(--text3)','URL check':'var(--blue)'};
+  const aiSum=_lastCheckData&&_lastCheckData.verification_ai_summary?`<div style="margin:8px 0 12px;font-size:12px;color:var(--text3);font-style:italic">${esc(_lastCheckData.verification_ai_summary)}</div>`:'';
   el.innerHTML=`<div class="verif-sum">
-    <span style="color:var(--green)">✔ ${vf} verified</span>
-    <span style="color:var(--yellow)">≈ ${pm} partial</span>
-    <span style="color:var(--red)">✘ ${nf} not found</span>
-    ${er?`<span style="color:var(--text3)">⚡ ${er} errors</span>`:''}
-    <span style="margin-left:auto;color:var(--text3);font-size:11px">CrossRef · SemanticScholar · OpenAlex · arXiv · Google Scholar · Web</span>
-  </div>`+verif.map(v=>{
-    const cls=v.status==='verified'?'ok':v.status==='partial_match'?'warn':v.status==='not_found'?'bad':'';
+    <span style="color:var(--green)">✔ ${vReal} REAL</span>
+    <span style="color:var(--yellow)">? ${vSusp} SUSPICIOUS</span>
+    <span style="color:var(--red)">✘ ${vFake} FAKE</span>
+    <span style="margin-left:auto;color:var(--text3);font-size:11px">AI verdict (Groq/Gemini) · APIs: CrossRef · SemanticScholar · OpenAlex · arXiv</span>
+  </div>${aiSum}`+verif.map(v=>{
+    const av=v.ai_verdict||'SUSPICIOUS';
+    const cls=av==='REAL'?'ok':av==='FAKE'?'bad':'warn';
+    const avColor=av==='REAL'?'var(--green)':av==='FAKE'?'var(--red)':'var(--yellow)';
+    const avBg=av==='REAL'?'var(--green-light)':av==='FAKE'?'var(--red-light)':'var(--yellow-light)';
     const pct=Math.round(v.confidence*100),fc=v.confidence>=0.75?'hi':v.confidence>=0.4?'md':'lo';
-    const lbl=v.status==='not_found'?'Not Found':v.status==='partial_match'?'Partial Match':v.status==='verified'?'Verified':'Error';
-    const bc=v.status==='partial_match'?'st-partial':`st-${v.status}`;
     const sb=(v.sources_checked||[]).map(s=>{const c=sc[s]||'var(--text3)';return`<span class="src-badge" style="border-color:${c};color:${c}">${esc(s)}</span>`;}).join('');
+    const risks=(v.ai_risk_factors||[]).map(r=>`<div class="issue-item">${esc(r)}</div>`).join('');
     return`<div class="entry-card ${cls}">
-      <div class="entry-hdr"><span class="key-badge">${esc(v.key)}</span><span class="entry-ttl">${esc(v.title||'—')}</span><span class="status-badge ${bc}">${lbl}</span></div>
-      ${v.matched_title&&v.matched_title!==v.title?`<div class="entry-meta">Matched: <em>${esc(v.matched_title)}</em></div>`:''}
+      <div class="entry-hdr"><span class="key-badge">${esc(v.key)}</span><span class="entry-ttl">${esc(v.title||'—')}</span><span class="status-badge" style="background:${avBg};color:${avColor};border-color:${avColor}">${av}</span></div>
+      ${v.ai_reasoning?`<div class="entry-meta" style="margin-top:4px">🤖 ${esc(v.ai_reasoning)}</div>`:''}
+      ${risks?`<div class="issue-list" style="margin-top:4px">${risks}</div>`:''}
+      ${v.matched_title&&v.matched_title!==v.title?`<div class="entry-meta" style="color:var(--text3)">API matched: <em>${esc(v.matched_title)}</em></div>`:''}
       ${v.doi?`<div class="entry-meta"><span class="mi">DOI: <a href="https://doi.org/${esc(v.doi)}" target="_blank" class="oa-link">${esc(v.doi)}</a></span></div>`:''}
       ${v.web_evidence?`<div class="raw-txt">Web evidence: "${esc(v.web_evidence.substring(0,140))}"</div>`:''}
-      ${v.note?`<div class="entry-meta" style="color:var(--text3);margin-top:4px">${esc(v.note)}</div>`:''}
       ${v.open_access_url?`<a class="oa-link" href="${esc(v.open_access_url)}" target="_blank">📖 Open access PDF</a>`:''}
       ${sb?`<div class="sources-row">${sb}</div>`:''}
-      <div class="conf-wrap"><div class="conf-lbl"><span>Match confidence</span><span>${pct}%</span></div><div class="conf-bar"><div class="conf-fill ${fc}" style="width:${pct}%"></div></div></div>
+      <div class="conf-wrap"><div class="conf-lbl"><span>AI confidence</span><span>${pct}%</span></div><div class="conf-bar"><div class="conf-fill ${fc}" style="width:${pct}%"></div></div></div>
     </div>`;
   }).join('');
 }

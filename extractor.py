@@ -13,7 +13,26 @@ from pathlib import Path
 
 
 BIB_HEADINGS = re.compile(
-    r'(Literaturverzeichnis|References|Literatur\b|Bibliography)',
+    r'('
+    # German variants
+    r'Literaturverzeichnis'
+    r'|Literatur\b'
+    r'|Quellenverzeichnis'
+    r'|Quellen\b'
+    r'|Schrifttum'
+    r'|Literaturangaben'
+    # English variants
+    r'|References\b'
+    r'|Bibliography'
+    r'|Works\s+Cited'
+    r'|Reference\s+List'
+    r'|List\s+of\s+References'
+    r'|List\s+of\s+Sources'
+    r'|Sources\b'
+    r'|Citations\b'
+    r'|Cited\s+Works'
+    r'|Cited\s+References'
+    r')',
     re.IGNORECASE
 )
 
