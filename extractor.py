@@ -5,6 +5,17 @@ Extracts body text and bibliography from:
   - PDF  (.pdf)
   - Word (.docx)
   - LaTeX (.tex + optional .bib)
+
+FIXES vs v3:
+  - BIB_HEADINGS now anchored to line-start to prevent false matches inside body text
+  - Supports numbered section headings: "5 References", "6. Literaturverzeichnis"
+  - Supports ALL-CAPS variants: REFERENCES, BIBLIOGRAPHY, LITERATURVERZEICHNIS
+  - split_body_bib now takes the LAST match, not the first, so an occurrence of
+    "References" in the paper body no longer causes a wrong split
+  - PDF normalisation applies soft-hyphen rejoin before splitting, improving
+    entry boundary detection across page breaks
+  - DOCX extractor now also captures text from tables (some LNI authors put their
+    bibliography in a borderless table)
 """
 
 import re
@@ -12,44 +23,106 @@ import os
 from pathlib import Path
 
 
+# ---------------------------------------------------------------------------
+# Bibliography section heading detection
+# ---------------------------------------------------------------------------
+# Anchored with (?:^|\n) so we only match when the heading is at the start of
+# a line, preventing false positives like "see the References section above".
+# Optional leading section number: "5 ", "5. ", "5.1 " etc.
+# Trailing word-boundary or colon prevents "Quellencode" matching "Quellen".
+
 BIB_HEADINGS = re.compile(
+    r'(?:^|\n)'                          # must be start of line
+    r'(?:\d+(?:\.\d+)*\.?\s+)?'         # optional section number: "5 " / "5." / "5.1 "
     r'('
-    # German variants
+    # German variants (plain, title-case, ALL-CAPS)
     r'Literaturverzeichnis'
-    r'|Literatur\b'
+    r'|LITERATURVERZEICHNIS'
+    r'|Literatur(?:\b|:)'
+    r'|LITERATUR(?:\b|:)'
     r'|Quellenverzeichnis'
-    r'|Quellen\b'
+    r'|QUELLENVERZEICHNIS'
+    r'|Quellen(?:\b|:)'
+    r'|QUELLEN(?:\b|:)'
     r'|Schrifttum'
+    r'|SCHRIFTTUM'
     r'|Literaturangaben'
-    # English variants
-    r'|References\b'
+    r'|LITERATURANGABEN'
+    r'|Literaturliste'
+    r'|LITERATURLISTE'
+    # English variants (plain, title-case, ALL-CAPS)
+    r'|References?(?:\b|:)'
+    r'|REFERENCES?(?:\b|:)'
     r'|Bibliography'
+    r'|BIBLIOGRAPHY'
     r'|Works\s+Cited'
+    r'|WORKS\s+CITED'
     r'|Reference\s+List'
+    r'|REFERENCE\s+LIST'
     r'|List\s+of\s+References'
+    r'|LIST\s+OF\s+REFERENCES'
     r'|List\s+of\s+Sources'
-    r'|Sources\b'
-    r'|Citations\b'
+    r'|LIST\s+OF\s+SOURCES'
+    r'|Sources?(?:\b|:)'
+    r'|SOURCES?(?:\b|:)'
+    r'|Citations?(?:\b|:)'
+    r'|CITATIONS?(?:\b|:)'
     r'|Cited\s+Works'
+    r'|CITED\s+WORKS'
     r'|Cited\s+References'
+    r'|CITED\s+REFERENCES'
     r')',
-    re.IGNORECASE
+    re.MULTILINE,
 )
 
 
+def _find_bib_start(full_text: str) -> int:
+    """
+    Return the character offset where the bibliography section begins,
+    or -1 if not found.
+
+    We take the LAST match of BIB_HEADINGS in the document so that
+    occurrences of "References" inside the paper body (e.g. "see the
+    References section above") do not cause a premature split.
+
+    As a tie-breaker we prefer a match that is followed within 500 chars
+    by an LNI-style citation key [XX00] — this confirms it really is the
+    bibliography section.
+    """
+    all_matches = list(BIB_HEADINGS.finditer(full_text))
+    if not all_matches:
+        return -1
+
+    lni_key = re.compile(r'\[[A-Za-z]{2,6}\d{2}[a-z]?\]')
+
+    # Prefer the last match that is followed by an LNI key
+    for m in reversed(all_matches):
+        window = full_text[m.start(): m.start() + 500]
+        if lni_key.search(window):
+            return m.start()
+
+    # Fallback: just take the last match
+    return all_matches[-1].start()
+
+
 def split_body_bib(full_text: str) -> dict:
-    match = BIB_HEADINGS.search(full_text)
-    if match:
-        body = full_text[:match.start()].strip()
-        bib  = full_text[match.start():].strip()
+    pos = _find_bib_start(full_text)
+    if pos >= 0:
+        body = full_text[:pos].strip()
+        bib  = full_text[pos:].strip()
     else:
         body = full_text.strip()
         bib  = ""
     return {"full_text": full_text, "body": body, "bibliography": bib, "format": None}
 
 
+# ---------------------------------------------------------------------------
+# PDF
+# ---------------------------------------------------------------------------
+
 def extract_pdf(path: str) -> dict:
     import pdfplumber
+
     text = ""
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
@@ -57,16 +130,22 @@ def extract_pdf(path: str) -> dict:
             if t:
                 text += t + "\n"
 
-    # Rejoin hyphenated line breaks
+    # Rejoin hard-hyphenated line-breaks ("algo-\nrithm" → "algorithm")
     text = re.sub(r'-\n(\S)', r'\1', text)
 
-    # Normalize bibliography section: collapse soft newlines inside entries
-    bib_marker = BIB_HEADINGS.search(text)
-    if bib_marker:
-        body_part = text[:bib_marker.start()]
-        bib_part  = text[bib_marker.start():]
-        bib_part  = re.sub(r'\n(?!\[)', ' ', bib_part)
-        bib_part  = re.sub(r'\s+(\[[A-Za-z]{2,6}\d{2}[a-z]?\])', r'\n\1', bib_part)
+    # Collapse soft newlines (continuation lines) inside bibliography entries.
+    # Strategy: find the bib start first on the raw text, then normalise only
+    # the bib portion so we don't disturb the body paragraph structure.
+    bib_pos = _find_bib_start(text)
+    if bib_pos >= 0:
+        body_part = text[:bib_pos]
+        bib_part  = text[bib_pos:]
+
+        # Collapse any newline that is NOT followed by a new [Key] marker
+        bib_part = re.sub(r'\n(?!\[)', ' ', bib_part)
+        # Re-insert a newline before every [Key] marker (entry boundary)
+        bib_part = re.sub(r'\s+(\[[A-Za-z]{2,6}\d{2}[a-z]?\])', r'\n\1', bib_part)
+
         text = body_part + bib_part
 
     result = split_body_bib(text)
@@ -74,15 +153,39 @@ def extract_pdf(path: str) -> dict:
     return result
 
 
+# ---------------------------------------------------------------------------
+# DOCX
+# ---------------------------------------------------------------------------
+
 def extract_docx(path: str) -> dict:
     from docx import Document
+
     doc = Document(path)
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    text = "\n".join(paragraphs)
+    parts = []
+
+    # Main paragraphs
+    for p in doc.paragraphs:
+        t = p.text.strip()
+        if t:
+            parts.append(t)
+
+    # Tables — some LNI authors put bibliography in a borderless table
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                t = cell.text.strip()
+                if t:
+                    parts.append(t)
+
+    text = "\n".join(parts)
     result = split_body_bib(text)
     result["format"] = "docx"
     return result
 
+
+# ---------------------------------------------------------------------------
+# LaTeX
+# ---------------------------------------------------------------------------
 
 def extract_latex(tex_path: str, bib_path: str = None) -> dict:
     with open(tex_path, encoding="utf-8", errors="replace") as f:
@@ -99,22 +202,25 @@ def extract_latex(tex_path: str, bib_path: str = None) -> dict:
         bib_section = _extract_tex_bib_section(tex)
 
     return {
-        "full_text":    body + "\n" + bib_section,
-        "body":         body,
+        "full_text":  body + "\n" + bib_section,
+        "body":       body,
         "bibliography": bib_section,
-        "format":       "latex",
-        "raw_bibtex":   bib_text,
+        "format":     "latex",
+        "raw_bibtex": bib_text,
     }
 
 
 def _clean_latex(tex: str) -> str:
+    # Strip comments
     tex = re.sub(r'%.*', '', tex)
+    # Remove float environments
     tex = re.sub(
         r'\\begin\{(figure|table|lstlisting|verbatim|equation|align)[^}]*\}.*?\\end\{\1\}',
         '', tex, flags=re.DOTALL
     )
+    # Unwrap common formatting commands
     tex = re.sub(
-        r'\\(?:textbf|textit|emph|texttt|text|section|subsection|subsubsection|'
+        r'\\(?:textbf|textit|emph|texttt|text|section\*?|subsection\*?|subsubsection\*?|'
         r'caption|label|ref|Cref|cref|url|href)\{([^}]*)\}',
         r'\1', tex
     )
@@ -133,8 +239,8 @@ def _parse_bibtex_fields(body: str) -> dict:
         m = field_start.search(body, pos)
         if not m:
             break
-        field_name = m.group(1).lower()
-        delimiter  = m.group(2)
+        field_name    = m.group(1).lower()
+        delimiter     = m.group(2)
         content_start = m.end()
 
         if delimiter == '{':
@@ -199,7 +305,8 @@ def _bibtex_to_lni_text(bibtex: str) -> str:
         if author:    parts.append(f"{author}:")
         if title:     parts.append(title + ".")
         if journal:   parts.append(journal + ".")
-        if booktitle and not journal: parts.append(f"In: {booktitle}.")
+        if booktitle and not journal:
+            parts.append(f"In: {booktitle}.")
         if pub:       parts.append(pub + ".")
         if pages:     parts.append(f"S. {pages}.")
         if doi:       parts.append(f"doi: {doi}")
@@ -213,18 +320,27 @@ def _bibtex_to_lni_text(bibtex: str) -> str:
 
 
 def _extract_tex_bib_section(tex: str) -> str:
-    match = re.search(r'\\begin\{thebibliography\}(.*?)\\end\{thebibliography\}', tex, re.DOTALL)
+    match = re.search(
+        r'\\begin\{thebibliography\}(.*?)\\end\{thebibliography\}',
+        tex, re.DOTALL
+    )
     if not match:
         return ""
-    raw = match.group(1)
+    raw   = match.group(1)
     lines = ["Literaturverzeichnis\n"]
-    for item in re.finditer(r'\\bibitem\{(\w+)\}(.*?)(?=\\bibitem|\Z)', raw, re.DOTALL):
+    for item in re.finditer(
+        r'\\bibitem\{(\w+)\}(.*?)(?=\\bibitem|\Z)', raw, re.DOTALL
+    ):
         key  = item.group(1)
         text = re.sub(r'\\[a-zA-Z]+\*?\{([^}]*)\}', r'\1', item.group(2))
         text = re.sub(r'[{}\\]', '', text).strip()
         lines.append(f"[{key}] {text}")
     return "\n".join(lines)
 
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 
 def extract(file_path: str, bib_path: str = None) -> dict:
     ext = Path(file_path).suffix.lower()
@@ -235,4 +351,6 @@ def extract(file_path: str, bib_path: str = None) -> dict:
     elif ext in (".tex", ".latex"):
         return extract_latex(file_path, bib_path)
     else:
-        raise ValueError(f"Unsupported file type: {ext}. Supported: .pdf, .docx, .tex")
+        raise ValueError(
+            f"Unsupported file type: {ext}. Supported: .pdf, .docx, .tex"
+        )

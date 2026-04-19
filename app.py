@@ -1,21 +1,38 @@
 """
-Flask Web Server — LNI Reference Checker v3
+Flask Web Server — LNI Reference Checker v4
 ============================================
 Pipeline:
-  EXTRACT   — pdfplumber/docx parses text, splits body vs bibliography
-  PARSE     — regex extracts structured BibEntry objects (100% deterministic)
-  CHECK     — all rule-based checks run in pure Python (100% deterministic):
-                * LNI key format validation
-                * Required field completeness per entry type
-                * In-text citation extraction
-                * Cross-check: cited keys vs bibliography keys
-                * Duplicate detection (rapidfuzz)
-                * Page range format, author order, LNI macro style
-  API LOOKUP — CrossRef / Semantic Scholar / OpenAlex / arXiv / DDG (evidence)
-  AI CHECK  — Groq (llama-3.3-70b) -> Gemini fallback for judgment tasks only:
-                * ai_verify_references() — REAL / SUSPICIOUS / FAKE per entry
-                * ai_overall_verdict()   — PASS / FLAG / FAIL + student feedback
-  /ai-review — original manual AI audit button (unchanged, Groq -> Gemini)
+  EXTRACT    — pdfplumber/docx/LaTeX parses text, splits body vs bibliography
+               • last-match bibliography heading detection (fix for false splits)
+               • DOCX now also reads table cells
+               • ALL-CAPS / numbered-section headings recognised
+
+  PARSE      — regex extracts structured BibEntry objects (100% deterministic):
+               • LNI key format validation
+               • LNI key-vs-metadata consistency: initials + year (new in v4)
+               • Required field completeness per entry type
+               • Future-year and implausible page-range detection
+               • entries flagged needs_ai_parsing when regex is uncertain
+
+  AI PARSE   — Groq/Gemini re-parses entries flagged needs_ai_parsing (new in v4)
+               • Better titles/authors flow into the API lookups that follow
+
+  CHECK      — all other rule-based checks (100% deterministic):
+               • In-text citation extraction (also detects numeric [1] style)
+               • Cross-check: cited keys vs bibliography keys
+               • Duplicate detection (rapidfuzz)
+               • Page range format, author order, LNI macro / style checks
+
+  API LOOKUP — CrossRef / Semantic Scholar / OpenAlex / arXiv /
+               Open Library (new in v4) / Google Scholar / DuckDuckGo
+               • Results cached by (normalised_title, first_surname) for batch mode
+
+  AI CHECK   — Groq → Gemini for judgment tasks only:
+               • ai_verify_references() — REAL / SUSPICIOUS / FAKE per entry
+                 (now includes key_consistent signal from deterministic check)
+               • ai_overall_verdict()   — PASS / FLAG / FAIL + feedback
+
+  /ai-review — manual AI audit button (unchanged from v3, Groq → Gemini)
 """
 
 import os
@@ -38,7 +55,7 @@ from checker import (
     find_duplicates,
     compute_score,
 )
-from ai_checker import ai_verify_references, ai_overall_verdict
+from ai_checker import ai_parse_uncertain_entries, ai_verify_references, ai_overall_verdict
 
 app = Flask(__name__, static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
@@ -49,9 +66,17 @@ def index():
     return send_from_directory("static", "index.html")
 
 
-def _run_full_check(main_path: str, bib_path: str = None,
-                    verify: bool = True, filename: str = "") -> dict:
-    """Core pipeline. Steps 1-4 are deterministic; step 5 uses AI."""
+# ---------------------------------------------------------------------------
+# Core pipeline
+# ---------------------------------------------------------------------------
+
+def _run_full_check(
+    main_path: str,
+    bib_path: str = None,
+    verify: bool = True,
+    filename: str = "",
+) -> dict:
+    """Full check pipeline. Steps 1–3 are deterministic; steps 4–5 use AI."""
 
     # ── Step 1: Extract ──────────────────────────────────────────────────────
     sections = extract(main_path, bib_path)
@@ -59,52 +84,111 @@ def _run_full_check(main_path: str, bib_path: str = None,
     bib_text = sections["bibliography"]
     fmt      = sections["format"]
 
-    # ── Step 2: Parse bibliography (deterministic) ────────────────────────────
+    # ── Step 2: Parse bibliography (deterministic) ───────────────────────────
     bib_list = parse_bibliography(bib_text)
     bib_dict = entries_to_dict(bib_list)
 
-    # ── Step 3: All rule-based checks (deterministic, 100% accurate) ─────────
+    # Build plain dicts for AI calls (done once, reused)
+    bib_dicts = [
+        {
+            "key":              e.key,
+            "entry_type":       e.entry_type or "unknown",
+            "authors":          e.authors,
+            "title":            e.title,
+            "year":             e.year,
+            "publisher":        e.publisher,
+            "journal":          e.journal,
+            "booktitle":        e.booktitle,
+            "pages":            e.pages,
+            "url":              e.url,
+            "urldate":          e.urldate,
+            "doi":              e.doi,
+            "isbn":             e.isbn,
+            "raw_text":         e.raw_text[:300],
+            "needs_ai_parsing": e.needs_ai_parsing,
+            "key_consistent":   e.key_consistent,
+        }
+        for e in bib_list
+    ]
+
+    # ── Step 3: AI-assisted re-parsing for uncertain entries (new in v4) ─────
+    # This runs BEFORE the API lookups so improved metadata feeds into CrossRef etc.
+    ai_parse_improvements = ai_parse_uncertain_entries(bib_dicts)
+
+    # Merge improvements back into bib_list and bib_dicts
+    if ai_parse_improvements:
+        for entry in bib_list:
+            imp = ai_parse_improvements.get(entry.key)
+            if not imp:
+                continue
+            # Only apply if AI filled in a field that the regex left empty
+            if not entry.title and imp.get("title"):
+                entry.title = imp["title"]
+            if not entry.authors and imp.get("authors"):
+                entry.authors = imp["authors"]
+            if not entry.year and imp.get("year"):
+                entry.year = imp["year"]
+            if (entry.entry_type in ("unknown", None)) and imp.get("entry_type"):
+                entry.entry_type = imp["entry_type"]
+            if not entry.journal and imp.get("journal"):
+                entry.journal = imp["journal"]
+            if not entry.booktitle and imp.get("booktitle"):
+                entry.booktitle = imp["booktitle"]
+            if not entry.publisher and imp.get("publisher"):
+                entry.publisher = imp["publisher"]
+            if not entry.pages and imp.get("pages"):
+                entry.pages = imp["pages"]
+
+        # Rebuild bib_dicts with improved values
+        bib_dicts = [
+            {
+                "key":              e.key,
+                "entry_type":       e.entry_type or "unknown",
+                "authors":          e.authors,
+                "title":            e.title,
+                "year":             e.year,
+                "publisher":        e.publisher,
+                "journal":          e.journal,
+                "booktitle":        e.booktitle,
+                "pages":            e.pages,
+                "url":              e.url,
+                "urldate":          e.urldate,
+                "doi":              e.doi,
+                "isbn":             e.isbn,
+                "raw_text":         e.raw_text[:300],
+                "needs_ai_parsing": e.needs_ai_parsing,
+                "key_consistent":   e.key_consistent,
+            }
+            for e in bib_list
+        ]
+        bib_dict = entries_to_dict(bib_list)
+
+    # ── Step 4: All rule-based checks (deterministic, 100% accurate) ────────
     style_suggestions = check_lni_macros(body)
 
     cited_keys = extract_citations_from_body(body)
+
+    # For LaTeX: also capture \cite{key} patterns
     if fmt == "latex":
         for group in re.findall(
             r'\\(?:cite|Cite|citet|Citet|citep)\{([^}]+)\}',
-            sections.get("full_text", "")
+            sections.get("full_text", ""),
         ):
             for k in group.split(','):
                 cited_keys.add(k.strip())
 
+    # Warn about mixed numeric+LNI citation style
+    has_numeric = '__numeric_citations__' in cited_keys
+
     xcheck            = cross_check(bib_dict, cited_keys)
     citation_contexts = extract_citation_contexts(body)
     duplicates        = find_duplicates(bib_dict)
-    author_candidates = re.findall(r'\b([A-ZÄÖÜ][a-zäöüß]{2,})\b', body[:800])
-    self_citations    = detect_self_citations(bib_dict, author_candidates)
+    self_citations    = detect_self_citations(bib_dict, body)
 
-    # ── Step 4: External API lookups (evidence gathering, not AI) ────────────
+    # ── Step 5: External API lookups (evidence gathering, not AI) ───────────
     api_results_raw = []
     if verify and bib_dict:
         api_results_raw = verify_all_references(bib_dict)
-
-    # Build plain dicts for passing to AI
-    bib_dicts = [
-        {
-            "key":        e.key,
-            "entry_type": e.entry_type or "unknown",
-            "authors":    e.authors,
-            "title":      e.title,
-            "year":       e.year,
-            "publisher":  e.publisher,
-            "journal":    e.journal,
-            "booktitle":  e.booktitle,
-            "pages":      e.pages,
-            "url":        e.url,
-            "urldate":    e.urldate,
-            "doi":        e.doi,
-            "raw_text":   e.raw_text[:300],
-        }
-        for e in bib_list
-    ]
 
     api_results_dicts = [
         {
@@ -121,18 +205,19 @@ def _run_full_check(main_path: str, bib_path: str = None,
         for vr in api_results_raw
     ]
 
-    # ── Step 5: AI checks (only where judgment is needed) ────────────────────
-    # 5a. Fake detection — AI reasons about authenticity using all evidence
+    # ── Step 6: AI checks (only where judgment is needed) ───────────────────
+
+    # 6a. Fake detection — AI reasons about authenticity using all evidence
+    #     (now includes key_consistent signal in bib_dicts)
     verification_result = ai_verify_references(bib_dicts, api_results_dicts)
 
-    # Build a summary dict for the overall verdict
     summary_for_ai = {
         "duplicates":     len(duplicates),
         "self_citations": len(self_citations),
         "style_issues":   len(style_suggestions),
     }
 
-    # 5b. Overall verdict — AI synthesises everything
+    # 6b. Overall verdict — AI synthesises everything
     overall = ai_overall_verdict(
         filename=filename or Path(main_path).name,
         summary=summary_for_ai,
@@ -141,14 +226,12 @@ def _run_full_check(main_path: str, bib_path: str = None,
         verification_result=verification_result,
     )
 
-    # ── Assemble result (compatible with original frontend shape) ─────────────
-    # Map AI verdicts back to the format the frontend expects
+    # ── Assemble verification output ─────────────────────────────────────────
     ai_verdicts_by_key = {v["key"]: v for v in verification_result.get("verdicts", [])}
 
     verification_output = []
     for vr in api_results_raw:
         ai = ai_verdicts_by_key.get(vr.key, {})
-        # Translate AI verdict to legacy status field so existing frontend works
         ai_verdict = ai.get("verdict", "SUSPICIOUS")
         if ai_verdict == "REAL":
             status = "verified"
@@ -160,7 +243,6 @@ def _run_full_check(main_path: str, bib_path: str = None,
         verification_output.append({
             "key":             vr.key,
             "title":           vr.title,
-            # Original API fields
             "status":          status,
             "confidence":      round(ai.get("confidence", vr.confidence), 2),
             "matched_title":   vr.matched_title,
@@ -169,13 +251,12 @@ def _run_full_check(main_path: str, bib_path: str = None,
             "note":            vr.note,
             "sources_checked": vr.sources_checked,
             "web_evidence":    vr.web_evidence,
-            # New AI fields
             "ai_verdict":      ai_verdict,
             "ai_reasoning":    ai.get("reasoning", ""),
             "ai_risk_factors": ai.get("risk_factors", []),
         })
 
-    # Also include entries that had no API result (websites, etc.)
+    # Include entries with no API result (e.g. websites, or lookup failures)
     api_keys = {vr.key for vr in api_results_raw}
     for entry in bib_dicts:
         if entry["key"] not in api_keys:
@@ -184,7 +265,11 @@ def _run_full_check(main_path: str, bib_path: str = None,
             verification_output.append({
                 "key":             entry["key"],
                 "title":           entry.get("title") or "",
-                "status":          "verified" if ai_verdict == "REAL" else "not_found" if ai_verdict == "FAKE" else "partial_match",
+                "status":          (
+                    "verified"      if ai_verdict == "REAL" else
+                    "not_found"     if ai_verdict == "FAKE" else
+                    "partial_match"
+                ),
                 "confidence":      ai.get("confidence", 0.5),
                 "matched_title":   None,
                 "doi":             entry.get("doi"),
@@ -197,15 +282,19 @@ def _run_full_check(main_path: str, bib_path: str = None,
                 "ai_risk_factors": ai.get("risk_factors", []),
             })
 
-    # Deterministic score (kept for batch/export compatibility)
-    det_score = compute_score(bib_list, xcheck, api_results_raw,
-                              style_suggestions, duplicates)
+    # Deterministic score — uses AI fake_count (more accurate than API not_found)
+    ai_fake_count = verification_result.get("fake_count", 0)
+    det_score = compute_score(
+        bib_list, xcheck, api_results_raw,
+        style_suggestions, duplicates,
+        ai_fake_count=ai_fake_count,
+    )
 
-    # Use AI verdict/score if available, fall back to deterministic
+    # Merge AI verdict/score with deterministic score
     final_score = {
-        "score":   overall.get("score", det_score["score"]),
-        "grade":   overall.get("grade", det_score["grade"]),
-        "verdict": overall.get("verdict", "FLAG"),
+        "score":            overall.get("score", det_score["score"]),
+        "grade":            overall.get("grade", det_score["grade"]),
+        "verdict":          overall.get("verdict", "FLAG"),
         "verdict_reason":   overall.get("verdict_reason", ""),
         "student_feedback": overall.get("student_feedback", []),
         "professor_note":   overall.get("professor_note", ""),
@@ -213,31 +302,39 @@ def _run_full_check(main_path: str, bib_path: str = None,
         "max_score":        100,
     }
 
+    # Build bibliography output — include improved fields from AI parsing
+    bib_output = []
+    for e in bib_list:
+        bib_output.append({
+            "key":                 e.key,
+            "type":                e.entry_type or "unknown",
+            "authors":             e.authors,
+            "title":               e.title,
+            "year":                e.year,
+            "publisher":           e.publisher,
+            "journal":             e.journal,
+            "url":                 e.url,
+            "doi":                 e.doi,
+            "isbn":                e.isbn,
+            "raw":                 e.raw_text[:250],
+            "completeness_issues": e.completeness_issues,
+            "key_consistent":      e.key_consistent,
+            "ai_reparsed":         e.key in ai_parse_improvements,
+        })
+
     return {
         "filename": filename or Path(main_path).name,
         "format":   fmt.upper(),
         "stats": {
-            "body_chars":      len(body),
-            "bib_chars":       len(bib_text),
-            "bib_entry_count": len(bib_dict),
-            "citation_count":  len(cited_keys),
+            "body_chars":            len(body),
+            "bib_chars":             len(bib_text),
+            "bib_entry_count":       len(bib_dict),
+            "citation_count":        len(
+                {k for k in cited_keys if not k.startswith('__')}
+            ),
+            "numeric_citations_found": has_numeric,
         },
-        "bibliography": [
-            {
-                "key":                 e.key,
-                "type":                e.entry_type or "unknown",
-                "authors":             e.authors,
-                "title":               e.title,
-                "year":                e.year,
-                "publisher":           e.publisher,
-                "journal":             e.journal,
-                "url":                 e.url,
-                "doi":                 e.doi,
-                "raw":                 e.raw_text[:250],
-                "completeness_issues": e.completeness_issues,
-            }
-            for e in bib_list
-        ],
+        "bibliography":    bib_output,
         "cross_check": {
             "correctly_used":   xcheck.correctly_used,
             "cited_not_in_bib": xcheck.cited_not_in_bib,
@@ -251,21 +348,34 @@ def _run_full_check(main_path: str, bib_path: str = None,
         "verification":       verification_output,
         "verification_ai_summary": verification_result.get("summary", ""),
         "summary": {
-            "missing_from_bib":   len(xcheck.cited_not_in_bib),
-            "uncited_entries":    len(xcheck.in_bib_not_cited),
-            "incomplete_entries": sum(1 for e in bib_list if e.completeness_issues),
-            "fake_candidates":    verification_result.get("fake_count", 0),
-            "suspicious":         verification_result.get("suspicious_count", 0),
-            "verified":           sum(1 for v in verification_output if v["status"] == "verified"),
-            "style_issues":       len(style_suggestions),
-            "open_access":        sum(1 for v in verification_output if v.get("open_access_url")),
-            "duplicates":         len(duplicates),
-            "self_citations":     len(self_citations),
-            "bib_entry_count":    len(bib_dict),
-            "citation_count":     len(cited_keys),
+            "missing_from_bib":      len(xcheck.cited_not_in_bib),
+            "uncited_entries":       len(xcheck.in_bib_not_cited),
+            "incomplete_entries":    sum(1 for e in bib_list if e.completeness_issues),
+            "key_inconsistencies":   sum(1 for e in bib_list if e.key_consistent is False),
+            "fake_candidates":       verification_result.get("fake_count", 0),
+            "suspicious":            verification_result.get("suspicious_count", 0),
+            "verified":              sum(
+                1 for v in verification_output if v["status"] == "verified"
+            ),
+            "style_issues":          len(style_suggestions),
+            "open_access":           sum(
+                1 for v in verification_output if v.get("open_access_url")
+            ),
+            "duplicates":            len(duplicates),
+            "self_citations":        len(self_citations),
+            "bib_entry_count":       len(bib_dict),
+            "citation_count":        len(
+                {k for k in cited_keys if not k.startswith('__')}
+            ),
+            "ai_reparsed_entries":   len(ai_parse_improvements),
+            "numeric_citations":     has_numeric,
         },
     }
 
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.route("/check", methods=["POST"])
 def check():
@@ -278,7 +388,9 @@ def check():
     verify    = request.form.get("verify", "true").lower() == "true"
 
     if ext not in {".pdf", ".docx", ".tex", ".latex"}:
-        return jsonify({"error": f"Unsupported format '{ext}'. Supported: PDF, DOCX, TEX"}), 400
+        return jsonify({
+            "error": f"Unsupported format '{ext}'. Supported: PDF, DOCX, TEX"
+        }), 400
 
     tmpdir    = tempfile.mkdtemp()
     main_path = os.path.join(tmpdir, filename)
@@ -303,9 +415,8 @@ def check():
 @app.route("/ai-review", methods=["POST"])
 def ai_review():
     """
-    Manual AI audit button — unchanged from v2.
-    Groq (llama-3.3-70b) -> Gemini 1.5 Flash fallback.
-    Set GROQ_API_KEY or GEMINI_API_KEY env vars.
+    Manual AI audit button — Groq (llama-3.3-70b) → Gemini 1.5 Flash fallback.
+    Unchanged from v3 except prompt includes key_consistent mismatches.
     """
     import requests as req
 
@@ -321,9 +432,16 @@ def ai_review():
         if v.get("status") in ("not_found", "partial_match", "error")
         or v.get("ai_verdict") in ("FAKE", "SUSPICIOUS")
     ]
-    incomplete  = [e for e in data.get("bibliography", []) if e.get("completeness_issues")]
-    dupes       = data.get("duplicates", [])
-    self_cit    = data.get("self_citations", [])
+    incomplete = [
+        e for e in data.get("bibliography", [])
+        if e.get("completeness_issues")
+    ]
+    key_issues = [
+        e for e in data.get("bibliography", [])
+        if e.get("key_consistent") is False
+    ]
+    dupes    = data.get("duplicates", [])
+    self_cit = data.get("self_citations", [])
 
     flagged_lines = "\n".join(
         f"  [{v['key']}] title=\"{v['title']}\" "
@@ -334,8 +452,13 @@ def ai_review():
         for v in flagged
     ) or "  None"
 
+    key_issue_lines = "\n".join(
+        f"  [{e['key']}]: {'; '.join(i for i in e.get('completeness_issues',[]) if 'key' in i.lower())}"
+        for e in key_issues
+    ) or "  None"
+
     incomplete_lines = "\n".join(
-        f"  [{e['key']}] {e.get('title','?')} — missing: {', '.join(e['completeness_issues'])}"
+        f"  [{e['key']}] {e.get('title','?')} — {', '.join(e['completeness_issues'])}"
         for e in incomplete
     ) or "  None"
 
@@ -357,9 +480,13 @@ AUDIT SUMMARY:
 - File: {data.get('filename','?')} | Score: {sc.get('score','?')}/100 | Grade: {sc.get('grade','?')} | Verdict: {sc.get('verdict','?')}
 - Total bib entries: {s.get('bib_entry_count',0)} | In-text citations: {s.get('citation_count',0)}
 - Missing from bib: {s.get('missing_from_bib',0)} | Never cited: {s.get('uncited_entries',0)}
-- Incomplete entries: {s.get('incomplete_entries',0)} | Duplicates: {s.get('duplicates',0)}
-- Self-citations: {s.get('self_citations',0)} | Style violations: {s.get('style_issues',0)}
+- Incomplete entries: {s.get('incomplete_entries',0)} | Key mismatches: {s.get('key_inconsistencies',0)}
+- Duplicates: {s.get('duplicates',0)} | Self-citations: {s.get('self_citations',0)}
+- Style violations: {s.get('style_issues',0)}
 - AI integrity summary: {ai_summary}
+
+LNI KEY-VS-METADATA MISMATCHES (deterministic — initials or year in key ≠ parsed data):
+{key_issue_lines}
 
 FLAGGED REFERENCES (AI verdict FAKE/SUSPICIOUS or low API confidence):
 {flagged_lines}
@@ -375,18 +502,23 @@ SELF-CITATIONS:
 
 TASK:
 1. For each FLAGGED reference, give a one-line verdict:
-   REAL — appears genuine (low confidence likely due to formatting/title variation)
-   SUSPICIOUS — existence unconfirmed, professor should manually verify
+   REAL — appears genuine
+   SUSPICIOUS — unconfirmed, professor should manually verify
    FAKE — strong signs of fabrication
 
-2. OVERALL verdict: PASS / FLAG / FAIL
-   PASS  = minor issues only, references appear legitimate
-   FLAG  = suspicious references, professor should spot-check
-   FAIL  = multiple likely fake references or severe structural problems
+2. For each KEY MISMATCH, comment on whether it looks like a typo or fabrication.
+
+3. OVERALL verdict: PASS / FLAG / FAIL
+   PASS = minor issues only
+   FLAG = suspicious refs or key mismatches, professor should spot-check
+   FAIL = multiple likely fake references or severe structural problems
 
 Reply in EXACT format:
 REFERENCE VERDICTS:
 [key]: VERDICT — reason
+
+KEY MISMATCHES:
+[key]: comment
 
 OVERALL: PASS/FLAG/FAIL — one sentence reason"""
 
@@ -399,12 +531,17 @@ OVERALL: PASS/FLAG/FAIL — one sentence reason"""
         try:
             resp = req.post(
                 "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {groq_key}",
-                         "Content-Type": "application/json"},
-                json={"model": "llama-3.3-70b-versatile",
-                      "messages": [{"role": "user", "content": prompt}],
-                      "max_tokens": 600, "temperature": 0.1},
-                timeout=25
+                headers={
+                    "Authorization": f"Bearer {groq_key}",
+                    "Content-Type":  "application/json",
+                },
+                json={
+                    "model":      "llama-3.3-70b-versatile",
+                    "messages":   [{"role": "user", "content": prompt}],
+                    "max_tokens": 700,
+                    "temperature": 0.1,
+                },
+                timeout=25,
             )
             if resp.status_code == 200:
                 ai_text   = resp.json()["choices"][0]["message"]["content"].strip()
@@ -418,9 +555,11 @@ OVERALL: PASS/FLAG/FAIL — one sentence reason"""
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"gemini-1.5-flash:generateContent?key={gemini_key}",
                 headers={"Content-Type": "application/json"},
-                json={"contents": [{"parts": [{"text": prompt}]}],
-                      "generationConfig": {"maxOutputTokens": 600, "temperature": 0.1}},
-                timeout=25
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"maxOutputTokens": 700, "temperature": 0.1},
+                },
+                timeout=25,
             )
             if resp.status_code == 200:
                 parts     = resp.json()["candidates"][0]["content"]["parts"]
@@ -435,13 +574,22 @@ OVERALL: PASS/FLAG/FAIL — one sentence reason"""
         if not gemini_key: missing.append("GEMINI_API_KEY")
         if missing:
             return jsonify({
-                "error": f"No AI API key configured. Set {' or '.join(missing)} as environment variables.",
-                "hint":  "Groq: free key at console.groq.com | Gemini: free key at aistudio.google.com"
+                "error": (
+                    f"No AI API key configured. "
+                    f"Set {' or '.join(missing)} as environment variables."
+                ),
+                "hint": (
+                    "Groq: free key at console.groq.com | "
+                    "Gemini: free key at aistudio.google.com"
+                ),
             }), 503
         return jsonify({"error": "Both Groq and Gemini failed to respond."}), 503
 
-    return jsonify({"verdict": ai_text, "ai_source": ai_source,
-                    "flagged_count": len(flagged)})
+    return jsonify({
+        "verdict":       ai_text,
+        "ai_source":     ai_source,
+        "flagged_count": len(flagged),
+    })
 
 
 @app.route("/batch", methods=["POST"])
@@ -460,7 +608,10 @@ def batch_check():
             filename = main_file.filename
             ext      = Path(filename).suffix.lower()
             if ext not in {".pdf", ".docx", ".tex", ".latex"}:
-                results.append({"filename": filename, "error": f"Unsupported format '{ext}'"})
+                results.append({
+                    "filename": filename,
+                    "error": f"Unsupported format '{ext}'",
+                })
                 continue
 
             file_path = os.path.join(tmpdir, filename)
@@ -469,10 +620,10 @@ def batch_check():
             try:
                 result = _run_full_check(file_path, verify=verify, filename=filename)
                 results.append({
-                    "filename":     filename,
-                    "format":       result["format"],
-                    "score":        result["score"],
-                    "summary":      result["summary"],
+                    "filename": filename,
+                    "format":   result["format"],
+                    "score":    result["score"],
+                    "summary":  result["summary"],
                     "flagged_refs": [
                         v["key"] for v in result["verification"]
                         if v.get("ai_verdict") in ("FAKE", "SUSPICIOUS")
@@ -481,8 +632,11 @@ def batch_check():
                 })
             except Exception as e:
                 import traceback
-                results.append({"filename": filename, "error": str(e),
-                                 "trace": traceback.format_exc()})
+                results.append({
+                    "filename": filename,
+                    "error":    str(e),
+                    "trace":    traceback.format_exc(),
+                })
 
         results.sort(key=lambda r: r.get("score", {}).get("score", -1), reverse=True)
         return jsonify({"files": results, "count": len(results)})
@@ -492,7 +646,6 @@ def batch_check():
 
 @app.route("/export", methods=["POST"])
 def export_report():
-    from flask import Response
     data = request.get_json(force=True)
     if not data:
         return jsonify({"error": "No data"}), 400
@@ -502,27 +655,35 @@ def export_report():
     s     = data.get("summary", {})
 
     lines.append("=" * 70)
-    lines.append("LNI REFERENCE CHECKER v3 — PROFESSOR REPORT")
+    lines.append("LNI REFERENCE CHECKER v4 — PROFESSOR REPORT")
     lines.append("=" * 70)
     lines.append(f"File    : {data.get('filename', '?')}")
     lines.append(f"Format  : {data.get('format', '?')}")
-    lines.append(f"Score   : {sc.get('score', '?')}/100  Grade: {sc.get('grade', '?')}  Verdict: {sc.get('verdict', '?')}")
+    lines.append(
+        f"Score   : {sc.get('score','?')}/100  "
+        f"Grade: {sc.get('grade','?')}  "
+        f"Verdict: {sc.get('verdict','?')}"
+    )
     lines.append(f"Reason  : {sc.get('verdict_reason', '')}")
     lines.append("")
 
     lines.append("── SUMMARY ──")
-    lines.append(f"  Bibliography entries : {s.get('bib_entry_count', 0)}")
-    lines.append(f"  In-text citations    : {s.get('citation_count', 0)}")
-    lines.append(f"  Missing from bib     : {s.get('missing_from_bib', 0)}")
-    lines.append(f"  Never cited          : {s.get('uncited_entries', 0)}")
-    lines.append(f"  Incomplete entries   : {s.get('incomplete_entries', 0)}")
-    lines.append(f"  FAKE (AI verdict)    : {s.get('fake_candidates', 0)}")
-    lines.append(f"  SUSPICIOUS           : {s.get('suspicious', 0)}")
-    lines.append(f"  Verified REAL        : {s.get('verified', 0)}")
-    lines.append(f"  Duplicates           : {s.get('duplicates', 0)}")
-    lines.append(f"  Self-citations       : {s.get('self_citations', 0)}")
-    lines.append(f"  Style issues         : {s.get('style_issues', 0)}")
-    lines.append(f"  Open-access links    : {s.get('open_access', 0)}")
+    lines.append(f"  Bibliography entries    : {s.get('bib_entry_count', 0)}")
+    lines.append(f"  In-text citations       : {s.get('citation_count', 0)}")
+    lines.append(f"  Missing from bib        : {s.get('missing_from_bib', 0)}")
+    lines.append(f"  Never cited (orphaned)  : {s.get('uncited_entries', 0)}")
+    lines.append(f"  Incomplete entries      : {s.get('incomplete_entries', 0)}")
+    lines.append(f"  Key-vs-metadata errors  : {s.get('key_inconsistencies', 0)}")
+    lines.append(f"  FAKE (AI verdict)       : {s.get('fake_candidates', 0)}")
+    lines.append(f"  SUSPICIOUS              : {s.get('suspicious', 0)}")
+    lines.append(f"  Verified REAL           : {s.get('verified', 0)}")
+    lines.append(f"  Duplicates              : {s.get('duplicates', 0)}")
+    lines.append(f"  Self-citations          : {s.get('self_citations', 0)}")
+    lines.append(f"  Style issues            : {s.get('style_issues', 0)}")
+    lines.append(f"  Open-access links found : {s.get('open_access', 0)}")
+    lines.append(f"  Entries AI-reparsed     : {s.get('ai_reparsed_entries', 0)}")
+    if s.get("numeric_citations"):
+        lines.append("  ⚠ Numeric citations [1] detected — LNI requires [Author+Year]")
     lines.append("")
 
     if sc.get("student_feedback"):
@@ -542,6 +703,20 @@ def export_report():
             lines.append(f"  -{p['deduction']:2d}  {p['category']} ({p['count']}×)")
         lines.append("")
 
+    # Key-vs-metadata mismatches
+    key_issues = [
+        e for e in data.get("bibliography", [])
+        if e.get("key_consistent") is False
+    ]
+    if key_issues:
+        lines.append("── LNI KEY-VS-METADATA MISMATCHES ──")
+        for e in key_issues:
+            lines.append(f"  [{e['key']}] {e.get('title', '?')}")
+            for issue in e.get("completeness_issues", []):
+                if "key" in issue.lower():
+                    lines.append(f"    ⚠ {issue}")
+        lines.append("")
+
     xc = data.get("cross_check", {})
     if xc.get("cited_not_in_bib"):
         lines.append("── CITED BUT MISSING FROM BIBLIOGRAPHY ──")
@@ -555,7 +730,9 @@ def export_report():
             lines.append(f"  [ORPHAN]  {k}")
         lines.append("")
 
-    fake_refs = [v for v in data.get("verification", []) if v.get("ai_verdict") == "FAKE"]
+    fake_refs = [
+        v for v in data.get("verification", []) if v.get("ai_verdict") == "FAKE"
+    ]
     if fake_refs:
         lines.append("── LIKELY FAKE REFERENCES (AI) ──")
         for v in fake_refs:
@@ -566,7 +743,9 @@ def export_report():
             lines.append(f"    Sources checked: {', '.join(v.get('sources_checked', []))}")
         lines.append("")
 
-    suspicious_refs = [v for v in data.get("verification", []) if v.get("ai_verdict") == "SUSPICIOUS"]
+    suspicious_refs = [
+        v for v in data.get("verification", []) if v.get("ai_verdict") == "SUSPICIOUS"
+    ]
     if suspicious_refs:
         lines.append("── SUSPICIOUS REFERENCES ──")
         for v in suspicious_refs:
@@ -574,7 +753,9 @@ def export_report():
             lines.append(f"    {v.get('ai_reasoning', '')}")
         lines.append("")
 
-    incomplete = [e for e in data.get("bibliography", []) if e.get("completeness_issues")]
+    incomplete = [
+        e for e in data.get("bibliography", []) if e.get("completeness_issues")
+    ]
     if incomplete:
         lines.append("── INCOMPLETE ENTRIES ──")
         for e in incomplete:
@@ -586,7 +767,10 @@ def export_report():
     if data.get("duplicates"):
         lines.append("── DUPLICATE ENTRIES ──")
         for d in data["duplicates"]:
-            lines.append(f"  [{d['key_a']}] vs [{d['key_b']}]  ({int(d['similarity']*100)}% similar)")
+            lines.append(
+                f"  [{d['key_a']}] vs [{d['key_b']}]  "
+                f"({int(d['similarity']*100)}% similar)"
+            )
         lines.append("")
 
     if data.get("style_suggestions"):
@@ -601,26 +785,39 @@ def export_report():
         lines.append("")
 
     lines.append("=" * 70)
-    lines.append("Generated by LNI Reference Checker v3")
-    lines.append("Deterministic checks: key format, required fields, cross-check, duplicates, style")
-    lines.append("AI checks (Groq/Gemini): fake detection, overall verdict")
+    lines.append("Generated by LNI Reference Checker v4")
+    lines.append(
+        "Deterministic: key format, key-vs-metadata, required fields, "
+        "cross-check, duplicates, style"
+    )
+    lines.append(
+        "AI (Groq/Gemini): structured re-parsing, fake detection, overall verdict"
+    )
+    lines.append(
+        "APIs: CrossRef · SemanticScholar · OpenAlex · arXiv · "
+        "Open Library · Google Scholar · DuckDuckGo"
+    )
     lines.append("=" * 70)
 
     report = "\n".join(lines)
     fname  = data.get("filename", "report").replace(" ", "_") + "_lni_report.txt"
-    return Response(report, mimetype="text/plain",
-                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    return Response(
+        report,
+        mimetype="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 if __name__ == "__main__":
-    print("\n  ┌─────────────────────────────────────────────────┐")
-    print("  │   LNI Reference Checker v3                      │")
-    print("  │   http://localhost:5000                          │")
-    print("  │                                                  │")
-    print("  │   Deterministic: key · fields · xcheck · dupes  │")
-    print("  │   AI (Groq→Gemini): fake detection · verdict    │")
-    print("  │   APIs: CrossRef · SemanticScholar · OpenAlex   │")
-    print("  │          arXiv · Google Scholar · DuckDuckGo    │")
-    print("  └─────────────────────────────────────────────────┘\n")
+    print("\n  ┌──────────────────────────────────────────────────────┐")
+    print("  │   LNI Reference Checker v4                           │")
+    print("  │   http://localhost:5000                              │")
+    print("  │                                                      │")
+    print("  │   Deterministic: key · key-consistency · fields      │")
+    print("  │                  xcheck · dupes · style              │")
+    print("  │   AI (Groq→Gemini): re-parse · fake · verdict       │")
+    print("  │   APIs: CrossRef · SS · OpenAlex · arXiv            │")
+    print("  │          OpenLibrary · Scholar · DuckDuckGo         │")
+    print("  └──────────────────────────────────────────────────────┘\n")
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
