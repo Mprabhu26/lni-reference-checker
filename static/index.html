@@ -4,1231 +4,644 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>LNI Reference Checker</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-
 :root{
-  --bg:#0c0e10;
-  --surface:#13161a;
-  --surface2:#1c2026;
-  --border:#252b33;
-  --border2:#2e3540;
-  --text:#dde3ec;
-  --muted:#5a6475;
-  --muted2:#7a8799;
-  --accent:#e8c87a;
-  --accent-dim:rgba(232,200,122,0.12);
-  --green:#6ec97a;
-  --green-dim:rgba(110,201,122,0.12);
-  --red:#e07373;
-  --red-dim:rgba(224,115,115,0.12);
-  --yellow:#d4a84b;
-  --yellow-dim:rgba(212,168,75,0.12);
-  --blue:#7eb5e0;
-  --blue-dim:rgba(126,181,224,0.12);
-  --teal:#6ec9b8;
+  --bg:#f5f4f0;--surface:#fff;--surface2:#f0eeea;--surface3:#e8e5df;
+  --border:#dedad2;--border2:#ccc8be;
+  --text:#1a1916;--text2:#4a4740;--text3:#7a776e;
+  --accent:#2d6a4f;--accent2:#40916c;--accent-light:#d8f3dc;--accent-dim:rgba(45,106,79,0.08);
+  --red:#c0392b;--red-light:#fdf0ee;--red-dim:rgba(192,57,43,0.1);
+  --yellow:#b7791f;--yellow-light:#fef9ec;--yellow-dim:rgba(183,121,31,0.1);
+  --blue:#1a5f8a;--blue-light:#eaf4fb;--blue-dim:rgba(26,95,138,0.1);
+  --teal:#0a7577;--teal-light:#e6f7f7;
+  --green:#2d6a4f;--green-light:#d8f3dc;
+  --shadow:0 1px 3px rgba(0,0,0,0.06),0 4px 12px rgba(0,0,0,0.04);
+  --shadow-md:0 2px 8px rgba(0,0,0,0.08),0 8px 24px rgba(0,0,0,0.06);
+  --r:10px;--rsm:6px;--rlg:14px;
 }
-
 html,body{height:100%;overflow:hidden}
+body{font-family:'DM Sans',sans-serif;font-size:14px;background:var(--bg);color:var(--text);display:grid;grid-template-rows:64px 1fr}
 
-body{
-  font-family:'IBM Plex Mono',monospace;
-  font-size:12.5px;
-  background:var(--bg);
-  color:var(--text);
-  display:grid;
-  grid-template-rows:56px 1fr;
-  grid-template-columns:1fr;
-}
+/* HEADER */
+header{background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 28px;gap:16px}
+.logo{font-family:'Lora',serif;font-size:19px;font-weight:600;letter-spacing:-0.3px}
+.logo span{color:var(--accent)}
+.logo-div{width:1px;height:20px;background:var(--border);margin:0 4px}
+.logo-sub{font-size:12px;color:var(--text3)}
+.hbadges{margin-left:auto;display:flex;gap:6px}
+.hbadge{font-size:11px;font-weight:500;padding:3px 9px;border-radius:99px;background:var(--surface2);color:var(--text3);border:1px solid var(--border)}
 
-/* ── HEADER ── */
-header{
-  border-bottom:1px solid var(--border);
-  display:flex;
-  align-items:center;
-  padding:0 32px;
-  gap:16px;
-  background:var(--surface);
-}
-.logo{
-  font-family:'Playfair Display',serif;
-  font-size:18px;
-  color:var(--accent);
-  letter-spacing:0.2px;
-}
-.logo-sub{
-  color:var(--muted);
-  font-size:11px;
-  border-left:1px solid var(--border2);
-  padding-left:16px;
-  margin-left:2px;
-}
-.format-badges{
-  margin-left:auto;
-  display:flex;
-  gap:6px;
-}
-.fmt-badge{
-  font-size:10px;
-  padding:3px 8px;
-  border:1px solid var(--border2);
-  border-radius:2px;
-  color:var(--muted2);
-  letter-spacing:1px;
-}
+/* LAYOUT */
+main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 
-/* ── MAIN LAYOUT ── */
-main{
-  display:grid;
-  grid-template-columns:320px 1fr;
-  overflow:hidden;
-}
+/* SIDEBAR */
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.sb-section{padding:18px 18px 14px;border-bottom:1px solid var(--border)}
+.sec-lbl{font-size:10px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:var(--text3);margin-bottom:12px}
 
-/* ── LEFT PANEL ── */
-.left{
-  border-right:1px solid var(--border);
-  display:flex;
-  flex-direction:column;
-  overflow:hidden;
-  background:var(--surface);
-}
+/* Mode tabs */
+.mode-tabs{display:flex;gap:4px;background:var(--surface2);border-radius:var(--rsm);padding:3px}
+.mode-tab{flex:1;padding:7px 10px;border:none;background:transparent;border-radius:4px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;color:var(--text3);cursor:pointer;transition:all 0.15s}
+.mode-tab.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
 
-.panel-head{
-  padding:18px 20px 14px;
-  border-bottom:1px solid var(--border);
-  font-size:10px;
-  letter-spacing:1.5px;
-  color:var(--muted);
-  text-transform:uppercase;
-}
+/* Upload zone */
+.upload-zone{border:1.5px dashed var(--border2);border-radius:var(--r);padding:22px 16px;text-align:center;cursor:pointer;position:relative;transition:all 0.2s;background:var(--bg)}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:var(--accent-dim)}
+.upload-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.up-icon{width:40px;height:40px;border-radius:50%;background:var(--accent-light);display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:18px}
+.up-lbl{font-size:13px;color:var(--text2);line-height:1.7}
+.up-lbl strong{color:var(--accent);font-weight:600;display:block;margin-top:2px;font-size:12px}
+.up-fmts{display:flex;gap:5px;justify-content:center;margin-top:8px}
+.fmt{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;letter-spacing:0.5px}
+.fmt-pdf{background:var(--red-dim);color:var(--red)}
+.fmt-docx{background:var(--blue-dim);color:var(--blue)}
+.fmt-tex{background:var(--accent-dim);color:var(--accent)}
 
-/* Upload area */
-.upload-area{
-  margin:16px;
-  border:1.5px dashed var(--border2);
-  border-radius:4px;
-  padding:24px 16px;
-  text-align:center;
-  cursor:pointer;
-  position:relative;
-  transition:all 0.2s;
-}
-.upload-area:hover,.upload-area.drag{
-  border-color:var(--accent);
-  background:var(--accent-dim);
-}
-.upload-area input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.upload-icon{font-size:28px;margin-bottom:8px}
-.upload-label{color:var(--muted2);line-height:1.8;font-size:11.5px}
-.upload-label strong{color:var(--accent);display:block;margin-top:6px;font-weight:400}
-.file-types{font-size:10px;color:var(--muted);margin-top:4px}
+/* File chip */
+.file-chip{display:none;align-items:center;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--rsm);padding:10px 12px;margin-top:8px}
+.file-chip.visible{display:flex}
+.chip-icon{font-size:20px}
+.chip-info{flex:1;min-width:0}
+.chip-name{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip-size{font-size:11px;color:var(--text3)}
+.chip-badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px}
 
-/* Bib upload (shows for LaTeX) */
-.bib-row{
-  margin:0 16px 8px;
-  display:none;
-}
+/* Bib row */
+.bib-row{display:none;margin-top:8px}
 .bib-row.visible{display:block}
-.bib-upload{
-  border:1px dashed var(--border2);
-  border-radius:3px;
-  padding:10px 14px;
-  cursor:pointer;
-  position:relative;
-  display:flex;
-  align-items:center;
-  gap:10px;
-  font-size:11px;
-  color:var(--muted2);
-  transition:all 0.2s;
-}
+.bib-upload{display:flex;align-items:center;gap:8px;border:1px dashed var(--border2);border-radius:var(--rsm);padding:9px 12px;cursor:pointer;position:relative;font-size:12px;color:var(--text3);transition:all 0.15s}
 .bib-upload:hover{border-color:var(--blue);color:var(--blue)}
 .bib-upload input{position:absolute;inset:0;opacity:0;cursor:pointer}
-.bib-name{color:var(--blue);font-size:11px;margin-top:4px;padding:0 14px;word-break:break-all}
+.bib-nm{font-size:11px;color:var(--blue);margin-top:4px;padding:0 4px}
 
-/* File info chip */
-.file-chip{
-  margin:0 16px 4px;
-  background:var(--surface2);
-  border:1px solid var(--border2);
-  border-radius:3px;
-  padding:10px 12px;
-  display:none;
-  align-items:center;
-  gap:10px;
-}
-.file-chip.visible{display:flex}
-.chip-icon{font-size:18px}
-.chip-info{flex:1;min-width:0}
-.chip-name{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.chip-meta{font-size:10px;color:var(--muted)}
-.chip-fmt{
-  font-size:10px;
-  padding:2px 7px;
-  border-radius:2px;
-  font-weight:500;
-  letter-spacing:0.5px;
-}
-.fmt-pdf {background:var(--red-dim);color:var(--red)}
-.fmt-docx{background:var(--blue-dim);color:var(--blue)}
-.fmt-tex {background:var(--green-dim);color:var(--green)}
+/* Batch zone */
+.batch-zone{border:1.5px dashed var(--blue);border-radius:var(--r);padding:18px 16px;text-align:center;cursor:pointer;position:relative;transition:all 0.2s;background:var(--blue-dim)}
+.batch-zone:hover{background:var(--blue-light)}
+.batch-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.bfl{display:none;flex-direction:column;gap:3px;margin-top:8px;max-height:100px;overflow-y:auto}
+.bfl.visible{display:flex}
+.bfi{font-size:11px;color:var(--text2);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:4px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* Options */
-.options{padding:14px 16px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px}
-.opt-row{display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--muted2)}
-.opt-label small{display:block;font-size:10px;color:var(--muted);margin-top:1px}
-
-.toggle{
-  width:34px;height:18px;
-  background:var(--surface2);
-  border:1px solid var(--border2);
-  border-radius:99px;
-  cursor:pointer;
-  position:relative;
-  transition:background 0.2s,border-color 0.2s;
-  flex-shrink:0;
-}
-.toggle.on{background:var(--teal);border-color:var(--teal)}
-.toggle::after{
-  content:'';position:absolute;
-  width:12px;height:12px;
-  background:#fff;border-radius:50%;
-  top:2px;left:2px;
-  transition:transform 0.2s;
-}
+.options{padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+.opt-row{display:flex;align-items:center;justify-content:space-between}
+.opt-lbl{font-size:13px;font-weight:500;color:var(--text2)}
+.opt-hint{font-size:11px;color:var(--text3);margin-top:1px}
+.toggle{width:36px;height:20px;background:var(--border2);border-radius:99px;cursor:pointer;position:relative;transition:background 0.2s;flex-shrink:0;border:none}
+.toggle.on{background:var(--accent)}
+.toggle::after{content:'';position:absolute;width:14px;height:14px;background:#fff;border-radius:50%;top:3px;left:3px;transition:transform 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.2)}
 .toggle.on::after{transform:translateX(16px)}
 
-/* Run button */
-.run-wrap{padding:14px 16px 16px;margin-top:auto}
-.run-btn{
-  width:100%;
-  padding:12px;
-  background:var(--accent);
-  color:#0c0e10;
-  border:none;
-  border-radius:3px;
-  font-family:'IBM Plex Mono',monospace;
-  font-size:12.5px;
-  font-weight:500;
-  letter-spacing:0.5px;
-  cursor:pointer;
-  transition:opacity 0.2s,transform 0.1s;
-}
-.run-btn:hover{opacity:0.85}
-.run-btn:active{transform:scale(0.98)}
-.run-btn:disabled{opacity:0.35;cursor:not-allowed}
-.batch-btn{
-  width:100%;margin-top:8px;
-  padding:10px;
-  background:transparent;
-  color:var(--blue);
-  border:1px solid var(--blue);
-  border-radius:3px;
-  font-family:'IBM Plex Mono',monospace;
-  font-size:11.5px;
-  cursor:pointer;
-  transition:opacity 0.2s;
-}
-.batch-btn:hover{opacity:0.75}
-.batch-btn:disabled{opacity:0.3;cursor:not-allowed}
+/* Run buttons */
+.run-wrap{padding:14px 18px 18px;margin-top:auto}
+.run-btn{width:100%;padding:12px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--r);font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 2px 8px rgba(45,106,79,0.3)}
+.run-btn:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 4px 12px rgba(45,106,79,0.35)}
+.run-btn:active{transform:translateY(0)}
+.run-btn:disabled{background:var(--border2);color:var(--text3);cursor:not-allowed;box-shadow:none;transform:none}
+.batch-btn{width:100%;padding:10px 16px;margin-top:8px;background:transparent;color:var(--blue);border:1.5px solid var(--blue);border-radius:var(--r);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.15s}
+.batch-btn:hover{background:var(--blue-light)}
+.batch-btn:disabled{opacity:0.4;cursor:not-allowed}
 
-/* Batch upload area */
-.batch-zone{
-  margin:8px 16px 0;
-  border:1.5px dashed var(--blue);
-  border-radius:4px;
-  padding:16px;
-  text-align:center;
-  cursor:pointer;
-  position:relative;
-  display:none;
-  transition:all 0.2s;
-}
-.batch-zone.visible{display:block}
-.batch-zone:hover{background:var(--blue-dim)}
-.batch-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.batch-zone-label{color:var(--blue);font-size:11.5px;line-height:1.7}
-.batch-file-list{
-  margin:6px 16px 0;
-  display:none;
-  flex-direction:column;
-  gap:3px;
-  max-height:110px;
-  overflow-y:auto;
-}
-.batch-file-list.visible{display:flex}
-.batch-file-item{
-  font-size:10.5px;color:var(--muted2);
-  background:var(--surface2);border:1px solid var(--border);
-  border-radius:2px;padding:4px 8px;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-}
-
-/* Batch results table */
-.batch-results{display:none;flex-direction:column;min-height:100%}
-.batch-results.show{display:flex}
-.batch-table{width:100%;border-collapse:collapse;font-size:11.5px}
-.batch-table th{
-  text-align:left;padding:10px 14px;
-  border-bottom:1px solid var(--border2);
-  color:var(--muted);font-size:10px;letter-spacing:1px;text-transform:uppercase;
-  background:var(--surface);position:sticky;top:0;
-}
-.batch-table td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
-.batch-table tr:hover td{background:var(--surface2)}
-.grade-pill{
-  display:inline-block;padding:2px 9px;border-radius:2px;
-  font-size:12px;font-weight:700;letter-spacing:0.5px;
-}
-.grade-A{background:rgba(110,201,122,0.18);color:var(--green)}
-.grade-B{background:rgba(110,201,184,0.18);color:var(--teal)}
-.grade-C{background:rgba(212,168,75,0.18);color:var(--yellow)}
-.grade-D,.grade-F{background:rgba(224,115,115,0.18);color:var(--red)}
-.batch-summary-bar{
-  background:var(--surface);border-bottom:1px solid var(--border);
-  padding:14px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-}
-.mode-toggle-row{
-  padding:10px 16px 6px;
-  display:flex;gap:6px;
-}
-.mode-btn{
-  flex:1;padding:6px;font-size:10.5px;border-radius:2px;cursor:pointer;
-  font-family:'IBM Plex Mono',monospace;letter-spacing:0.5px;
-  border:1px solid var(--border2);background:transparent;color:var(--muted2);
-  transition:all 0.15s;
-}
-.mode-btn.active{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
-
-/* ── RIGHT PANEL ── */
-.right{
-  overflow-y:auto;
-  display:flex;
-  flex-direction:column;
-}
+/* RIGHT PANEL */
+.right{overflow-y:auto;display:flex;flex-direction:column;background:var(--bg)}
 
 /* Empty state */
-.empty{
-  flex:1;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:14px;
-  color:var(--muted);
-  text-align:center;
-  padding:40px;
-}
-.empty-art{
-  font-size:52px;
-  line-height:1;
-  filter:grayscale(0.4);
-  margin-bottom:4px;
-}
-.empty p{font-size:12px;line-height:1.8;max-width:320px}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:60px 40px;text-align:center}
+.empty-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:48px 40px;max-width:480px;width:100%;box-shadow:var(--shadow)}
+.empty-icon{font-size:48px;margin-bottom:8px;display:block}
+.empty-title{font-family:'Lora',serif;font-size:22px;font-weight:600;margin-bottom:8px}
+.empty-desc{font-size:13px;color:var(--text3);line-height:1.7;max-width:340px;margin:0 auto}
+.empty-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:28px}
+.empty-step{background:var(--bg);border-radius:var(--rsm);padding:14px 10px}
+.step-num{width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 8px}
+.step-txt{font-size:11px;color:var(--text3);line-height:1.5}
 
 /* Loading */
-.loading{
-  flex:1;
-  display:none;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:16px;
-  color:var(--muted);
-}
+.loading{flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;gap:20px}
 .loading.show{display:flex}
-.spinner{
-  width:40px;height:40px;
-  border:2px solid var(--border2);
-  border-top-color:var(--accent);
-  border-radius:50%;
-  animation:spin 0.75s linear infinite;
-}
+.spinner{width:52px;height:52px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.loading-step{font-size:12px;animation:pulse 1.5s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:0.5}50%{opacity:1}}
+.ld-text{font-size:14px;color:var(--text2);font-weight:500}
+.ld-sub{font-size:12px;color:var(--text3);animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:0.4}50%{opacity:1}}
 
-/* Error state */
-.error-state{
-  flex:1;
-  display:none;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:12px;
-  padding:40px;
-}
+/* Error */
+.error-state{flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;padding:40px}
 .error-state.show{display:flex}
-.error-box{
-  background:var(--red-dim);
-  border:1px solid var(--red);
-  border-radius:4px;
-  padding:16px 20px;
-  color:var(--red);
-  max-width:500px;
-  width:100%;
-  font-size:12px;
-  line-height:1.7;
-}
+.error-card{background:var(--surface);border:1px solid #f5c6c0;border-left:4px solid var(--red);border-radius:var(--r);padding:20px 24px;max-width:500px;width:100%}
+.error-title{font-weight:600;color:var(--red);margin-bottom:6px;font-size:14px}
+.error-msg{font-size:13px;color:var(--text2);line-height:1.6}
 
 /* Results */
 .results{display:none;flex-direction:column;min-height:100%}
 .results.show{display:flex}
 
 /* Summary bar */
-.summary-bar{
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-  padding:16px 28px;
-  display:flex;
-  align-items:center;
-  gap:8px;
-  flex-wrap:wrap;
-}
-.summary-bar .file-tag{
-  font-size:11px;
-  color:var(--muted2);
-  margin-right:8px;
-  display:flex;
-  align-items:center;
-  gap:6px;
-}
-.stat-pill{
-  padding:5px 12px;
-  border-radius:99px;
-  font-size:11px;
-  border:1px solid;
-  display:flex;
-  align-items:center;
-  gap:6px;
-  cursor:default;
-}
-.stat-pill .num{font-family:'Playfair Display',serif;font-size:15px;font-weight:700}
-.pill-green{border-color:var(--green);color:var(--green);background:var(--green-dim)}
-.pill-red  {border-color:var(--red);  color:var(--red);  background:var(--red-dim)}
-.pill-yellow{border-color:var(--yellow);color:var(--yellow);background:var(--yellow-dim)}
-.pill-blue {border-color:var(--blue); color:var(--blue); background:var(--blue-dim)}
-.pill-teal {border-color:var(--teal); color:var(--teal); background:rgba(110,201,184,0.12)}
+.summary-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.file-name{font-size:13px;font-weight:500}
+.file-fmt{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px}
+.stat-pill{padding:5px 11px;border-radius:99px;font-size:12px;font-weight:500;border:1px solid;display:flex;align-items:center;gap:5px}
+.stat-pill .num{font-family:'Lora',serif;font-size:15px;font-weight:600}
+.pill-green{border-color:#a7d7b8;color:var(--green);background:var(--green-light)}
+.pill-red{border-color:#f0b8b2;color:var(--red);background:var(--red-light)}
+.pill-yellow{border-color:#e9c76e;color:var(--yellow);background:var(--yellow-light)}
+.pill-blue{border-color:#a5cce3;color:var(--blue);background:var(--blue-light)}
+.pill-teal{border-color:#8dd0d1;color:var(--teal);background:var(--teal-light)}
+.s-actions{margin-left:auto;display:flex;gap:8px}
+.action-btn{padding:7px 14px;border-radius:var(--rsm);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;cursor:pointer;transition:all 0.15s;border:1px solid}
+.btn-ai{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
+.btn-ai:hover{background:var(--accent-light)}
+.btn-export{background:var(--surface2);border-color:var(--border2);color:var(--text2)}
+.btn-export:hover{background:var(--surface3)}
 
 /* Tabs */
-.tabs{
-  border-bottom:1px solid var(--border);
-  display:flex;
-  padding:0 28px;
-  background:var(--surface);
-  gap:0;
-}
-.tab{
-  padding:12px 18px;
-  font-size:11px;
-  color:var(--muted);
-  cursor:pointer;
-  border-bottom:2px solid transparent;
-  letter-spacing:0.5px;
-  transition:color 0.15s,border-color 0.15s;
-  white-space:nowrap;
-}
+.tabs-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex}
+.tab{padding:13px 16px;font-size:13px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;display:flex;align-items:center;gap:6px}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.tab-badge{
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  width:16px;height:16px;
-  border-radius:99px;
-  font-size:9px;
-  margin-left:6px;
-  background:var(--surface2);
-  color:var(--muted2);
-}
-.tab-badge.red{background:var(--red-dim);color:var(--red)}
-.tab-badge.yellow{background:var(--yellow-dim);color:var(--yellow)}
+.tab-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:99px;font-size:10px;font-weight:600;background:var(--surface2);color:var(--text3)}
+.tab-count.red{background:var(--red-dim);color:var(--red)}
+.tab-count.yellow{background:var(--yellow-dim);color:var(--yellow)}
 
-/* Tab panels */
-.tab-panels{flex:1;padding:24px 28px;overflow-y:auto}
+.tab-panels{flex:1;padding:24px;overflow-y:auto}
 .tab-panel{display:none}
 .tab-panel.active{display:block}
+.panel-heading{font-family:'Lora',serif;font-size:16px;font-weight:600;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border);display:flex;align-items:baseline;gap:10px}
+.ph-sub{font-family:'DM Sans',sans-serif;font-size:12px;font-weight:400;color:var(--text3)}
 
-/* Section heading */
-.sec-heading{
-  font-family:'Playfair Display',serif;
-  font-size:14px;
-  font-style:italic;
-  color:var(--muted2);
-  margin-bottom:14px;
-  padding-bottom:8px;
-  border-bottom:1px solid var(--border);
-}
+/* Entry cards */
+.entry-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--border2);border-radius:var(--r);padding:14px 16px;margin-bottom:10px;transition:box-shadow 0.15s}
+.entry-card:hover{box-shadow:var(--shadow)}
+.entry-card.ok{border-left-color:var(--green)}
+.entry-card.warn{border-left-color:var(--yellow)}
+.entry-card.bad{border-left-color:var(--red)}
+.entry-hdr{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.key-badge{font-size:11px;font-weight:700;padding:3px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text2);white-space:nowrap;flex-shrink:0}
+.entry-ttl{flex:1;font-size:13px;font-weight:500;color:var(--text);font-style:italic;line-height:1.4}
+.type-badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;flex-shrink:0;background:var(--surface2);color:var(--text3)}
+.entry-meta{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--text3);margin-top:4px}
+.mi{display:flex;align-items:center;gap:4px}
+.issue-list{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.issue-item{font-size:12px;color:var(--yellow);background:var(--yellow-light);border:1px solid #e9c76e;border-radius:4px;padding:5px 10px;display:flex;align-items:flex-start;gap:6px}
+.issue-item::before{content:'⚠';flex-shrink:0}
+.raw-txt{margin-top:8px;font-size:11px;color:var(--text3);background:var(--bg);border-radius:4px;padding:6px 10px;line-height:1.5;font-style:italic}
 
-/* Entry card */
-.entry-card{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-left:3px solid var(--border2);
-  border-radius:3px;
-  padding:14px 16px;
-  margin-bottom:8px;
-  transition:border-left-color 0.2s;
-}
-.entry-card.ok   {border-left-color:var(--green)}
-.entry-card.warn {border-left-color:var(--yellow)}
-.entry-card.bad  {border-left-color:var(--red)}
-.entry-card.info {border-left-color:var(--blue)}
+/* Status badges */
+.status-badge{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;flex-shrink:0}
+.st-verified{background:var(--green-light);color:var(--green)}
+.st-partial_match,.st-partial{background:var(--yellow-light);color:var(--yellow)}
+.st-not_found{background:var(--red-light);color:var(--red)}
+.st-error{background:var(--surface2);color:var(--text3)}
 
-.entry-top{
-  display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap
-}
-.key-tag{
-  background:var(--surface2);
-  border:1px solid var(--border2);
-  border-radius:2px;
-  padding:2px 8px;
-  font-size:11.5px;
-  color:var(--accent);
-  white-space:nowrap;
-}
-.entry-title{flex:1;font-size:12.5px;font-style:italic;color:var(--text)}
-.type-tag{
-  font-size:10px;
-  color:var(--muted);
-  text-transform:uppercase;
-  letter-spacing:1px;
-  white-space:nowrap;
-}
-.entry-meta{
-  font-size:11px;
-  color:var(--muted2);
-  line-height:1.9;
-}
-.entry-meta .m{margin-right:14px}
-
-.issue{
-  font-size:11px;
-  color:var(--yellow);
-  margin-top:4px;
-}
-.issue::before{content:'⚠ '}
-
-.conf-bar{
-  height:2px;
-  background:var(--border);
-  border-radius:99px;
-  margin-top:8px;
-  overflow:hidden;
-}
+/* Conf bar */
+.conf-wrap{margin-top:10px}
+.conf-lbl{font-size:11px;color:var(--text3);margin-bottom:4px;display:flex;justify-content:space-between}
+.conf-bar{height:4px;background:var(--surface2);border-radius:99px;overflow:hidden}
 .conf-fill{height:100%;border-radius:99px;transition:width 0.8s ease}
 .conf-fill.hi{background:var(--green)}
 .conf-fill.md{background:var(--yellow)}
 .conf-fill.lo{background:var(--red)}
 
-.status-badge{
-  display:inline-block;
-  padding:2px 8px;
-  border-radius:2px;
-  font-size:10px;
-  letter-spacing:0.5px;
-  text-transform:uppercase;
-  font-weight:500;
-}
-.st-verified {background:var(--green-dim);color:var(--green)}
-.st-partial  {background:var(--yellow-dim);color:var(--yellow)}
-.st-not_found{background:var(--red-dim);color:var(--red)}
-.st-error    {background:var(--surface2);color:var(--muted)}
+/* Source badges */
+.sources-row{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.src-badge{font-size:10px;font-weight:500;padding:2px 7px;border-radius:4px;border:1px solid}
 
-.oa-link{
-  display:inline-block;
-  margin-top:5px;
-  color:var(--teal);
-  font-size:11px;
-  word-break:break-all;
-  text-decoration:none;
-}
+/* OA link */
+.oa-link{display:inline-flex;align-items:center;gap:4px;color:var(--teal);font-size:12px;text-decoration:none;margin-top:6px;font-weight:500}
 .oa-link:hover{text-decoration:underline}
 
-/* Cross-check panels */
-.xcheck-section{margin-bottom:20px}
-.xcheck-label{
-  font-size:10px;
-  letter-spacing:1.2px;
-  text-transform:uppercase;
-  color:var(--muted);
-  margin-bottom:8px;
-}
+/* Verif summary */
+.verif-sum{display:flex;gap:16px;flex-wrap:wrap;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:16px;font-size:12px;font-weight:500}
+
+/* Cross-check */
+.xsec{margin-bottom:24px}
+.xsec-hd{font-size:12px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;padding:8px 12px;border-radius:var(--rsm);margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.xsec-hd.ok{background:var(--green-light);color:var(--green)}
+.xsec-hd.bad{background:var(--red-light);color:var(--red)}
+.xsec-hd.warn{background:var(--yellow-light);color:var(--yellow)}
 .key-pills{display:flex;flex-wrap:wrap;gap:6px}
-.kpill{
-  padding:4px 10px;
-  border-radius:99px;
-  font-size:11px;
-  border:1px solid;
-}
-.kpill.ok    {border-color:var(--green); color:var(--green)}
-.kpill.bad   {border-color:var(--red);   color:var(--red)}
-.kpill.warn  {border-color:var(--yellow);color:var(--yellow)}
+.kpill{padding:5px 12px;border-radius:99px;font-size:12px;font-weight:500;border:1px solid;cursor:pointer;transition:opacity 0.15s}
+.kpill:hover{opacity:0.75}
+.kpill.ok{border-color:#a7d7b8;color:var(--green);background:var(--green-light)}
+.kpill.bad{border-color:#f0b8b2;color:var(--red);background:var(--red-light)}
+.kpill.warn{border-color:#e9c76e;color:var(--yellow);background:var(--yellow-light)}
+.ctx-snip{margin-top:6px;padding:8px 12px;background:var(--surface2);border-radius:var(--rsm);font-size:12px;color:var(--text2);font-style:italic;line-height:1.6;border-left:3px solid var(--border2);display:none}
 
-.empty-section{
-  color:var(--muted);
-  font-size:12px;
-  padding:20px;
-  text-align:center;
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:3px;
-}
+/* Dupes */
+.dupe-pair{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.dupe-entry{font-size:12px;color:var(--text2);padding:6px 10px;background:var(--bg);border-radius:4px}
 
-/* Scrollbar */
-::-webkit-scrollbar{width:5px}
+/* Empty section */
+.empty-sec{text-align:center;padding:32px 20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);color:var(--text3);font-size:13px}
+.empty-sec-icon{font-size:28px;display:block;margin-bottom:8px}
+
+/* Batch */
+.batch-results{display:none;flex-direction:column;min-height:100%}
+.batch-results.show{display:flex}
+.batch-sum{background:var(--surface);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.batch-title{font-family:'Lora',serif;font-size:16px;font-weight:600;margin-right:8px}
+.btw{flex:1;overflow-y:auto;padding:20px 24px}
+.bt{width:100%;border-collapse:collapse;font-size:13px}
+.bt th{text-align:left;padding:10px 14px;border-bottom:2px solid var(--border);color:var(--text3);font-size:11px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;background:var(--surface);position:sticky;top:0}
+.bt td{padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+.bt tbody tr:hover td{background:var(--surface)}
+.grade-pill{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700}
+.grade-A{background:var(--green-light);color:var(--green)}
+.grade-B{background:var(--teal-light);color:var(--teal)}
+.grade-C{background:var(--yellow-light);color:var(--yellow)}
+.grade-D,.grade-F{background:var(--red-light);color:var(--red)}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:1000;display:flex;align-items:center;justify-content:center;padding:32px;animation:fadeIn 0.15s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{background:var(--surface);border-radius:var(--rlg);max-width:680px;width:100%;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.12);animation:slideUp 0.2s ease}
+@keyframes slideUp{from{transform:translateY(16px);opacity:0}to{transform:translateY(0);opacity:1}}
+.modal-hdr{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.modal-title{font-family:'Lora',serif;font-size:16px;font-weight:600}
+.modal-src{font-size:11px;color:var(--text3);background:var(--surface2);border:1px solid var(--border);padding:2px 8px;border-radius:4px}
+.modal-close{margin-left:auto;width:28px;height:28px;border:none;background:var(--surface2);border-radius:50%;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;color:var(--text3);transition:all 0.15s}
+.modal-close:hover{background:var(--surface3)}
+.modal-sub{padding:8px 22px;background:var(--bg);border-bottom:1px solid var(--border);font-size:12px;color:var(--text3)}
+.modal-body{padding:22px;overflow-y:auto;font-size:13px;line-height:1.9;color:var(--text);white-space:pre-wrap}
+
+::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text3)}
 </style>
 </head>
 <body>
-
-<!-- ── HEADER ── -->
 <header>
-  <div class="logo">LNI Reference Checker</div>
+  <div class="logo">LNI <span>Reference</span> Checker</div>
+  <div class="logo-div"></div>
   <div class="logo-sub">GI Lecture Notes in Informatics — Citation Validator</div>
-  <div class="format-badges">
-    <span class="fmt-badge">PDF</span>
-    <span class="fmt-badge">DOCX</span>
-    <span class="fmt-badge">TEX</span>
-  </div>
+  <div class="hbadges"><span class="hbadge">PDF</span><span class="hbadge">DOCX</span><span class="hbadge">LaTeX</span></div>
 </header>
-
 <main>
-
-  <!-- ── LEFT PANEL ── -->
-  <div class="left">
-    <div class="panel-head">Upload Submission</div>
-
-    <!-- Mode toggle: Single / Batch -->
-    <div class="mode-toggle-row">
-      <button class="mode-btn active" id="modeSingle">Single File</button>
-      <button class="mode-btn" id="modeBatch">Batch Upload</button>
-    </div>
-
-    <!-- Main file drop (single mode) -->
-    <div id="singleMode">
-    <div class="upload-area" id="dropZone">
-      <input type="file" id="fileInput" accept=".pdf,.docx,.tex,.latex"/>
-      <div class="upload-icon">📎</div>
-      <div class="upload-label">
-        Drop your submission here<br/>or click to browse
-        <strong id="uploadHint">PDF · DOCX · TEX</strong>
+  <div class="sidebar">
+    <div class="sb-section">
+      <div class="sec-lbl">Mode</div>
+      <div class="mode-tabs">
+        <button class="mode-tab active" id="modeSingle">Single File</button>
+        <button class="mode-tab" id="modeBatch">Batch Upload</button>
       </div>
     </div>
-
-    <!-- File chip -->
-    <div class="file-chip" id="fileChip">
-      <div class="chip-icon" id="chipIcon">📄</div>
-      <div class="chip-info">
-        <div class="chip-name" id="chipName"></div>
-        <div class="chip-meta" id="chipMeta"></div>
+    <div class="sb-section" style="flex:1;overflow-y:auto">
+      <div id="singleMode">
+        <div class="sec-lbl" style="margin-bottom:10px">Upload Submission</div>
+        <div class="upload-zone" id="dropZone">
+          <input type="file" id="fileInput" accept=".pdf,.docx,.tex,.latex"/>
+          <div class="up-icon">📎</div>
+          <div class="up-lbl">Drop file here or click to browse<strong>PDF · DOCX · LaTeX</strong></div>
+          <div class="up-fmts"><span class="fmt fmt-pdf">PDF</span><span class="fmt fmt-docx">DOCX</span><span class="fmt fmt-tex">TEX</span></div>
+        </div>
+        <div class="file-chip" id="fileChip">
+          <div class="chip-icon" id="chipIcon">📄</div>
+          <div class="chip-info"><div class="chip-name" id="chipName"></div><div class="chip-size" id="chipMeta"></div></div>
+          <span class="chip-badge" id="chipFmt"></span>
+        </div>
+        <div class="bib-row" id="bibRow">
+          <div class="bib-upload"><input type="file" id="bibInput" accept=".bib"/><span>📚</span><span>Attach .bib file <em style="color:var(--text3)">(optional)</em></span></div>
+          <div class="bib-nm" id="bibName"></div>
+        </div>
       </div>
-      <span class="chip-fmt" id="chipFmt"></span>
-    </div>
-
-    <!-- BIB upload (LaTeX only) -->
-    <div class="bib-row" id="bibRow">
-      <div class="bib-upload">
-        <input type="file" id="bibInput" accept=".bib"/>
-        <span>📚</span>
-        <span>Attach .bib file <em style="color:var(--muted)">(optional)</em></span>
+      <div id="batchMode" style="display:none">
+        <div class="sec-lbl" style="margin-bottom:10px">Upload Submissions</div>
+        <div class="batch-zone" id="batchZone">
+          <input type="file" id="batchInput" accept=".pdf,.docx,.tex,.latex" multiple/>
+          <div class="up-icon" style="background:var(--blue-light)">📂</div>
+          <div class="up-lbl" style="color:var(--blue)">Drop multiple files here<strong style="color:var(--blue)">Select multiple student submissions</strong></div>
+        </div>
+        <div class="bfl" id="batchFileList"></div>
       </div>
-      <div class="bib-name" id="bibName"></div>
     </div>
-    </div><!-- /singleMode -->
-
-    <!-- Batch file drop (batch mode) -->
-    <div id="batchMode" style="display:none">
-      <div class="batch-zone visible" id="batchZone">
-        <input type="file" id="batchInput" accept=".pdf,.docx,.tex,.latex" multiple/>
-        <div class="upload-icon">📂</div>
-        <div class="batch-zone-label">Drop multiple submissions here<br/>or click to browse<br/><strong style="color:var(--blue)">PDF · DOCX · TEX (multiple)</strong></div>
-      </div>
-      <div class="batch-file-list" id="batchFileList"></div>
-    </div>
-
-    <!-- Options -->
     <div class="options">
       <div class="opt-row">
-        <div class="opt-label">
-          Verify references online
-          <small>CrossRef + Semantic Scholar</small>
-        </div>
-        <div class="toggle on" id="verifyToggle"></div>
+        <div><div class="opt-lbl">Verify references online</div><div class="opt-hint">CrossRef · Semantic Scholar · arXiv · more</div></div>
+        <button class="toggle on" id="verifyToggle"></button>
       </div>
     </div>
-
-    <!-- Run -->
     <div class="run-wrap">
-      <button class="run-btn" id="runBtn" disabled>Run Check</button>
+      <button class="run-btn" id="runBtn" disabled><span>Run Check</span><span>→</span></button>
       <button class="batch-btn" id="batchRunBtn" disabled style="display:none">Run Batch Check</button>
     </div>
   </div>
 
-  <!-- ── RIGHT PANEL ── -->
   <div class="right">
-
-    <!-- Empty state -->
     <div class="empty" id="emptyState">
-      <div class="empty-art">🔍</div>
-      <p>Upload a PDF, Word document, or LaTeX file to validate its LNI-format references.</p>
-      <p style="font-size:11px;color:var(--muted)">Checks bibliography completeness, citation consistency, and detects fake references.</p>
+      <div class="empty-card">
+        <span class="empty-icon">🔍</span>
+        <div class="empty-title">Reference Integrity Checker</div>
+        <p class="empty-desc">Upload a student submission to automatically validate all references — completeness, citations, and authenticity.</p>
+        <div class="empty-steps">
+          <div class="empty-step"><div class="step-num">1</div><div class="step-txt">Upload PDF, Word, or LaTeX file</div></div>
+          <div class="empty-step"><div class="step-num">2</div><div class="step-txt">Tool checks all references automatically</div></div>
+          <div class="empty-step"><div class="step-num">3</div><div class="step-txt">Review results &amp; get AI verdict</div></div>
+        </div>
+      </div>
     </div>
-
-    <!-- Loading -->
     <div class="loading" id="loadingState">
       <div class="spinner"></div>
-      <div class="loading-step" id="loadingStep">Extracting text…</div>
+      <div class="ld-text">Analysing submission…</div>
+      <div class="ld-sub" id="loadingStep">Extracting text…</div>
     </div>
-
-    <!-- Error -->
     <div class="error-state" id="errorState">
-      <div class="error-box" id="errorMsg"></div>
+      <div class="error-card"><div class="error-title">Something went wrong</div><div class="error-msg" id="errorMsg"></div></div>
     </div>
-
-    <!-- Results -->
     <div class="results" id="resultsPanel">
-
-      <!-- Summary bar -->
       <div class="summary-bar" id="summaryBar"></div>
-
-      <!-- Tabs -->
-      <div class="tabs">
-        <div class="tab active" data-tab="bib">Bibliography <span class="tab-badge" id="badgeBib">0</span></div>
-        <div class="tab" data-tab="xcheck">Cross-Check <span class="tab-badge" id="badgeX">0</span></div>
-        <div class="tab" data-tab="verify">Verification <span class="tab-badge" id="badgeV">0</span></div>
-        <div class="tab" data-tab="style">Style <span class="tab-badge" id="badgeStyle">0</span></div>
-        <div class="tab" data-tab="dupes">Duplicates <span class="tab-badge" id="badgeDupes">0</span></div>
+      <div class="tabs-bar">
+        <div class="tab active" data-tab="bib">Bibliography <span class="tab-count" id="badgeBib">0</span></div>
+        <div class="tab" data-tab="xcheck">Cross-Check <span class="tab-count" id="badgeX">0</span></div>
+        <div class="tab" data-tab="verify">Verification <span class="tab-count" id="badgeV">0</span></div>
+        <div class="tab" data-tab="style">Style <span class="tab-count" id="badgeStyle">0</span></div>
+        <div class="tab" data-tab="dupes">Duplicates <span class="tab-count" id="badgeDupes">0</span></div>
       </div>
-
-      <!-- Tab panels -->
       <div class="tab-panels">
-
-        <!-- Bibliography tab -->
         <div class="tab-panel active" id="tab-bib">
-          <div class="sec-heading">Parsed Bibliography Entries</div>
+          <div class="panel-heading">Parsed Bibliography <span class="ph-sub">All extracted entries with completeness check</span></div>
           <div id="bibList"></div>
         </div>
-
-        <!-- Cross-check tab -->
         <div class="tab-panel" id="tab-xcheck">
-          <div class="sec-heading">Citation Consistency</div>
+          <div class="panel-heading">Citation Consistency <span class="ph-sub">Cross-referencing body text vs bibliography</span></div>
           <div id="xcheckContent"></div>
         </div>
-
-        <!-- Verification tab -->
         <div class="tab-panel" id="tab-verify">
-          <div class="sec-heading">Reference Verification (CrossRef → Semantic Scholar → Google Scholar)</div>
+          <div class="panel-heading">Reference Verification <span class="ph-sub">CrossRef · Semantic Scholar · OpenAlex · arXiv · Google Scholar · Web</span></div>
           <div id="verifyList"></div>
         </div>
-
-        <!-- Style suggestions tab -->
         <div class="tab-panel" id="tab-style">
-          <div class="sec-heading">LNI Style Compliance</div>
+          <div class="panel-heading">LNI Style Compliance <span class="ph-sub">Format and macro violations</span></div>
           <div id="styleList"></div>
         </div>
-
-        <!-- Duplicates tab -->
         <div class="tab-panel" id="tab-dupes">
-          <div class="sec-heading">Duplicate / Near-Duplicate Entries</div>
+          <div class="panel-heading">Duplicate Entries <span class="ph-sub">Identical or near-identical bibliography entries</span></div>
           <div id="dupesList"></div>
         </div>
-
       </div>
     </div>
-
-  </div>
-
-  <!-- ── BATCH RESULTS PANEL (replaces right panel content) ── -->
-  <div class="batch-results" id="batchResultsPanel">
-    <div class="batch-summary-bar" id="batchSummaryBar"></div>
-    <div style="flex:1;overflow-y:auto;padding:20px 24px">
-      <table class="batch-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>File</th>
-            <th>Score</th>
-            <th>Grade</th>
-            <th>Bib Entries</th>
-            <th>Missing</th>
-            <th>Uncited</th>
-            <th>Incomplete</th>
-            <th>Fake</th>
-            <th>Duplicates</th>
-          </tr>
-        </thead>
-        <tbody id="batchTableBody"></tbody>
-      </table>
+    <div class="batch-results" id="batchResultsPanel">
+      <div class="batch-sum" id="batchSummaryBar"></div>
+      <div class="btw">
+        <table class="bt">
+          <thead><tr><th>#</th><th>File</th><th>Score</th><th>Grade</th><th>Entries</th><th>Missing</th><th>Uncited</th><th>Incomplete</th><th>Fake</th><th>Dupes</th></tr></thead>
+          <tbody id="batchTableBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
-
 </main>
 
 <script>
-// ── State ──────────────────────────────────────────────────────────────────
-let selectedFile  = null;
-let selectedBib   = null;
-let selectedBatch = [];
-let verifyOn      = true;
-let isBatchMode   = false;
+let selectedFile=null,selectedBib=null,selectedBatch=[],verifyOn=true,isBatchMode=false,_lastCheckData=null;
+const $=id=>document.getElementById(id);
+const dropZone=$('dropZone'),fileInput=$('fileInput'),bibInput=$('bibInput'),fileChip=$('fileChip'),
+      bibRow=$('bibRow'),bibName=$('bibName'),runBtn=$('runBtn'),batchRunBtn=$('batchRunBtn'),
+      verifyToggle=$('verifyToggle'),batchInput=$('batchInput'),batchFileList=$('batchFileList');
 
-// ── Elements ───────────────────────────────────────────────────────────────
-const dropZone        = document.getElementById('dropZone');
-const fileInput       = document.getElementById('fileInput');
-const bibInput        = document.getElementById('bibInput');
-const fileChip        = document.getElementById('fileChip');
-const bibRow          = document.getElementById('bibRow');
-const bibName         = document.getElementById('bibName');
-const runBtn          = document.getElementById('runBtn');
-const batchRunBtn     = document.getElementById('batchRunBtn');
-const verifyToggle    = document.getElementById('verifyToggle');
-const batchInput      = document.getElementById('batchInput');
-const batchFileList   = document.getElementById('batchFileList');
-const batchResultsPanel = document.getElementById('batchResultsPanel');
-
-const emptyState   = document.getElementById('emptyState');
-const loadingState = document.getElementById('loadingState');
-const loadingStep  = document.getElementById('loadingStep');
-const errorState   = document.getElementById('errorState');
-const errorMsg     = document.getElementById('errorMsg');
-const resultsPanel = document.getElementById('resultsPanel');
-
-// ── Mode toggle ─────────────────────────────────────────────────────────────
-document.getElementById('modeSingle').addEventListener('click', () => {
-  isBatchMode = false;
-  document.getElementById('modeSingle').classList.add('active');
-  document.getElementById('modeBatch').classList.remove('active');
-  document.getElementById('singleMode').style.display = '';
-  document.getElementById('batchMode').style.display  = 'none';
-  runBtn.style.display      = '';
-  batchRunBtn.style.display = 'none';
-  showState('empty');
+$('modeSingle').addEventListener('click',()=>{
+  isBatchMode=false;$('modeSingle').classList.add('active');$('modeBatch').classList.remove('active');
+  $('singleMode').style.display='';$('batchMode').style.display='none';
+  runBtn.style.display='';batchRunBtn.style.display='none';showState('empty');
+});
+$('modeBatch').addEventListener('click',()=>{
+  isBatchMode=true;$('modeBatch').classList.add('active');$('modeSingle').classList.remove('active');
+  $('singleMode').style.display='none';$('batchMode').style.display='';
+  runBtn.style.display='none';batchRunBtn.style.display='';showState('empty');
 });
 
-document.getElementById('modeBatch').addEventListener('click', () => {
-  isBatchMode = true;
-  document.getElementById('modeBatch').classList.add('active');
-  document.getElementById('modeSingle').classList.remove('active');
-  document.getElementById('singleMode').style.display = 'none';
-  document.getElementById('batchMode').style.display  = '';
-  runBtn.style.display      = 'none';
-  batchRunBtn.style.display = '';
-  showState('empty');
-});
+fileInput.addEventListener('change',e=>{if(e.target.files[0])setFile(e.target.files[0]);});
+bibInput.addEventListener('change',e=>{if(e.target.files[0]){selectedBib=e.target.files[0];bibName.textContent='📗 '+selectedBib.name;}});
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('drag');});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('drag');if(e.dataTransfer.files[0])setFile(e.dataTransfer.files[0]);});
 
-// ── Batch file input ────────────────────────────────────────────────────────
-batchInput.addEventListener('change', e => {
-  selectedBatch = Array.from(e.target.files);
-  batchFileList.innerHTML = selectedBatch.map(
-    f => `<div class="batch-file-item">📄 ${esc(f.name)} <span style="color:var(--muted);float:right">${(f.size/1024).toFixed(1)} KB</span></div>`
-  ).join('');
-  batchFileList.classList.toggle('visible', selectedBatch.length > 0);
-  batchRunBtn.disabled = selectedBatch.length === 0;
-});
-
-// ── Batch run ───────────────────────────────────────────────────────────────
-batchRunBtn.addEventListener('click', async () => {
-  if (!selectedBatch.length) return;
-  showState('loading');
-  loadingStep.textContent = `Checking ${selectedBatch.length} file${selectedBatch.length > 1 ? 's' : ''}…`;
-
-  try {
-    const form = new FormData();
-    selectedBatch.forEach(f => form.append('files', f));
-    form.append('verify', verifyOn ? 'true' : 'false');
-
-    const resp = await fetch('/batch', { method: 'POST', body: form });
-    const data = await resp.json();
-
-    if (data.error) { showError(data.error); return; }
-    renderBatchResults(data);
-    showState('batch');
-  } catch (err) {
-    showError(err.message);
-  }
-});
-
-function renderBatchResults(data) {
-  const files   = data.files || [];
-  const avgScore = files.length
-    ? Math.round(files.reduce((s, f) => s + (f.score?.score || 0), 0) / files.length)
-    : 0;
-
-  // Summary bar
-  document.getElementById('batchSummaryBar').innerHTML = `
-    <span style="color:var(--muted);font-size:10px;letter-spacing:1px;text-transform:uppercase">Batch Results</span>
-    <span class="stat-pill pill-blue"><span class="num">${files.length}</span> submissions</span>
-    <span class="stat-pill pill-${avgScore>=75?'green':avgScore>=60?'yellow':'red'}">
-      <span class="num">${avgScore}</span>/100 avg score
-    </span>
-    <span class="stat-pill pill-green"><span class="num">${files.filter(f=>f.score?.grade==='A').length}</span> A</span>
-    <span class="stat-pill pill-yellow"><span class="num">${files.filter(f=>['C','D'].includes(f.score?.grade)).length}</span> C–D</span>
-    <span class="stat-pill pill-red"><span class="num">${files.filter(f=>f.score?.grade==='F').length}</span> F</span>
-  `;
-
-  // Table rows
-  document.getElementById('batchTableBody').innerHTML = files.map((f, i) => {
-    if (f.error) return `
-      <tr>
-        <td style="color:var(--muted)">${i+1}</td>
-        <td>${esc(f.filename)}</td>
-        <td colspan="8" style="color:var(--red)">Error: ${esc(f.error)}</td>
-      </tr>`;
-    const sc  = f.score || {};
-    const sm  = f.summary || {};
-    const grade = sc.grade || '—';
-    const cell  = (val, warn) => val > 0
-      ? `<td style="color:${warn};font-weight:600">${val}</td>`
-      : `<td style="color:var(--muted)">0</td>`;
-    return `
-      <tr>
-        <td style="color:var(--muted)">${i+1}</td>
-        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(f.filename)}">${esc(f.filename)}</td>
-        <td><strong>${sc.score ?? '—'}</strong></td>
-        <td><span class="grade-pill grade-${grade}">${grade}</span></td>
-        <td>${sm.bib_entry_count ?? '—'}</td>
-        ${cell(sm.missing_from_bib||0,   'var(--red)')}
-        ${cell(sm.uncited_entries||0,     'var(--yellow)')}
-        ${cell(sm.incomplete_entries||0,  'var(--yellow)')}
-        ${cell(sm.fake_candidates||0,     'var(--red)')}
-        ${cell(sm.duplicates||0,          'var(--red)')}
-      </tr>`;
-  }).join('');
-}
-
-// ── File selection ─────────────────────────────────────────────────────────
-fileInput.addEventListener('change', e => {
-  if (e.target.files[0]) setFile(e.target.files[0]);
-});
-bibInput.addEventListener('change', e => {
-  if (e.target.files[0]) {
-    selectedBib = e.target.files[0];
-    bibName.textContent = '📗 ' + selectedBib.name;
-  }
-});
-
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('drag');
-  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
-});
-
-function setFile(file) {
-  selectedFile = file;
-  const ext = file.name.split('.').pop().toLowerCase();
-
-  // Show file chip
+function setFile(file){
+  selectedFile=file;const ext=file.name.split('.').pop().toLowerCase();
   fileChip.classList.add('visible');
-  document.getElementById('chipName').textContent = file.name;
-  document.getElementById('chipMeta').textContent = (file.size / 1024).toFixed(1) + ' KB';
-
-  const fmtEl = document.getElementById('chipFmt');
-  const iconEl = document.getElementById('chipIcon');
-  if (ext === 'pdf') {
-    fmtEl.textContent = 'PDF'; fmtEl.className = 'chip-fmt fmt-pdf'; iconEl.textContent = '📕';
-  } else if (ext === 'docx') {
-    fmtEl.textContent = 'DOCX'; fmtEl.className = 'chip-fmt fmt-docx'; iconEl.textContent = '📘';
-  } else {
-    fmtEl.textContent = 'TEX'; fmtEl.className = 'chip-fmt fmt-tex'; iconEl.textContent = '📗';
-  }
-
-  // Show bib row for LaTeX
-  bibRow.classList.toggle('visible', ext === 'tex' || ext === 'latex');
-
-  runBtn.disabled = false;
+  $('chipName').textContent=file.name;$('chipMeta').textContent=(file.size/1024).toFixed(1)+' KB';
+  const fe=$('chipFmt'),ie=$('chipIcon');
+  if(ext==='pdf'){fe.textContent='PDF';fe.className='chip-badge fmt-pdf';ie.textContent='📕';}
+  else if(ext==='docx'){fe.textContent='DOCX';fe.className='chip-badge fmt-docx';ie.textContent='📘';}
+  else{fe.textContent='TEX';fe.className='chip-badge fmt-tex';ie.textContent='📗';}
+  bibRow.classList.toggle('visible',ext==='tex'||ext==='latex');
+  runBtn.disabled=false;
 }
 
-// ── Toggle ─────────────────────────────────────────────────────────────────
-verifyToggle.addEventListener('click', () => {
-  verifyOn = !verifyOn;
-  verifyToggle.classList.toggle('on', verifyOn);
+batchInput.addEventListener('change',e=>{
+  selectedBatch=Array.from(e.target.files);
+  batchFileList.innerHTML=selectedBatch.map(f=>`<div class="bfi">📄 ${esc(f.name)} <span style="float:right;color:var(--text3)">${(f.size/1024).toFixed(1)} KB</span></div>`).join('');
+  batchFileList.classList.toggle('visible',selectedBatch.length>0);
+  batchRunBtn.disabled=selectedBatch.length===0;
 });
 
-// ── Tabs ───────────────────────────────────────────────────────────────────
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
-  });
+batchRunBtn.addEventListener('click',async()=>{
+  if(!selectedBatch.length)return;showState('loading');$('loadingStep').textContent=`Checking ${selectedBatch.length} file${selectedBatch.length>1?'s':''}…`;
+  try{const form=new FormData();selectedBatch.forEach(f=>form.append('files',f));form.append('verify',verifyOn?'true':'false');
+    const resp=await fetch('/batch',{method:'POST',body:form});const data=await resp.json();
+    if(data.error){showError(data.error);return;}renderBatchResults(data);showState('batch');}
+  catch(err){showError(err.message);}
 });
 
-// ── Run ────────────────────────────────────────────────────────────────────
-runBtn.addEventListener('click', async () => {
-  if (!selectedFile) return;
-
-  showState('loading');
-  const steps = [
-    'Extracting text…',
-    'Parsing bibliography…',
-    'Cross-checking citations…',
-    verifyOn ? 'Verifying references online…' : 'Compiling results…'
-  ];
-  let si = 0;
-  const stepInterval = setInterval(() => {
-    si = (si + 1) % steps.length;
-    loadingStep.textContent = steps[si];
-  }, 1800);
-
-  try {
-    const form = new FormData();
-    form.append('file', selectedFile);
-    if (selectedBib) form.append('bib', selectedBib);
-    form.append('verify', verifyOn ? 'true' : 'false');
-
-    const resp = await fetch('/check', { method: 'POST', body: form });
-    const data = await resp.json();
-
-    clearInterval(stepInterval);
-
-    if (data.error) {
-      showError(data.error);
-    } else {
-      renderResults(data);
-      showState('results');
-    }
-  } catch (err) {
-    clearInterval(stepInterval);
-    showError(err.message);
-  }
-});
-
-// ── State helpers ──────────────────────────────────────────────────────────
-function showState(state) {
-  emptyState.style.display      = state === 'empty'   ? 'flex' : 'none';
-  loadingState.classList.toggle('show', state === 'loading');
-  errorState.classList.toggle('show',   state === 'error');
-  resultsPanel.classList.toggle('show', state === 'results');
-  batchResultsPanel.classList.toggle('show', state === 'batch');
-}
-
-function showError(msg) {
-  errorMsg.textContent = '✘ Error: ' + msg;
-  showState('error');
-}
-
-// ── Render results ─────────────────────────────────────────────────────────
-function renderResults(data) {
-  renderSummary(data);
-  renderBib(data.bibliography || []);
-  renderXCheck(data.cross_check || {});
-  renderVerify(data.verification || []);
-  renderStyleSuggestions(data.style_suggestions || []);
-  renderDuplicates(data.duplicates || []);
-
-  // Badge counts
-  document.getElementById('badgeBib').textContent = (data.bibliography || []).length;
-  const xIssues = (data.cross_check?.cited_not_in_bib?.length || 0) +
-                  (data.cross_check?.in_bib_not_cited?.length || 0);
-  const xBadge = document.getElementById('badgeX');
-  xBadge.textContent = xIssues;
-  xBadge.className = 'tab-badge' + (xIssues > 0 ? ' red' : '');
-
-  const vIssues = (data.verification || []).filter(v => v.status === 'not_found').length;
-  const vBadge = document.getElementById('badgeV');
-  vBadge.textContent = (data.verification || []).length;
-  vBadge.className = 'tab-badge' + (vIssues > 0 ? ' red' : '');
-
-  const styleCount = (data.style_suggestions || []).length;
-  const sBadge = document.getElementById('badgeStyle');
-  sBadge.textContent = styleCount;
-  sBadge.className = 'tab-badge' + (styleCount > 0 ? ' yellow' : '');
-
-  const dupeCount = (data.duplicates || []).length;
-  const dBadge = document.getElementById('badgeDupes');
-  dBadge.textContent = dupeCount;
-  dBadge.className = 'tab-badge' + (dupeCount > 0 ? ' red' : '');
-}
-
-function renderSummary(data) {
-  const s   = data.summary || {};
-  const sc  = data.score   || {};
-  const bar = document.getElementById('summaryBar');
-  const totalIssues = (s.missing_from_bib||0) + (s.uncited_entries||0) +
-                      (s.incomplete_entries||0) + (s.fake_candidates||0) +
-                      (s.duplicates||0);
-
-  const gradeColor = sc.grade === 'A' ? 'var(--green)'
-                   : sc.grade === 'B' ? 'var(--teal)'
-                   : sc.grade === 'C' ? 'var(--yellow)'
-                   : 'var(--red)';
-
-  bar.innerHTML = `
-    <div class="file-tag">
-      <span style="color:var(--muted2)">${data.filename}</span>
-      <span style="background:var(--surface2);border:1px solid var(--border2);padding:2px 7px;border-radius:2px;font-size:10px;color:var(--muted2)">${data.format}</span>
-    </div>
-    ${sc.score !== undefined ? `
-      <span class="stat-pill" style="background:rgba(0,0,0,0.2);border:1px solid ${gradeColor};color:${gradeColor}">
-        <span class="num">${sc.score}</span>/100 &nbsp;<strong>${sc.grade}</strong>
-      </span>` : ''}
-    ${totalIssues === 0
-      ? `<span class="stat-pill pill-green"><span class="num">✓</span> All checks passed</span>`
-      : `<span class="stat-pill pill-red"><span class="num">${totalIssues}</span> issue${totalIssues!==1?'s':''} found</span>`}
-    <span class="stat-pill pill-blue"><span class="num">${data.stats.bib_entry_count}</span> bib entries</span>
-    <span class="stat-pill pill-blue"><span class="num">${data.stats.citation_count}</span> citations</span>
-    ${s.incomplete_entries > 0
-      ? `<span class="stat-pill pill-yellow"><span class="num">${s.incomplete_entries}</span> incomplete</span>` : ''}
-    ${s.fake_candidates > 0
-      ? `<span class="stat-pill pill-red"><span class="num">${s.fake_candidates}</span> unverified</span>` : ''}
-    ${s.duplicates > 0
-      ? `<span class="stat-pill pill-red"><span class="num">${s.duplicates}</span> duplicate${s.duplicates!==1?'s':''}</span>` : ''}
-    ${s.open_access > 0
-      ? `<span class="stat-pill pill-teal"><span class="num">${s.open_access}</span> open access</span>` : ''}
-  `;
-}
-
-function renderDuplicates(dupes) {
-  const el = document.getElementById('dupesList');
-  if (!dupes.length) {
-    el.innerHTML = '<div class="empty-section" style="color:var(--green)">No duplicate entries detected. ✔</div>';
-    return;
-  }
-  el.innerHTML = dupes.map(d => {
-    const pct  = Math.round(d.similarity * 100);
-    const cls  = d.type === 'exact' ? 'bad' : 'warn';
-    const label = d.type === 'exact' ? '⚠ Exact duplicate' : '≈ Near-duplicate';
-    return `
-      <div class="entry-card ${cls}">
-        <div class="entry-top">
-          <span class="key-tag">[${esc(d.key_a)}]</span>
-          <span style="color:var(--muted);margin:0 6px">vs</span>
-          <span class="key-tag">[${esc(d.key_b)}]</span>
-          <span class="status-badge" style="margin-left:auto;background:var(--red-dim);color:var(--red)">${label}</span>
-        </div>
-        <div class="entry-meta" style="margin-top:6px">
-          <div style="margin-bottom:3px">A: <em>${esc(d.title_a)}</em></div>
-          <div>B: <em>${esc(d.title_b)}</em></div>
-        </div>
-        <div class="conf-bar" style="margin-top:8px">
-          <div class="conf-fill ${pct>=97?'hi':'md'}" style="width:${pct}%"></div>
-        </div>
-        <div class="entry-meta" style="margin-top:4px;font-size:10px">Title similarity: ${pct}%</div>
-      </div>`;
+function renderBatchResults(data){
+  const files=data.files||[];const avg=files.length?Math.round(files.reduce((s,f)=>s+(f.score?.score||0),0)/files.length):0;
+  const gc=avg>=75?'pill-green':avg>=60?'pill-yellow':'pill-red';
+  $('batchSummaryBar').innerHTML=`<div class="batch-title">Batch Results</div>
+    <span class="stat-pill pill-blue"><span class="num">${files.length}</span> submissions</span>
+    <span class="stat-pill ${gc}"><span class="num">${avg}</span>/100 avg</span>
+    <span class="stat-pill pill-green"><span class="num">${files.filter(f=>f.score?.grade==='A').length}</span> A grade</span>
+    <span class="stat-pill pill-red"><span class="num">${files.filter(f=>f.score?.grade==='F').length}</span> F grade</span>`;
+  $('batchTableBody').innerHTML=files.map((f,i)=>{
+    if(f.error)return`<tr><td style="color:var(--text3)">${i+1}</td><td>${esc(f.filename)}</td><td colspan="8" style="color:var(--red)">Error: ${esc(f.error)}</td></tr>`;
+    const sc=f.score||{},sm=f.summary||{},g=sc.grade||'—';
+    const cell=(v,c)=>v>0?`<td style="font-weight:600;color:var(--${c})">${v}</td>`:`<td style="color:var(--text3)">0</td>`;
+    return`<tr><td style="color:var(--text3)">${i+1}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500" title="${esc(f.filename)}">${esc(f.filename)}</td><td><strong>${sc.score??'—'}</strong></td><td><span class="grade-pill grade-${g}">${g}</span></td><td>${sm.bib_entry_count??'—'}</td>${cell(sm.missing_from_bib||0,'red')}${cell(sm.uncited_entries||0,'yellow')}${cell(sm.incomplete_entries||0,'yellow')}${cell(sm.fake_candidates||0,'red')}${cell(sm.duplicates||0,'red')}</tr>`;
   }).join('');
 }
 
+verifyToggle.addEventListener('click',()=>{verifyOn=!verifyOn;verifyToggle.classList.toggle('on',verifyOn);});
 
+document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  tab.classList.add('active');$('tab-'+tab.dataset.tab).classList.add('active');
+}));
 
-function renderBib(bib) {
-  const el = document.getElementById('bibList');
-  if (!bib.length) {
-    el.innerHTML = '<div class="empty-section">No bibliography entries found. Check that the PDF contains a "Literaturverzeichnis" or "References" section.</div>';
-    return;
-  }
-  el.innerHTML = bib.map(e => {
-    const hasIssues = e.completeness_issues && e.completeness_issues.length > 0;
-    const cls = hasIssues ? 'warn' : 'ok';
-    const issues = (e.completeness_issues || []).map(i => `<div class="issue">${i}</div>`).join('');
-    const meta = [
-      e.authors ? `<span class="m">👤 ${esc(e.authors)}</span>` : '',
-      e.year    ? `<span class="m">📅 ${e.year}</span>` : '',
-      e.publisher ? `<span class="m">🏢 ${esc(e.publisher)}</span>` : '',
-      e.journal ? `<span class="m">📰 ${esc(e.journal)}</span>` : '',
-      e.url     ? `<span class="m">🔗 <a href="${esc(e.url)}" target="_blank" class="oa-link">${esc(e.url)}</a></span>` : '',
-    ].filter(Boolean).join('');
+runBtn.addEventListener('click',async()=>{
+  if(!selectedFile)return;showState('loading');
+  const steps=['Extracting text…','Parsing bibliography…','Cross-checking citations…',verifyOn?'Verifying references online…':'Compiling results…'];
+  let si=0;const iv=setInterval(()=>{si=(si+1)%steps.length;$('loadingStep').textContent=steps[si];},1800);
+  try{const form=new FormData();form.append('file',selectedFile);if(selectedBib)form.append('bib',selectedBib);form.append('verify',verifyOn?'true':'false');
+    const resp=await fetch('/check',{method:'POST',body:form});const data=await resp.json();
+    clearInterval(iv);if(data.error){showError(data.error);}else{renderResults(data);showState('results');}}
+  catch(err){clearInterval(iv);showError(err.message);}
+});
 
-    return `
-      <div class="entry-card ${cls}">
-        <div class="entry-top">
-          <span class="key-tag">[${e.key}]</span>
-          <span class="entry-title">${esc(e.title || '(title not parsed)')}</span>
-          <span class="type-tag">${e.type}</span>
-        </div>
-        <div class="entry-meta">${meta || '<span style="color:var(--muted)">No metadata extracted</span>'}</div>
-        ${issues}
-        <div class="entry-meta" style="margin-top:6px;color:var(--muted);font-size:10.5px;font-style:italic">${esc(e.raw)}</div>
-      </div>`;
-  }).join('');
+function showState(s){
+  $('emptyState').style.display=s==='empty'?'flex':'none';
+  $('loadingState').classList.toggle('show',s==='loading');
+  $('errorState').classList.toggle('show',s==='error');
+  $('resultsPanel').classList.toggle('show',s==='results');
+  $('batchResultsPanel').classList.toggle('show',s==='batch');
+}
+function showError(msg){$('errorMsg').textContent=msg;showState('error');}
+function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function renderResults(data){
+  _lastCheckData=data;renderSummary(data);renderBib(data.bibliography||[]);renderXCheck(data.cross_check||{},data.citation_contexts||{});
+  renderVerify(data.verification||[]);renderStyleSuggestions(data.style_suggestions||[]);renderDuplicates(data.duplicates||[]);renderSelfCitations(data.self_citations||[]);
+  const xIss=(data.cross_check?.cited_not_in_bib?.length||0)+(data.cross_check?.in_bib_not_cited?.length||0);
+  const vIss=(data.verification||[]).filter(v=>v.status==='not_found').length;
+  const sc2=(data.style_suggestions||[]).length,dc=(data.duplicates||[]).length;
+  $('badgeBib').textContent=(data.bibliography||[]).length;
+  $('badgeX').textContent=xIss;$('badgeX').className='tab-count'+(xIss>0?' red':'');
+  $('badgeV').textContent=(data.verification||[]).length;$('badgeV').className='tab-count'+(vIss>0?' red':'');
+  $('badgeStyle').textContent=sc2;$('badgeStyle').className='tab-count'+(sc2>0?' yellow':'');
+  $('badgeDupes').textContent=dc;$('badgeDupes').className='tab-count'+(dc>0?' red':'');
 }
 
-function renderXCheck(x) {
-  const el = document.getElementById('xcheckContent');
-  const ok   = x.correctly_used || [];
-  const miss = x.cited_not_in_bib || [];
-  const uncited = x.in_bib_not_cited || [];
-
-  el.innerHTML = `
-    <div class="xcheck-section">
-      <div class="xcheck-label">✔ Correctly cited in text and in bibliography (${ok.length})</div>
-      ${ok.length ? `<div class="key-pills">${ok.map(k=>`<span class="kpill ok">[${k}]</span>`).join('')}</div>`
-        : '<div class="empty-section">No correctly paired citations found.</div>'}
-    </div>
-    <div class="xcheck-section">
-      <div class="xcheck-label" style="color:var(--red)">✘ Cited in text but MISSING from bibliography (${miss.length})</div>
-      ${miss.length ? `<div class="key-pills">${miss.map(k=>`<span class="kpill bad">[${k}]</span>`).join('')}</div>`
-        : '<div class="empty-section" style="color:var(--green)">None — all in-text citations have a bibliography entry. ✔</div>'}
-    </div>
-    <div class="xcheck-section">
-      <div class="xcheck-label" style="color:var(--yellow)">⚠ In bibliography but NEVER cited in text (${uncited.length})</div>
-      ${uncited.length ? `<div class="key-pills">${uncited.map(k=>`<span class="kpill warn">[${k}]</span>`).join('')}</div>`
-        : '<div class="empty-section" style="color:var(--green)">None — all bibliography entries are used. ✔</div>'}
+function renderSummary(data){
+  const s=data.summary||{},sc=data.score||{};
+  const ti=(s.missing_from_bib||0)+(s.uncited_entries||0)+(s.incomplete_entries||0)+(s.fake_candidates||0)+(s.duplicates||0);
+  const gm={A:'pill-green',B:'pill-teal',C:'pill-yellow',D:'pill-red',F:'pill-red'};
+  $('summaryBar').innerHTML=`
+    <span class="file-name">${esc(data.filename)}</span>
+    <span class="file-fmt fmt-${(data.format||'').toLowerCase()}">${esc(data.format)}</span>
+    ${sc.score!==undefined?`<span class="stat-pill ${gm[sc.grade]||'pill-blue'}"><span class="num">${sc.score}</span>/100 &nbsp;<strong>${sc.grade}</strong></span>`:''}
+    ${ti===0?`<span class="stat-pill pill-green">✓ All checks passed</span>`:`<span class="stat-pill pill-red"><span class="num">${ti}</span> issue${ti!==1?'s':''}</span>`}
+    <span class="stat-pill pill-blue"><span class="num">${s.bib_entry_count||0}</span> references</span>
+    ${s.incomplete_entries>0?`<span class="stat-pill pill-yellow"><span class="num">${s.incomplete_entries}</span> incomplete</span>`:''}
+    ${s.fake_candidates>0?`<span class="stat-pill pill-red"><span class="num">${s.fake_candidates}</span> unverified</span>`:''}
+    ${s.open_access>0?`<span class="stat-pill pill-teal"><span class="num">${s.open_access}</span> open access</span>`:''}
+    <div class="s-actions">
+      <button class="action-btn btn-ai" id="aiReviewBtn" onclick="runAiReview()">🤖 AI Verdict</button>
+      <button class="action-btn btn-export" onclick="exportReport()">⬇ Export</button>
     </div>`;
 }
 
-function renderVerify(verif) {
-  const el = document.getElementById('verifyList');
-  if (!verif.length) {
-    el.innerHTML = '<div class="empty-section">Verification was skipped or no entries to verify.</div>';
-    return;
-  }
-  el.innerHTML = verif.map(v => {
-    const cls = v.status === 'verified' ? 'ok'
-              : v.status === 'partial_match' ? 'warn'
-              : v.status === 'not_found' ? 'bad' : '';
-
-    const confPct = Math.round(v.confidence * 100);
-    const fillCls = v.confidence >= 0.75 ? 'hi' : v.confidence >= 0.4 ? 'md' : 'lo';
-    const badgeCls = `st-${v.status}`;
-    const label = v.status === 'not_found' ? 'Not Found' : v.status;
-
-    return `
-      <div class="entry-card ${cls}">
-        <div class="entry-top">
-          <span class="key-tag">[${v.key}]</span>
-          <span class="entry-title">${esc(v.title || '—')}</span>
-          <span class="status-badge ${badgeCls}">${label}</span>
-        </div>
-        ${v.matched_title && v.matched_title !== v.title
-          ? `<div class="entry-meta" style="margin-bottom:4px">Matched: <em>${esc(v.matched_title)}</em></div>` : ''}
-        ${v.doi ? `<div class="entry-meta"><span class="m">DOI: ${esc(v.doi)}</span></div>` : ''}
-        ${v.note ? `<div class="entry-meta" style="color:var(--muted)">${esc(v.note)}</div>` : ''}
-        ${v.open_access_url
-          ? `<a class="oa-link" href="${esc(v.open_access_url)}" target="_blank">📖 Full text available</a>` : ''}
-        <div class="conf-bar"><div class="conf-fill ${fillCls}" style="width:${confPct}%"></div></div>
-        <div class="entry-meta" style="margin-top:4px;font-size:10px">Match confidence: ${confPct}%</div>
-      </div>`;
+function renderBib(bib){
+  const el=$('bibList');
+  if(!bib.length){el.innerHTML='<div class="empty-sec"><span class="empty-sec-icon">📚</span>No bibliography entries found. Check that the document contains a "Literaturverzeichnis" or "References" section.</div>';return;}
+  el.innerHTML=bib.map(e=>{
+    const hi=e.completeness_issues&&e.completeness_issues.length>0;
+    const meta=[
+      e.authors?`<span class="mi">👤 ${esc(e.authors)}</span>`:'',
+      e.year?`<span class="mi">📅 ${esc(e.year)}</span>`:'',
+      e.journal?`<span class="mi">📰 ${esc(e.journal)}</span>`:'',
+      e.publisher?`<span class="mi">🏢 ${esc(e.publisher)}</span>`:'',
+      e.doi?`<span class="mi">🔑 <a href="https://doi.org/${esc(e.doi)}" target="_blank" class="oa-link">${esc(e.doi)}</a></span>`:'',
+      e.url?`<span class="mi">🔗 <a href="${esc(e.url)}" target="_blank" class="oa-link">${esc(e.url.length>40?e.url.slice(0,40)+'…':e.url)}</a></span>`:'',
+    ].filter(Boolean).join('');
+    const issues=(e.completeness_issues||[]).map(i=>`<div class="issue-item">${esc(i)}</div>`).join('');
+    return`<div class="entry-card ${hi?'warn':'ok'}">
+      <div class="entry-hdr"><span class="key-badge">${esc(e.key)}</span><span class="entry-ttl">${esc(e.title||'(title not parsed)')}</span><span class="type-badge">${esc(e.type||'unknown')}</span></div>
+      ${meta?`<div class="entry-meta">${meta}</div>`:''}
+      ${issues?`<div class="issue-list">${issues}</div>`:''}
+      <div class="raw-txt">${esc(e.raw||'')}</div>
+    </div>`;
   }).join('');
 }
 
-function renderStyleSuggestions(suggestions) {
-  const el = document.getElementById('styleList');
-  if (!suggestions.length) {
-    el.innerHTML = '<div class="empty-section" style="color:var(--green)">No style issues found — LNI macros used correctly. ✔</div>';
-    return;
-  }
-  el.innerHTML = suggestions.map(s => `
-    <div class="entry-card warn">
-      <div class="entry-top">
-        <span class="type-tag" style="background:var(--yellow-dim);color:var(--yellow)">${esc(s.type || 'Style')}</span>
-        <span class="entry-title">${esc(s.message)}</span>
-        ${s.count > 1 ? `<span class="tab-badge yellow">${s.count}×</span>` : ''}
-      </div>
-    </div>`).join('');
+function renderXCheck(x,contexts){
+  const el=$('xcheckContent');
+  const ok=x.correctly_used||[],miss=x.cited_not_in_bib||[],unc=x.in_bib_not_cited||[];
+  const ctx=key=>{const sn=(contexts||{})[key];if(!sn||!sn.length)return'';return`<div class="ctx-snip" id="ctx-${esc(key)}">${sn.slice(0,2).map(s=>`"…${esc(s)}…"`).join('<br>')}</div>`;};
+  el.innerHTML=`
+    <div class="xsec"><div class="xsec-hd ok">✓ Correctly cited (${ok.length})</div>
+      ${ok.length?`<div class="key-pills">${ok.map(k=>`<span class="kpill ok" onclick="const el=document.getElementById('ctx-${esc(k)}');if(el)el.style.display=el.style.display==='block'?'none':'block'">${esc(k)}</span>${ctx(k)}`).join('')}</div>`:`<div class="empty-sec" style="padding:16px;text-align:left">No correctly paired citations.</div>`}</div>
+    <div class="xsec"><div class="xsec-hd bad">✘ Cited but missing from bibliography (${miss.length})</div>
+      ${miss.length?`<div class="key-pills">${miss.map(k=>`<span class="kpill bad">${esc(k)}</span>${ctx(k)}`).join('')}</div>`:`<div class="empty-sec" style="padding:16px;text-align:left;color:var(--green)">✓ All citations have bibliography entries.</div>`}</div>
+    <div class="xsec"><div class="xsec-hd warn">⚠ In bibliography but never cited (${unc.length})</div>
+      ${unc.length?`<div class="key-pills">${unc.map(k=>`<span class="kpill warn">${esc(k)}</span>`).join('')}</div>`:`<div class="empty-sec" style="padding:16px;text-align:left;color:var(--green)">✓ All bibliography entries are cited.</div>`}</div>`;
 }
 
-function esc(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;');
+function renderVerify(verif){
+  const el=$('verifyList');
+  if(!verif.length){el.innerHTML='<div class="empty-sec"><span class="empty-sec-icon">🔍</span>Verification skipped or no entries to verify.</div>';return;}
+  const vf=verif.filter(v=>v.status==='verified').length,pm=verif.filter(v=>v.status==='partial_match').length,nf=verif.filter(v=>v.status==='not_found').length,er=verif.filter(v=>v.status==='error').length;
+  const sc={'CrossRef':'var(--blue)','CrossRef (DOI)':'var(--blue)','Semantic Scholar':'var(--teal)','OpenAlex':'var(--green)','arXiv':'var(--teal)','Google Scholar':'var(--yellow)','Web (DDG)':'var(--text3)','URL check':'var(--blue)'};
+  el.innerHTML=`<div class="verif-sum">
+    <span style="color:var(--green)">✔ ${vf} verified</span>
+    <span style="color:var(--yellow)">≈ ${pm} partial</span>
+    <span style="color:var(--red)">✘ ${nf} not found</span>
+    ${er?`<span style="color:var(--text3)">⚡ ${er} errors</span>`:''}
+    <span style="margin-left:auto;color:var(--text3);font-size:11px">CrossRef · SemanticScholar · OpenAlex · arXiv · Google Scholar · Web</span>
+  </div>`+verif.map(v=>{
+    const cls=v.status==='verified'?'ok':v.status==='partial_match'?'warn':v.status==='not_found'?'bad':'';
+    const pct=Math.round(v.confidence*100),fc=v.confidence>=0.75?'hi':v.confidence>=0.4?'md':'lo';
+    const lbl=v.status==='not_found'?'Not Found':v.status==='partial_match'?'Partial Match':v.status==='verified'?'Verified':'Error';
+    const bc=v.status==='partial_match'?'st-partial':`st-${v.status}`;
+    const sb=(v.sources_checked||[]).map(s=>{const c=sc[s]||'var(--text3)';return`<span class="src-badge" style="border-color:${c};color:${c}">${esc(s)}</span>`;}).join('');
+    return`<div class="entry-card ${cls}">
+      <div class="entry-hdr"><span class="key-badge">${esc(v.key)}</span><span class="entry-ttl">${esc(v.title||'—')}</span><span class="status-badge ${bc}">${lbl}</span></div>
+      ${v.matched_title&&v.matched_title!==v.title?`<div class="entry-meta">Matched: <em>${esc(v.matched_title)}</em></div>`:''}
+      ${v.doi?`<div class="entry-meta"><span class="mi">DOI: <a href="https://doi.org/${esc(v.doi)}" target="_blank" class="oa-link">${esc(v.doi)}</a></span></div>`:''}
+      ${v.web_evidence?`<div class="raw-txt">Web evidence: "${esc(v.web_evidence.substring(0,140))}"</div>`:''}
+      ${v.note?`<div class="entry-meta" style="color:var(--text3);margin-top:4px">${esc(v.note)}</div>`:''}
+      ${v.open_access_url?`<a class="oa-link" href="${esc(v.open_access_url)}" target="_blank">📖 Open access PDF</a>`:''}
+      ${sb?`<div class="sources-row">${sb}</div>`:''}
+      <div class="conf-wrap"><div class="conf-lbl"><span>Match confidence</span><span>${pct}%</span></div><div class="conf-bar"><div class="conf-fill ${fc}" style="width:${pct}%"></div></div></div>
+    </div>`;
+  }).join('');
+}
+
+function renderStyleSuggestions(suggestions){
+  const el=$('styleList');
+  if(!suggestions.length){el.innerHTML='<div class="empty-sec"><span class="empty-sec-icon">✅</span>No style issues — LNI macros used correctly.</div>';return;}
+  el.innerHTML=suggestions.map(s=>`<div class="entry-card warn"><div class="entry-hdr"><span class="type-badge" style="background:var(--yellow-light);color:var(--yellow)">${esc(s.type||'Style')}</span><span class="entry-ttl">${esc(s.message)}</span>${s.count>1?`<span class="tab-count yellow">${s.count}×</span>`:''}</div></div>`).join('');
+}
+
+function renderDuplicates(dupes){
+  const el=$('dupesList');
+  if(!dupes.length){el.innerHTML='<div class="empty-sec"><span class="empty-sec-icon">✅</span>No duplicate entries detected.</div>';return;}
+  el.innerHTML=dupes.map(d=>{
+    const pct=Math.round(d.similarity*100),cls=d.type==='exact'?'bad':'warn',lbl=d.type==='exact'?'Exact duplicate':'Near-duplicate';
+    return`<div class="entry-card ${cls}">
+      <div class="entry-hdr"><span class="key-badge">${esc(d.key_a)}</span><span style="color:var(--text3);font-size:12px">vs</span><span class="key-badge">${esc(d.key_b)}</span><span class="status-badge ${cls==='bad'?'st-not_found':'st-partial'}" style="margin-left:auto">${lbl}</span></div>
+      <div class="dupe-pair"><div class="dupe-entry">A: <em>${esc(d.title_a)}</em></div><div class="dupe-entry">B: <em>${esc(d.title_b)}</em></div></div>
+      <div class="conf-wrap"><div class="conf-lbl"><span>Title similarity</span><span>${pct}%</span></div><div class="conf-bar"><div class="conf-fill ${pct>=97?'hi':'md'}" style="width:${pct}%"></div></div></div>
+    </div>`;
+  }).join('');
+}
+
+function renderSelfCitations(sc){
+  if(!sc||!sc.length)return;
+  $('xcheckContent').innerHTML+=`<div class="xsec" style="margin-top:24px"><div class="xsec-hd warn">🔄 Potential self-citations (${sc.length})</div>
+    <p style="font-size:12px;color:var(--text3);margin-bottom:10px">These entries share an author name with the paper itself.</p>
+    ${sc.map(c=>`<div class="entry-card warn"><div class="entry-hdr"><span class="key-badge">${esc(c.key)}</span><span class="entry-ttl">${esc(c.title)}</span><span class="type-badge" style="background:var(--yellow-light);color:var(--yellow)">Self-cite?</span></div><div class="entry-meta">Matched: <strong>${esc(c.matched_author)}</strong></div></div>`).join('')}</div>`;
+}
+
+async function runAiReview(){
+  const btn=$('aiReviewBtn');if(!_lastCheckData||!btn)return;
+  const flagged=(_lastCheckData.verification||[]).filter(v=>['not_found','partial_match','error'].includes(v.status));
+  if(!flagged.length&&!(_lastCheckData.duplicates||[]).length){showVerdictModal('AI Verdict','All sources clean','No flagged references. All entries verified.','PASS');return;}
+  btn.textContent='⏳ Analysing…';btn.disabled=true;
+  try{const resp=await fetch('/ai-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_lastCheckData)});
+    const data=await resp.json();
+    if(data.error){showVerdictModal('AI Verdict — Setup Required','',data.error+'\n\n'+(data.hint||''),'SETUP');return;}
+    showVerdictModal('AI Verdict',data.ai_source||'',data.verdict,null,data.flagged_count);}
+  catch(err){showVerdictModal('AI Verdict','Error',err.message,'ERROR');}
+  finally{btn.textContent='🤖 AI Verdict';btn.disabled=false;}
+}
+
+function showVerdictModal(title,source,text,ov,fc){
+  const m=text.match(/OVERALL:\s*(PASS|FLAG|FAIL)/i);const v=ov||(m?m[1].toUpperCase():null);
+  const vc=v==='PASS'?'var(--green)':v==='FLAG'?'var(--yellow)':v==='FAIL'?'var(--red)':'var(--text3)';
+  const vb=v==='PASS'?'var(--green-light)':v==='FLAG'?'var(--yellow-light)':v==='FAIL'?'var(--red-light)':'var(--surface2)';
+  const fmt=esc(text).replace(/\bREAL\b/g,'<strong style="color:var(--green)">REAL</strong>').replace(/\bSUSPICIOUS\b/g,'<strong style="color:var(--yellow)">SUSPICIOUS</strong>').replace(/\bFAKE\b/g,'<strong style="color:var(--red)">FAKE</strong>').replace(/\bPASS\b/g,'<strong style="color:var(--green)">PASS</strong>').replace(/\bFLAG\b/g,'<strong style="color:var(--yellow)">FLAG</strong>').replace(/\bFAIL\b/g,'<strong style="color:var(--red)">FAIL</strong>');
+  const o=document.createElement('div');o.className='modal-overlay';
+  o.innerHTML=`<div class="modal"><div class="modal-hdr"><div class="modal-title">${title}</div>${source?`<span class="modal-src">${esc(source)}</span>`:''} ${v?`<span class="status-badge" style="background:${vb};color:${vc};border:1px solid ${vc}">${v}</span>`:''}<button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>${fc!==undefined?`<div class="modal-sub">${fc} flagged reference${fc!==1?'s':''} analysed</div>`:''}<div class="modal-body">${fmt}</div></div>`;
+  document.body.appendChild(o);o.addEventListener('click',e=>{if(e.target===o)o.remove();});
+}
+
+async function exportReport(){
+  if(!_lastCheckData)return;
+  try{const resp=await fetch('/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_lastCheckData)});
+    const blob=await resp.blob();const fname=(_lastCheckData.filename||'report').replace(/\.[^.]+$/,'')+'_lni_report.txt';
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fname;a.click();URL.revokeObjectURL(url);}
+  catch(err){alert('Export failed: '+err.message);}
 }
 </script>
 </body>

@@ -4,3 +4,10 @@ pypdf>=4.0.0
 python-docx>=1.1.0
 requests>=2.31.0
 rapidfuzz>=3.0.0
+
+# AI verdict (free tier — set as env vars):
+#   GROQ_API_KEY   → console.groq.com   (free, llama-3.3-70b, 14400 req/day)
+#   GEMINI_API_KEY → aistudio.google.com (free, Gemini 1.5 Flash, 1500 req/day)
+#
+# Optional for better open-access links:
+#   UNPAYWALL_EMAIL → your email (required by Unpaywall API polite pool)
