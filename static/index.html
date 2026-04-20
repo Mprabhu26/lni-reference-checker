@@ -17,6 +17,7 @@
   --blue:#1a5f8a;--blue-light:#eaf4fb;--blue-dim:rgba(26,95,138,0.1);
   --teal:#0a7577;--teal-light:#e6f7f7;
   --green:#2d6a4f;--green-light:#d8f3dc;
+  --purple:#5c3d8f;--purple-light:#f0eafd;
   --shadow:0 1px 3px rgba(0,0,0,0.06),0 4px 12px rgba(0,0,0,0.04);
   --shadow-md:0 2px 8px rgba(0,0,0,0.08),0 8px 24px rgba(0,0,0,0.06);
   --r:10px;--rsm:6px;--rlg:14px;
@@ -30,8 +31,11 @@ header{background:var(--surface);border-bottom:1px solid var(--border);display:f
 .logo span{color:var(--accent)}
 .logo-div{width:1px;height:20px;background:var(--border);margin:0 4px}
 .logo-sub{font-size:12px;color:var(--text3)}
-.hbadges{margin-left:auto;display:flex;gap:6px}
+.hbadges{margin-left:auto;display:flex;gap:6px;align-items:center}
 .hbadge{font-size:11px;font-weight:500;padding:3px 9px;border-radius:99px;background:var(--surface2);color:var(--text3);border:1px solid var(--border)}
+/* Cache status badge — NEW v6 */
+#cacheStatus{font-size:11px;font-weight:500;padding:3px 9px;border-radius:99px;background:var(--surface2);color:var(--text3);border:1px solid var(--border);cursor:default;transition:all 0.3s;display:none}
+#cacheStatus.warm{background:var(--accent-light);color:var(--accent);border-color:#a7d7b8}
 
 /* LAYOUT */
 main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
@@ -41,12 +45,10 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .sb-section{padding:18px 18px 14px;border-bottom:1px solid var(--border)}
 .sec-lbl{font-size:10px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:var(--text3);margin-bottom:12px}
 
-/* Mode tabs */
 .mode-tabs{display:flex;gap:4px;background:var(--surface2);border-radius:var(--rsm);padding:3px}
 .mode-tab{flex:1;padding:7px 10px;border:none;background:transparent;border-radius:4px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;color:var(--text3);cursor:pointer;transition:all 0.15s}
 .mode-tab.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
 
-/* Upload zone */
 .upload-zone{border:1.5px dashed var(--border2);border-radius:var(--r);padding:22px 16px;text-align:center;cursor:pointer;position:relative;transition:all 0.2s;background:var(--bg)}
 .upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:var(--accent-dim)}
 .upload-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
@@ -59,7 +61,6 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .fmt-docx{background:var(--blue-dim);color:var(--blue)}
 .fmt-tex{background:var(--accent-dim);color:var(--accent)}
 
-/* File chip */
 .file-chip{display:none;align-items:center;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--rsm);padding:10px 12px;margin-top:8px}
 .file-chip.visible{display:flex}
 .chip-icon{font-size:20px}
@@ -68,7 +69,6 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .chip-size{font-size:11px;color:var(--text3)}
 .chip-badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px}
 
-/* Bib row */
 .bib-row{display:none;margin-top:8px}
 .bib-row.visible{display:block}
 .bib-upload{display:flex;align-items:center;gap:8px;border:1px dashed var(--border2);border-radius:var(--rsm);padding:9px 12px;cursor:pointer;position:relative;font-size:12px;color:var(--text3);transition:all 0.15s}
@@ -76,7 +76,6 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .bib-upload input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .bib-nm{font-size:11px;color:var(--blue);margin-top:4px;padding:0 4px}
 
-/* Batch zone */
 .batch-zone{border:1.5px dashed var(--blue);border-radius:var(--r);padding:18px 16px;text-align:center;cursor:pointer;position:relative;transition:all 0.2s;background:var(--blue-dim)}
 .batch-zone:hover{background:var(--blue-light)}
 .batch-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
@@ -84,7 +83,6 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .bfl.visible{display:flex}
 .bfi{font-size:11px;color:var(--text2);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:4px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-/* Options */
 .options{padding:16px 18px;display:flex;flex-direction:column;gap:12px}
 .opt-row{display:flex;align-items:center;justify-content:space-between}
 .opt-lbl{font-size:13px;font-weight:500;color:var(--text2)}
@@ -94,7 +92,6 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .toggle::after{content:'';position:absolute;width:14px;height:14px;background:#fff;border-radius:50%;top:3px;left:3px;transition:transform 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.2)}
 .toggle.on::after{transform:translateX(16px)}
 
-/* Run buttons */
 .run-wrap{padding:14px 18px 18px;margin-top:auto}
 .run-btn{width:100%;padding:12px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--r);font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 2px 8px rgba(45,106,79,0.3)}
 .run-btn:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 4px 12px rgba(45,106,79,0.35)}
@@ -107,7 +104,6 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 /* RIGHT PANEL */
 .right{overflow-y:auto;display:flex;flex-direction:column;background:var(--bg)}
 
-/* Empty state */
 .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:60px 40px;text-align:center}
 .empty-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:48px 40px;max-width:480px;width:100%;box-shadow:var(--shadow)}
 .empty-icon{font-size:48px;margin-bottom:8px;display:block}
@@ -118,27 +114,34 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .step-num{width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 8px}
 .step-txt{font-size:11px;color:var(--text3);line-height:1.5}
 
-/* Loading */
+/* Loading — NEW v6: live progress list */
 .loading{flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;gap:20px}
 .loading.show{display:flex}
 .spinner{width:52px;height:52px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .ld-text{font-size:14px;color:var(--text2);font-weight:500}
-.ld-sub{font-size:12px;color:var(--text3);animation:pulse 1.8s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:0.4}50%{opacity:1}}
+.ld-sub{font-size:12px;color:var(--text3)}
+/* progress log */
+.ld-log{width:340px;max-height:160px;overflow-y:auto;display:flex;flex-direction:column-reverse;gap:3px;margin-top:4px}
+.ld-log-item{font-size:11px;color:var(--text3);padding:4px 10px;background:var(--surface);border-radius:4px;border:1px solid var(--border);animation:fadeSlide 0.2s ease;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ld-log-item.verif{color:var(--accent)}
+.ld-log-item.err{color:var(--red)}
+@keyframes fadeSlide{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+/* progress bar */
+.ld-prog-wrap{width:340px}
+.ld-prog-bar{height:3px;background:var(--border);border-radius:99px;overflow:hidden;margin-top:4px}
+.ld-prog-fill{height:100%;background:var(--accent);border-radius:99px;transition:width 0.3s ease;width:0}
+.ld-prog-lbl{font-size:11px;color:var(--text3);text-align:right;margin-top:2px}
 
-/* Error */
 .error-state{flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;padding:40px}
 .error-state.show{display:flex}
 .error-card{background:var(--surface);border:1px solid #f5c6c0;border-left:4px solid var(--red);border-radius:var(--r);padding:20px 24px;max-width:500px;width:100%}
 .error-title{font-weight:600;color:var(--red);margin-bottom:6px;font-size:14px}
 .error-msg{font-size:13px;color:var(--text2);line-height:1.6}
 
-/* Results */
 .results{display:none;flex-direction:column;min-height:100%}
 .results.show{display:flex}
 
-/* Summary bar */
 .summary-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .file-name{font-size:13px;font-weight:500}
 .file-fmt{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px}
@@ -149,6 +152,7 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .pill-yellow{border-color:#e9c76e;color:var(--yellow);background:var(--yellow-light)}
 .pill-blue{border-color:#a5cce3;color:var(--blue);background:var(--blue-light)}
 .pill-teal{border-color:#8dd0d1;color:var(--teal);background:var(--teal-light)}
+.pill-purple{border-color:#c4a8e8;color:var(--purple);background:var(--purple-light)}
 .s-actions{margin-left:auto;display:flex;gap:8px}
 .action-btn{padding:7px 14px;border-radius:var(--rsm);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;cursor:pointer;transition:all 0.15s;border:1px solid}
 .btn-ai{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
@@ -156,14 +160,14 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .btn-export{background:var(--surface2);border-color:var(--border2);color:var(--text2)}
 .btn-export:hover{background:var(--surface3)}
 
-/* Tabs */
-.tabs-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex}
+.tabs-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;overflow-x:auto}
 .tab{padding:13px 16px;font-size:13px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;display:flex;align-items:center;gap:6px}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
 .tab-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:99px;font-size:10px;font-weight:600;background:var(--surface2);color:var(--text3)}
 .tab-count.red{background:var(--red-dim);color:var(--red)}
 .tab-count.yellow{background:var(--yellow-dim);color:var(--yellow)}
+.tab-count.purple{background:var(--purple-light);color:var(--purple)}
 
 .tab-panels{flex:1;padding:24px;overflow-y:auto}
 .tab-panel{display:none}
@@ -171,12 +175,12 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .panel-heading{font-family:'Lora',serif;font-size:16px;font-weight:600;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border);display:flex;align-items:baseline;gap:10px}
 .ph-sub{font-family:'DM Sans',sans-serif;font-size:12px;font-weight:400;color:var(--text3)}
 
-/* Entry cards */
 .entry-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--border2);border-radius:var(--r);padding:14px 16px;margin-bottom:10px;transition:box-shadow 0.15s}
 .entry-card:hover{box-shadow:var(--shadow)}
 .entry-card.ok{border-left-color:var(--green)}
 .entry-card.warn{border-left-color:var(--yellow)}
 .entry-card.bad{border-left-color:var(--red)}
+.entry-card.info{border-left-color:var(--purple)}
 .entry-hdr{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;flex-wrap:wrap}
 .key-badge{font-size:11px;font-weight:700;padding:3px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text2);white-space:nowrap;flex-shrink:0}
 .entry-ttl{flex:1;font-size:13px;font-weight:500;color:var(--text);font-style:italic;line-height:1.4}
@@ -188,14 +192,16 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .issue-item::before{content:'⚠';flex-shrink:0}
 .raw-txt{margin-top:8px;font-size:11px;color:var(--text3);background:var(--bg);border-radius:4px;padding:6px 10px;line-height:1.5;font-style:italic}
 
-/* Status badges */
+/* Version note — NEW v6 */
+.version-note{margin-top:8px;font-size:12px;color:var(--purple);background:var(--purple-light);border:1px solid #c4a8e8;border-radius:4px;padding:6px 10px;display:flex;align-items:flex-start;gap:6px}
+.version-note::before{content:'ℹ';flex-shrink:0}
+
 .status-badge{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;flex-shrink:0}
 .st-verified{background:var(--green-light);color:var(--green)}
 .st-partial_match,.st-partial{background:var(--yellow-light);color:var(--yellow)}
 .st-not_found{background:var(--red-light);color:var(--red)}
 .st-error{background:var(--surface2);color:var(--text3)}
 
-/* Conf bar */
 .conf-wrap{margin-top:10px}
 .conf-lbl{font-size:11px;color:var(--text3);margin-bottom:4px;display:flex;justify-content:space-between}
 .conf-bar{height:4px;background:var(--surface2);border-radius:99px;overflow:hidden}
@@ -204,18 +210,22 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .conf-fill.md{background:var(--yellow)}
 .conf-fill.lo{background:var(--red)}
 
-/* Source badges */
 .sources-row{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
 .src-badge{font-size:10px;font-weight:500;padding:2px 7px;border-radius:4px;border:1px solid}
+/* arXiv BibTeX badge — NEW v6 */
+.src-arxiv-versioned{border-color:var(--teal)!important;color:var(--teal)!important;font-weight:700!important}
 
-/* OA link */
 .oa-link{display:inline-flex;align-items:center;gap:4px;color:var(--teal);font-size:12px;text-decoration:none;margin-top:6px;font-weight:500}
 .oa-link:hover{text-decoration:underline}
 
-/* Verif summary */
 .verif-sum{display:flex;gap:16px;flex-wrap:wrap;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:16px;font-size:12px;font-weight:500}
 
-/* Cross-check */
+/* arXiv version notes banner — NEW v6 */
+.arxiv-version-banner{background:var(--purple-light);border:1px solid #c4a8e8;border-radius:var(--r);padding:12px 16px;margin-bottom:16px}
+.arxiv-version-banner-title{font-size:12px;font-weight:600;color:var(--purple);margin-bottom:8px}
+.arxiv-version-item{font-size:12px;color:var(--text2);padding:4px 0;border-top:1px solid rgba(92,61,143,0.1)}
+.arxiv-version-item:first-of-type{border-top:none}
+
 .xsec{margin-bottom:24px}
 .xsec-hd{font-size:12px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;padding:8px 12px;border-radius:var(--rsm);margin-bottom:10px;display:flex;align-items:center;gap:8px}
 .xsec-hd.ok{background:var(--green-light);color:var(--green)}
@@ -229,15 +239,12 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .kpill.warn{border-color:#e9c76e;color:var(--yellow);background:var(--yellow-light)}
 .ctx-snip{margin-top:6px;padding:8px 12px;background:var(--surface2);border-radius:var(--rsm);font-size:12px;color:var(--text2);font-style:italic;line-height:1.6;border-left:3px solid var(--border2);display:none}
 
-/* Dupes */
 .dupe-pair{display:flex;flex-direction:column;gap:4px;margin-top:8px}
 .dupe-entry{font-size:12px;color:var(--text2);padding:6px 10px;background:var(--bg);border-radius:4px}
 
-/* Empty section */
 .empty-sec{text-align:center;padding:32px 20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);color:var(--text3);font-size:13px}
 .empty-sec-icon{font-size:28px;display:block;margin-bottom:8px}
 
-/* Batch */
 .batch-results{display:none;flex-direction:column;min-height:100%}
 .batch-results.show{display:flex}
 .batch-sum{background:var(--surface);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -253,7 +260,6 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 .grade-C{background:var(--yellow-light);color:var(--yellow)}
 .grade-D,.grade-F{background:var(--red-light);color:var(--red)}
 
-/* Modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:1000;display:flex;align-items:center;justify-content:center;padding:32px;animation:fadeIn 0.15s ease}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .modal{background:var(--surface);border-radius:var(--rlg);max-width:680px;width:100%;max-height:82vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.12);animation:slideUp 0.2s ease}
@@ -277,7 +283,11 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
   <div class="logo">LNI <span>Reference</span> Checker</div>
   <div class="logo-div"></div>
   <div class="logo-sub">GI Lecture Notes in Informatics — Citation Validator</div>
-  <div class="hbadges"><span class="hbadge">PDF</span><span class="hbadge">DOCX</span><span class="hbadge">LaTeX</span></div>
+  <div class="hbadges">
+    <span id="cacheStatus" title="Session cache: LLM responses and arXiv BibTeX cached in memory">⚡ Cache warm</span>
+    <span class="hbadge">v6</span>
+    <span class="hbadge">PDF</span><span class="hbadge">DOCX</span><span class="hbadge">LaTeX</span>
+  </div>
 </header>
 <main>
   <div class="sidebar">
@@ -319,7 +329,7 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
     </div>
     <div class="options">
       <div class="opt-row">
-        <div><div class="opt-lbl">Verify references online</div><div class="opt-hint">CrossRef · Semantic Scholar · arXiv · more</div></div>
+        <div><div class="opt-lbl">Verify references online</div><div class="opt-hint">CrossRef · S2 · OpenAlex · arXiv BibTeX · DBLP</div></div>
         <button class="toggle on" id="verifyToggle"></button>
       </div>
     </div>
@@ -342,14 +352,22 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
         </div>
       </div>
     </div>
+
     <div class="loading" id="loadingState">
       <div class="spinner"></div>
-      <div class="ld-text">Analysing submission…</div>
-      <div class="ld-sub" id="loadingStep">Extracting text…</div>
+      <div class="ld-text" id="loadingTitle">Analysing submission…</div>
+      <div class="ld-sub" id="loadingStep">Starting…</div>
+      <div class="ld-prog-wrap" id="ldProgWrap" style="display:none">
+        <div class="ld-prog-bar"><div class="ld-prog-fill" id="ldProgFill"></div></div>
+        <div class="ld-prog-lbl" id="ldProgLbl"></div>
+      </div>
+      <div class="ld-log" id="ldLog"></div>
     </div>
+
     <div class="error-state" id="errorState">
       <div class="error-card"><div class="error-title">Something went wrong</div><div class="error-msg" id="errorMsg"></div></div>
     </div>
+
     <div class="results" id="resultsPanel">
       <div class="summary-bar" id="summaryBar"></div>
       <div class="tabs-bar">
@@ -369,7 +387,7 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
           <div id="xcheckContent"></div>
         </div>
         <div class="tab-panel" id="tab-verify">
-          <div class="panel-heading">Reference Verification <span class="ph-sub">CrossRef · Semantic Scholar · OpenAlex · arXiv · Google Scholar · Web</span></div>
+          <div class="panel-heading">Reference Verification <span class="ph-sub">CrossRef · Semantic Scholar · OpenAlex · arXiv BibTeX (versioned) · DBLP · ACL · Web</span></div>
           <div id="verifyList"></div>
         </div>
         <div class="tab-panel" id="tab-style">
@@ -382,11 +400,12 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
         </div>
       </div>
     </div>
+
     <div class="batch-results" id="batchResultsPanel">
       <div class="batch-sum" id="batchSummaryBar"></div>
       <div class="btw">
         <table class="bt">
-          <thead><tr><th>#</th><th>File</th><th>Score</th><th>Grade</th><th>Entries</th><th>Missing</th><th>Uncited</th><th>Incomplete</th><th>Fake</th><th>Dupes</th></tr></thead>
+          <thead><tr><th>#</th><th>File</th><th>Score</th><th>Grade</th><th>Entries</th><th>Missing</th><th>Uncited</th><th>Incomplete</th><th>Fake</th><th>arXiv ver.</th></tr></thead>
           <tbody id="batchTableBody"></tbody>
         </table>
       </div>
@@ -401,6 +420,7 @@ const dropZone=$('dropZone'),fileInput=$('fileInput'),bibInput=$('bibInput'),fil
       bibRow=$('bibRow'),bibName=$('bibName'),runBtn=$('runBtn'),batchRunBtn=$('batchRunBtn'),
       verifyToggle=$('verifyToggle'),batchInput=$('batchInput'),batchFileList=$('batchFileList');
 
+// ── Mode switching ──────────────────────────────────────────────────────────
 $('modeSingle').addEventListener('click',()=>{
   isBatchMode=false;$('modeSingle').classList.add('active');$('modeBatch').classList.remove('active');
   $('singleMode').style.display='';$('batchMode').style.display='none';
@@ -412,6 +432,7 @@ $('modeBatch').addEventListener('click',()=>{
   runBtn.style.display='none';batchRunBtn.style.display='';showState('empty');
 });
 
+// ── File handling ───────────────────────────────────────────────────────────
 fileInput.addEventListener('change',e=>{if(e.target.files[0])setFile(e.target.files[0]);});
 bibInput.addEventListener('change',e=>{if(e.target.files[0]){selectedBib=e.target.files[0];bibName.textContent='📗 '+selectedBib.name;}});
 dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('drag');});
@@ -437,48 +458,194 @@ batchInput.addEventListener('change',e=>{
   batchRunBtn.disabled=selectedBatch.length===0;
 });
 
-batchRunBtn.addEventListener('click',async()=>{
-  if(!selectedBatch.length)return;showState('loading');$('loadingStep').textContent=`Checking ${selectedBatch.length} file${selectedBatch.length>1?'s':''}…`;
-  try{const form=new FormData();selectedBatch.forEach(f=>form.append('files',f));form.append('verify',verifyOn?'true':'false');
-    const resp=await fetch('/batch',{method:'POST',body:form});const data=await resp.json();
-    if(data.error){showError(data.error);return;}renderBatchResults(data);showState('batch');}
-  catch(err){showError(err.message);}
-});
-
-function renderBatchResults(data){
-  const files=data.files||[];const avg=files.length?Math.round(files.reduce((s,f)=>s+(f.score?.score||0),0)/files.length):0;
-  const gc=avg>=75?'pill-green':avg>=60?'pill-yellow':'pill-red';
-  $('batchSummaryBar').innerHTML=`<div class="batch-title">Batch Results</div>
-    <span class="stat-pill pill-blue"><span class="num">${files.length}</span> submissions</span>
-    <span class="stat-pill ${gc}"><span class="num">${avg}</span>/100 avg</span>
-    <span class="stat-pill pill-green"><span class="num">${files.filter(f=>f.score?.grade==='A').length}</span> A grade</span>
-    <span class="stat-pill pill-red"><span class="num">${files.filter(f=>f.score?.grade==='F').length}</span> F grade</span>`;
-  $('batchTableBody').innerHTML=files.map((f,i)=>{
-    if(f.error)return`<tr><td style="color:var(--text3)">${i+1}</td><td>${esc(f.filename)}</td><td colspan="8" style="color:var(--red)">Error: ${esc(f.error)}</td></tr>`;
-    const sc=f.score||{},sm=f.summary||{},g=sc.grade||'—';
-    const cell=(v,c)=>v>0?`<td style="font-weight:600;color:var(--${c})">${v}</td>`:`<td style="color:var(--text3)">0</td>`;
-    return`<tr><td style="color:var(--text3)">${i+1}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500" title="${esc(f.filename)}">${esc(f.filename)}</td><td><strong>${sc.score??'—'}</strong></td><td><span class="grade-pill grade-${g}">${g}</span></td><td>${sm.bib_entry_count??'—'}</td>${cell(sm.missing_from_bib||0,'red')}${cell(sm.uncited_entries||0,'yellow')}${cell(sm.incomplete_entries||0,'yellow')}${cell(sm.fake_candidates||0,'red')}${cell(sm.duplicates||0,'red')}</tr>`;
-  }).join('');
-}
-
 verifyToggle.addEventListener('click',()=>{verifyOn=!verifyOn;verifyToggle.classList.toggle('on',verifyOn);});
 
+// ── Tabs ────────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   tab.classList.add('active');$('tab-'+tab.dataset.tab).classList.add('active');
 }));
 
-runBtn.addEventListener('click',async()=>{
-  if(!selectedFile)return;showState('loading');
-  const steps=['Extracting text…','Parsing bibliography…','Cross-checking citations…',verifyOn?'Verifying references online…':'Compiling results…'];
-  let si=0;const iv=setInterval(()=>{si=(si+1)%steps.length;$('loadingStep').textContent=steps[si];},1800);
-  try{const form=new FormData();form.append('file',selectedFile);if(selectedBib)form.append('bib',selectedBib);form.append('verify',verifyOn?'true':'false');
-    const resp=await fetch('/check',{method:'POST',body:form});const data=await resp.json();
-    clearInterval(iv);if(data.error){showError(data.error);}else{renderResults(data);showState('results');}}
-  catch(err){clearInterval(iv);showError(err.message);}
+// ── Cache status (NEW v6) ───────────────────────────────────────────────────
+async function refreshCacheStatus(){
+  try{
+    const r=await fetch('/status');
+    if(!r.ok)return;
+    const d=await r.json();
+    const llm=d.cache?.llm_response_cache_entries||0;
+    const arxiv=d.cache?.arxiv_bibtex_cache_entries||0;
+    const vr=d.cache?.verification_result_cache_entries||0;
+    const total=llm+arxiv+vr;
+    const el=$('cacheStatus');
+    if(total>0){
+      el.style.display='';
+      el.classList.add('warm');
+      el.title=`Session cache: ${llm} LLM responses, ${arxiv} arXiv BibTeX, ${vr} verification results`;
+      el.textContent=`⚡ ${total} cached`;
+    } else {
+      el.style.display='none';
+      el.classList.remove('warm');
+    }
+  }catch(e){}
+}
+refreshCacheStatus();
+
+// ── SSE streaming run (NEW v6) ──────────────────────────────────────────────
+runBtn.addEventListener('click',()=>{
+  if(!selectedFile)return;
+  showState('loading');
+  resetProgress();
+
+  const form=new FormData();
+  form.append('file',selectedFile);
+  if(selectedBib)form.append('bib',selectedBib);
+  form.append('verify',verifyOn?'true':'false');
+  form.append('stream','true');
+
+  fetch('/check',{method:'POST',body:form})
+    .then(resp=>{
+      if(!resp.ok)return resp.json().then(d=>{throw new Error(d.error||'Server error');});
+      const reader=resp.body.getReader();
+      const decoder=new TextDecoder();
+      let buf='';
+
+      function pump(){
+        reader.read().then(({done,value})=>{
+          if(done){return;}
+          buf+=decoder.decode(value,{stream:true});
+          const parts=buf.split('\n\n');
+          buf=parts.pop();
+          for(const part of parts){
+            if(!part.trim())continue;
+            const lines=part.split('\n');
+            let eventType='message',dataStr='';
+            for(const ln of lines){
+              if(ln.startsWith('event: '))eventType=ln.slice(7).trim();
+              else if(ln.startsWith('data: '))dataStr=ln.slice(6);
+            }
+            try{
+              const payload=JSON.parse(dataStr);
+              handleSseEvent(eventType,payload);
+            }catch(e){}
+          }
+          pump();
+        }).catch(err=>showError(err.message));
+      }
+      pump();
+    })
+    .catch(err=>showError(err.message));
 });
 
+let _progressTotal=0,_progressDone=0;
+
+function resetProgress(){
+  _progressTotal=0;_progressDone=0;
+  $('ldLog').innerHTML='';
+  $('ldProgWrap').style.display='none';
+  $('ldProgFill').style.width='0';
+  $('ldProgLbl').textContent='';
+  $('loadingTitle').textContent='Analysing submission…';
+  $('loadingStep').textContent='Starting…';
+}
+
+function handleSseEvent(eventType,payload){
+  if(eventType==='progress'){
+    const step=payload.step||'';
+    const msg=payload.message||'';
+    $('loadingStep').textContent=msg;
+
+    if(step==='verify'&&payload.total){
+      _progressTotal=payload.total;
+      _progressDone=payload.done||0;
+      $('ldProgWrap').style.display='';
+      const pct=Math.round((_progressDone/_progressTotal)*100);
+      $('ldProgFill').style.width=pct+'%';
+      $('ldProgLbl').textContent=`${_progressDone} / ${_progressTotal} references verified`;
+      $('loadingTitle').textContent='Verifying references…';
+      // Add to log
+      addProgressLog(msg,step==='verify'?'verif':'');
+    } else {
+      $('loadingTitle').textContent=_STEP_LABELS[step]||'Processing…';
+      addProgressLog(msg,'');
+    }
+  } else if(eventType==='done'){
+    refreshCacheStatus();
+    renderResults(payload);
+    showState('results');
+  } else if(eventType==='error'){
+    showError(payload.error+(payload.trace?'\n\n'+payload.trace.split('\n').slice(-3).join('\n'):''));
+  }
+}
+
+const _STEP_LABELS={
+  extract:'Extracting document text…',
+  ai_extract:'AI parsing bibliography…',
+  parse:'Parsing bibliography entries…',
+  check:'Running deterministic checks…',
+  verify:'Verifying references online…',
+  ai_verify:'AI hallucination check…',
+  ai_verdict:'Generating AI verdict…',
+};
+
+function addProgressLog(msg,cls){
+  const el=$('ldLog');
+  const item=document.createElement('div');
+  item.className='ld-log-item'+(cls?' '+cls:'');
+  item.textContent=msg;
+  el.prepend(item);
+  // Keep max 12 items
+  while(el.children.length>12)el.removeChild(el.lastChild);
+}
+
+// ── Batch ───────────────────────────────────────────────────────────────────
+batchRunBtn.addEventListener('click',async()=>{
+  if(!selectedBatch.length)return;showState('loading');resetProgress();
+  $('loadingStep').textContent=`Checking ${selectedBatch.length} file${selectedBatch.length>1?'s':''}…`;
+  try{
+    const form=new FormData();
+    selectedBatch.forEach(f=>form.append('files',f));
+    form.append('verify',verifyOn?'true':'false');
+    const resp=await fetch('/batch',{method:'POST',body:form});
+    const data=await resp.json();
+    if(data.error){showError(data.error);return;}
+    refreshCacheStatus();
+    renderBatchResults(data);showState('batch');
+  }catch(err){showError(err.message);}
+});
+
+function renderBatchResults(data){
+  const files=data.files||[];
+  const avg=files.length?Math.round(files.reduce((s,f)=>s+(f.score?.score||0),0)/files.length):0;
+  const gc=avg>=75?'pill-green':avg>=60?'pill-yellow':'pill-red';
+  const totalVN=files.reduce((s,f)=>(s+(f.arxiv_version_notes||[]).length),0);
+  $('batchSummaryBar').innerHTML=`<div class="batch-title">Batch Results</div>
+    <span class="stat-pill pill-blue"><span class="num">${files.length}</span> submissions</span>
+    <span class="stat-pill ${gc}"><span class="num">${avg}</span>/100 avg</span>
+    <span class="stat-pill pill-green"><span class="num">${files.filter(f=>f.score?.grade==='A').length}</span> A grade</span>
+    <span class="stat-pill pill-red"><span class="num">${files.filter(f=>f.score?.grade==='F').length}</span> F grade</span>
+    ${totalVN>0?`<span class="stat-pill pill-purple"><span class="num">${totalVN}</span> arXiv version notes</span>`:''}`;
+  $('batchTableBody').innerHTML=files.map((f,i)=>{
+    if(f.error)return`<tr><td style="color:var(--text3)">${i+1}</td><td>${esc(f.filename)}</td><td colspan="9" style="color:var(--red)">Error: ${esc(f.error)}</td></tr>`;
+    const sc=f.score||{},sm=f.summary||{},g=sc.grade||'—';
+    const cell=(v,c)=>v>0?`<td style="font-weight:600;color:var(--${c})">${v}</td>`:`<td style="color:var(--text3)">0</td>`;
+    const vn=(f.arxiv_version_notes||[]).length;
+    return`<tr>
+      <td style="color:var(--text3)">${i+1}</td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500" title="${esc(f.filename)}">${esc(f.filename)}</td>
+      <td><strong>${sc.score??'—'}</strong></td>
+      <td><span class="grade-pill grade-${g}">${g}</span></td>
+      <td>${sm.bib_entry_count??'—'}</td>
+      ${cell(sm.missing_from_bib||0,'red')}
+      ${cell(sm.uncited_entries||0,'yellow')}
+      ${cell(sm.incomplete_entries||0,'yellow')}
+      ${cell(sm.fake_candidates||0,'red')}
+      ${vn>0?`<td style="color:var(--purple);font-weight:500">${vn}</td>`:`<td style="color:var(--text3)">0</td>`}
+    </tr>`;
+  }).join('');
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 function showState(s){
   $('emptyState').style.display=s==='empty'?'flex':'none';
   $('loadingState').classList.toggle('show',s==='loading');
@@ -489,30 +656,26 @@ function showState(s){
 function showError(msg){$('errorMsg').textContent=msg;showState('error');}
 function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-function renderFeedback(data){
-  const sc=data.score||{};
-  if(!sc.student_feedback||!sc.student_feedback.length)return;
-  const existing=$('feedbackPanel');
-  if(existing)existing.remove();
-  const panel=document.createElement('div');
-  panel.id='feedbackPanel';
-  panel.style.cssText='margin:0 24px 16px;background:var(--blue-light);border:1px solid var(--blue);border-radius:var(--r);padding:14px 16px;';
-  const pfNote=sc.professor_note?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--text3)"><strong>For professor:</strong> ${esc(sc.professor_note)}</div>`:'';
-  panel.innerHTML=`<div style="font-size:12px;font-weight:600;color:var(--blue);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.8px">AI Feedback for Student</div>`
-    +sc.student_feedback.map(f=>`<div style="font-size:13px;color:var(--text2);margin-bottom:4px">• ${esc(f)}</div>`).join('')
-    +pfNote;
-  $('resultsPanel').prepend(panel);
-}
-
+// ── Render full results ──────────────────────────────────────────────────────
 function renderResults(data){
-  _lastCheckData=data;renderSummary(data);renderFeedback(data);renderBib(data.bibliography||[]);renderXCheck(data.cross_check||{},data.citation_contexts||{});
-  renderVerify(data.verification||[]);renderStyleSuggestions(data.style_suggestions||[]);renderDuplicates(data.duplicates||[]);renderSelfCitations(data.self_citations||[]);
+  _lastCheckData=data;
+  renderSummary(data);
+  renderFeedback(data);
+  renderBib(data.bibliography||[]);
+  renderXCheck(data.cross_check||{},data.citation_contexts||{});
+  renderVerify(data.verification||[],data.arxiv_version_notes||[]);
+  renderStyleSuggestions(data.style_suggestions||[]);
+  renderDuplicates(data.duplicates||[]);
+  renderSelfCitations(data.self_citations||[]);
+
   const xIss=(data.cross_check?.cited_not_in_bib?.length||0)+(data.cross_check?.in_bib_not_cited?.length||0);
   const vIss=(data.verification||[]).filter(v=>v.status==='not_found').length;
   const sc2=(data.style_suggestions||[]).length,dc=(data.duplicates||[]).length;
+  const vnCount=(data.arxiv_version_notes||[]).length;
+
   $('badgeBib').textContent=(data.bibliography||[]).length;
   $('badgeX').textContent=xIss;$('badgeX').className='tab-count'+(xIss>0?' red':'');
-  $('badgeV').textContent=(data.verification||[]).length;$('badgeV').className='tab-count'+(vIss>0?' red':'');
+  $('badgeV').textContent=(data.verification||[]).length;$('badgeV').className='tab-count'+(vIss>0?' red':vnCount>0?' purple':'');
   $('badgeStyle').textContent=sc2;$('badgeStyle').className='tab-count'+(sc2>0?' yellow':'');
   $('badgeDupes').textContent=dc;$('badgeDupes').className='tab-count'+(dc>0?' red':'');
 }
@@ -522,6 +685,7 @@ function renderSummary(data){
   const ti=(s.missing_from_bib||0)+(s.uncited_entries||0)+(s.incomplete_entries||0)+(s.fake_candidates||0)+(s.duplicates||0);
   const gm={A:'pill-green',B:'pill-teal',C:'pill-yellow',D:'pill-red',F:'pill-red'};
   const vm={'PASS':'pill-green','FLAG':'pill-yellow','FAIL':'pill-red'};
+  const vnCount=(data.arxiv_version_notes||[]).length;
   $('summaryBar').innerHTML=`
     <span class="file-name">${esc(data.filename)}</span>
     <span class="file-fmt fmt-${(data.format||'').toLowerCase()}">${esc(data.format)}</span>
@@ -532,6 +696,7 @@ function renderSummary(data){
     ${s.incomplete_entries>0?`<span class="stat-pill pill-yellow"><span class="num">${s.incomplete_entries}</span> incomplete</span>`:''}
     ${(s.fake_candidates||0)>0?`<span class="stat-pill pill-red"><span class="num">${s.fake_candidates}</span> FAKE</span>`:''}
     ${(s.suspicious||0)>0?`<span class="stat-pill pill-yellow"><span class="num">${s.suspicious}</span> suspicious</span>`:''}
+    ${vnCount>0?`<span class="stat-pill pill-purple" title="These arXiv papers are real — student cited older versions">ℹ ${vnCount} arXiv version note${vnCount!==1?'s':''}</span>`:''}
     ${s.open_access>0?`<span class="stat-pill pill-teal"><span class="num">${s.open_access}</span> open access</span>`:''}
     ${sc.verdict_reason?`<span class="stat-pill" style="background:var(--surface2);color:var(--text3);font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(sc.verdict_reason)}">${esc(sc.verdict_reason)}</span>`:''}
     <div class="s-actions">
@@ -540,11 +705,27 @@ function renderSummary(data){
     </div>`;
 }
 
+function renderFeedback(data){
+  const sc=data.score||{};
+  if(!sc.student_feedback||!sc.student_feedback.length)return;
+  const existing=$('feedbackPanel');if(existing)existing.remove();
+  const panel=document.createElement('div');
+  panel.id='feedbackPanel';
+  panel.style.cssText='margin:0 24px 16px;background:var(--blue-light);border:1px solid var(--blue);border-radius:var(--r);padding:14px 16px;';
+  const pfNote=sc.professor_note?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--text3)"><strong>For professor:</strong> ${esc(sc.professor_note)}</div>`:'';
+  panel.innerHTML=`<div style="font-size:12px;font-weight:600;color:var(--blue);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.8px">AI Feedback for Student</div>`
+    +sc.student_feedback.map(f=>`<div style="font-size:13px;color:var(--text2);margin-bottom:4px">• ${esc(f)}</div>`).join('')
+    +pfNote;
+  $('resultsPanel').prepend(panel);
+}
+
 function renderBib(bib){
   const el=$('bibList');
   if(!bib.length){el.innerHTML='<div class="empty-sec"><span class="empty-sec-icon">📚</span>No bibliography entries found. Check that the document contains a "Literaturverzeichnis" or "References" section.</div>';return;}
   el.innerHTML=bib.map(e=>{
     const hi=e.completeness_issues&&e.completeness_issues.length>0;
+    const keyErr=e.key_consistent===false;
+    const cls=keyErr?'bad':hi?'warn':'ok';
     const meta=[
       e.authors?`<span class="mi">👤 ${esc(e.authors)}</span>`:'',
       e.year?`<span class="mi">📅 ${esc(e.year)}</span>`:'',
@@ -554,8 +735,9 @@ function renderBib(bib){
       e.url?`<span class="mi">🔗 <a href="${esc(e.url)}" target="_blank" class="oa-link">${esc(e.url.length>40?e.url.slice(0,40)+'…':e.url)}</a></span>`:'',
     ].filter(Boolean).join('');
     const issues=(e.completeness_issues||[]).map(i=>`<div class="issue-item">${esc(i)}</div>`).join('');
-    return`<div class="entry-card ${hi?'warn':'ok'}">
-      <div class="entry-hdr"><span class="key-badge">${esc(e.key)}</span><span class="entry-ttl">${esc(e.title||'(title not parsed)')}</span><span class="type-badge">${esc(e.type||'unknown')}</span></div>
+    const reparsed=e.ai_reparsed?`<span class="type-badge" style="background:var(--accent-light);color:var(--accent)">AI-reparsed</span>`:'';
+    return`<div class="entry-card ${cls}">
+      <div class="entry-hdr"><span class="key-badge">${esc(e.key)}</span><span class="entry-ttl">${esc(e.title||'(title not parsed)')}</span><span class="type-badge">${esc(e.type||'unknown')}</span>${reparsed}</div>
       ${meta?`<div class="entry-meta">${meta}</div>`:''}
       ${issues?`<div class="issue-list">${issues}</div>`:''}
       <div class="raw-txt">${esc(e.raw||'')}</div>
@@ -576,32 +758,67 @@ function renderXCheck(x,contexts){
       ${unc.length?`<div class="key-pills">${unc.map(k=>`<span class="kpill warn">${esc(k)}</span>`).join('')}</div>`:`<div class="empty-sec" style="padding:16px;text-align:left;color:var(--green)">✓ All bibliography entries are cited.</div>`}</div>`;
 }
 
-function renderVerify(verif){
+// Source colour map — NEW v6: arXiv BibTeX gets its own highlight
+const _SRC_COLORS={
+  'CrossRef':'var(--blue)','CrossRef (DOI)':'var(--blue)',
+  'Semantic Scholar':'var(--teal)','OpenAlex':'var(--green)',
+  'arXiv BibTeX (versioned)':'var(--teal)',  // NEW v6
+  'arXiv':'var(--teal)',
+  'DBLP':'var(--blue)','ACL Anthology':'var(--green)',
+  'OpenReview':'var(--accent)','Open Library':'var(--blue)',
+  'GitHub API':'var(--text2)','Google Scholar':'var(--yellow)',
+  'Web (DDG)':'var(--text3)','URL check':'var(--blue)',
+};
+
+function renderVerify(verif,versionNotes){
   const el=$('verifyList');
   if(!verif.length){el.innerHTML='<div class="empty-sec"><span class="empty-sec-icon">🔍</span>Verification skipped or no entries to verify.</div>';return;}
+
   const vReal=verif.filter(v=>v.ai_verdict==='REAL').length;
   const vSusp=verif.filter(v=>v.ai_verdict==='SUSPICIOUS').length;
   const vFake=verif.filter(v=>v.ai_verdict==='FAKE').length;
-  const vf=verif.filter(v=>v.status==='verified').length,pm=verif.filter(v=>v.status==='partial_match').length,nf=verif.filter(v=>v.status==='not_found').length;
-  const sc={'CrossRef':'var(--blue)','CrossRef (DOI)':'var(--blue)','Semantic Scholar':'var(--teal)','OpenAlex':'var(--green)','arXiv':'var(--teal)','Google Scholar':'var(--yellow)','Web (DDG)':'var(--text3)','URL check':'var(--blue)'};
-  const aiSum=_lastCheckData&&_lastCheckData.verification_ai_summary?`<div style="margin:8px 0 12px;font-size:12px;color:var(--text3);font-style:italic">${esc(_lastCheckData.verification_ai_summary)}</div>`:'';
+  const aiSum=_lastCheckData&&_lastCheckData.verification_ai_summary?
+    `<div style="margin:8px 0 12px;font-size:12px;color:var(--text3);font-style:italic">${esc(_lastCheckData.verification_ai_summary)}</div>`:'';
+
+  // arXiv version notes banner (NEW v6)
+  let versionBanner='';
+  if(versionNotes&&versionNotes.length>0){
+    versionBanner=`<div class="arxiv-version-banner">
+      <div class="arxiv-version-banner-title">ℹ arXiv version notes — papers are REAL, student cited older versions</div>
+      ${versionNotes.map(vn=>`<div class="arxiv-version-item"><strong>[${esc(vn.key)}]</strong> ${esc(vn.note)}</div>`).join('')}
+    </div>`;
+  }
+
   el.innerHTML=`<div class="verif-sum">
     <span style="color:var(--green)">✔ ${vReal} REAL</span>
     <span style="color:var(--yellow)">? ${vSusp} SUSPICIOUS</span>
     <span style="color:var(--red)">✘ ${vFake} FAKE</span>
-    <span style="margin-left:auto;color:var(--text3);font-size:11px">AI verdict (Groq/Gemini) · APIs: CrossRef · SemanticScholar · OpenAlex · arXiv</span>
-  </div>${aiSum}`+verif.map(v=>{
+    <span style="margin-left:auto;color:var(--text3);font-size:11px">AI verdict · CrossRef · S2 · OpenAlex · arXiv BibTeX · DBLP · ACL · Web</span>
+  </div>${aiSum}${versionBanner}`+verif.map(v=>{
     const av=v.ai_verdict||'SUSPICIOUS';
     const cls=av==='REAL'?'ok':av==='FAKE'?'bad':'warn';
     const avColor=av==='REAL'?'var(--green)':av==='FAKE'?'var(--red)':'var(--yellow)';
     const avBg=av==='REAL'?'var(--green-light)':av==='FAKE'?'var(--red-light)':'var(--yellow-light)';
     const pct=Math.round(v.confidence*100),fc=v.confidence>=0.75?'hi':v.confidence>=0.4?'md':'lo';
-    const sb=(v.sources_checked||[]).map(s=>{const c=sc[s]||'var(--text3)';return`<span class="src-badge" style="border-color:${c};color:${c}">${esc(s)}</span>`;}).join('');
+    const hasVersioned=(v.sources_checked||[]).some(s=>s.includes('versioned'));
+    const sb=(v.sources_checked||[]).map(s=>{
+      const c=_SRC_COLORS[s]||'var(--text3)';
+      const extra=s.includes('versioned')?' src-arxiv-versioned':'';
+      return`<span class="src-badge${extra}" style="border-color:${c};color:${c}">${esc(s)}</span>`;
+    }).join('');
     const risks=(v.ai_risk_factors||[]).map(r=>`<div class="issue-item">${esc(r)}</div>`).join('');
-    return`<div class="entry-card ${cls}">
-      <div class="entry-hdr"><span class="key-badge">${esc(v.key)}</span><span class="entry-ttl">${esc(v.title||'—')}</span><span class="status-badge" style="background:${avBg};color:${avColor};border-color:${avColor}">${av}</span></div>
+    // Version note (NEW v6) — purple info box
+    const versionNoteHtml=v.version_note?`<div class="version-note">${esc(v.version_note)}</div>`:'';
+    return`<div class="entry-card ${cls}${v.version_note?' info':''}">
+      <div class="entry-hdr">
+        <span class="key-badge">${esc(v.key)}</span>
+        <span class="entry-ttl">${esc(v.title||'—')}</span>
+        <span class="status-badge" style="background:${avBg};color:${avColor};border:1px solid ${avColor}">${av}</span>
+        ${hasVersioned?`<span class="type-badge" style="background:var(--purple-light);color:var(--purple)">arXiv versioned</span>`:''}
+      </div>
       ${v.ai_reasoning?`<div class="entry-meta" style="margin-top:4px">🤖 ${esc(v.ai_reasoning)}</div>`:''}
       ${risks?`<div class="issue-list" style="margin-top:4px">${risks}</div>`:''}
+      ${versionNoteHtml}
       ${v.matched_title&&v.matched_title!==v.title?`<div class="entry-meta" style="color:var(--text3)">API matched: <em>${esc(v.matched_title)}</em></div>`:''}
       ${v.doi?`<div class="entry-meta"><span class="mi">DOI: <a href="https://doi.org/${esc(v.doi)}" target="_blank" class="oa-link">${esc(v.doi)}</a></span></div>`:''}
       ${v.web_evidence?`<div class="raw-txt">Web evidence: "${esc(v.web_evidence.substring(0,140))}"</div>`:''}
@@ -638,16 +855,18 @@ function renderSelfCitations(sc){
     ${sc.map(c=>`<div class="entry-card warn"><div class="entry-hdr"><span class="key-badge">${esc(c.key)}</span><span class="entry-ttl">${esc(c.title)}</span><span class="type-badge" style="background:var(--yellow-light);color:var(--yellow)">Self-cite?</span></div><div class="entry-meta">Matched: <strong>${esc(c.matched_author)}</strong></div></div>`).join('')}</div>`;
 }
 
+// ── AI review modal ─────────────────────────────────────────────────────────
 async function runAiReview(){
   const btn=$('aiReviewBtn');if(!_lastCheckData||!btn)return;
   const flagged=(_lastCheckData.verification||[]).filter(v=>['not_found','partial_match','error'].includes(v.status));
   if(!flagged.length&&!(_lastCheckData.duplicates||[]).length){showVerdictModal('AI Verdict','All sources clean','No flagged references. All entries verified.','PASS');return;}
   btn.textContent='⏳ Analysing…';btn.disabled=true;
-  try{const resp=await fetch('/ai-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_lastCheckData)});
+  try{
+    const resp=await fetch('/ai-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_lastCheckData)});
     const data=await resp.json();
     if(data.error){showVerdictModal('AI Verdict — Setup Required','',data.error+'\n\n'+(data.hint||''),'SETUP');return;}
-    showVerdictModal('AI Verdict',data.ai_source||'',data.verdict,null,data.flagged_count);}
-  catch(err){showVerdictModal('AI Verdict','Error',err.message,'ERROR');}
+    showVerdictModal('AI Verdict',data.ai_source||'',data.verdict,null,data.flagged_count);
+  }catch(err){showVerdictModal('AI Verdict','Error',err.message,'ERROR');}
   finally{btn.textContent='🤖 AI Verdict';btn.disabled=false;}
 }
 
@@ -655,18 +874,27 @@ function showVerdictModal(title,source,text,ov,fc){
   const m=text.match(/OVERALL:\s*(PASS|FLAG|FAIL)/i);const v=ov||(m?m[1].toUpperCase():null);
   const vc=v==='PASS'?'var(--green)':v==='FLAG'?'var(--yellow)':v==='FAIL'?'var(--red)':'var(--text3)';
   const vb=v==='PASS'?'var(--green-light)':v==='FLAG'?'var(--yellow-light)':v==='FAIL'?'var(--red-light)':'var(--surface2)';
-  const fmt=esc(text).replace(/\bREAL\b/g,'<strong style="color:var(--green)">REAL</strong>').replace(/\bSUSPICIOUS\b/g,'<strong style="color:var(--yellow)">SUSPICIOUS</strong>').replace(/\bFAKE\b/g,'<strong style="color:var(--red)">FAKE</strong>').replace(/\bPASS\b/g,'<strong style="color:var(--green)">PASS</strong>').replace(/\bFLAG\b/g,'<strong style="color:var(--yellow)">FLAG</strong>').replace(/\bFAIL\b/g,'<strong style="color:var(--red)">FAIL</strong>');
+  const fmt=esc(text)
+    .replace(/\bREAL\b/g,'<strong style="color:var(--green)">REAL</strong>')
+    .replace(/\bSUSPICIOUS\b/g,'<strong style="color:var(--yellow)">SUSPICIOUS</strong>')
+    .replace(/\bFAKE\b/g,'<strong style="color:var(--red)">FAKE</strong>')
+    .replace(/\bPASS\b/g,'<strong style="color:var(--green)">PASS</strong>')
+    .replace(/\bFLAG\b/g,'<strong style="color:var(--yellow)">FLAG</strong>')
+    .replace(/\bFAIL\b/g,'<strong style="color:var(--red)">FAIL</strong>');
   const o=document.createElement('div');o.className='modal-overlay';
   o.innerHTML=`<div class="modal"><div class="modal-hdr"><div class="modal-title">${title}</div>${source?`<span class="modal-src">${esc(source)}</span>`:''} ${v?`<span class="status-badge" style="background:${vb};color:${vc};border:1px solid ${vc}">${v}</span>`:''}<button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>${fc!==undefined?`<div class="modal-sub">${fc} flagged reference${fc!==1?'s':''} analysed</div>`:''}<div class="modal-body">${fmt}</div></div>`;
   document.body.appendChild(o);o.addEventListener('click',e=>{if(e.target===o)o.remove();});
 }
 
+// ── Export ──────────────────────────────────────────────────────────────────
 async function exportReport(){
   if(!_lastCheckData)return;
-  try{const resp=await fetch('/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_lastCheckData)});
-    const blob=await resp.blob();const fname=(_lastCheckData.filename||'report').replace(/\.[^.]+$/,'')+'_lni_report.txt';
-    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fname;a.click();URL.revokeObjectURL(url);}
-  catch(err){alert('Export failed: '+err.message);}
+  try{
+    const resp=await fetch('/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_lastCheckData)});
+    const blob=await resp.blob();
+    const fname=(_lastCheckData.filename||'report').replace(/\.[^.]+$/,'')+'_lni_report.txt';
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fname;a.click();URL.revokeObjectURL(url);
+  }catch(err){alert('Export failed: '+err.message);}
 }
 </script>
 </body>
