@@ -1,3 +1,6 @@
+# LNI Reference Checker v5 — requirements
+# All packages are free/open-source. No paid API subscriptions required.
+
 flask>=3.0.0
 pdfplumber>=0.10.0
 pypdf>=4.0.0
@@ -5,9 +8,23 @@ python-docx>=1.1.0
 requests>=2.31.0
 rapidfuzz>=3.0.0
 
-# AI verdict (free tier — set as env vars):
-#   GROQ_API_KEY   → console.groq.com   (free, llama-3.3-70b, 14400 req/day)
-#   GEMINI_API_KEY → aistudio.google.com (free, Gemini 1.5 Flash, 1500 req/day)
+# ─── Free API keys (set as environment variables) ─────────────────────────────
 #
-# Optional for better open-access links:
-#   UNPAYWALL_EMAIL → your email (required by Unpaywall API polite pool)
+# AI verdict + extraction (pick at least one):
+#   GROQ_API_KEY   → console.groq.com        free tier: llama-3.3-70b, 14 400 req/day
+#   GEMINI_API_KEY → aistudio.google.com     free tier: Gemini 1.5 Flash, 1 500 req/day
+#
+# Semantic Scholar (optional, for higher rate limits):
+#   SEMANTIC_SCHOLAR_API_KEY → semanticscholar.org/product/api   free, no payment needed
+#
+# GitHub (optional, for repo citation verification):
+#   GITHUB_TOKEN → github.com/settings/tokens   free personal access token
+#                  Raises rate limit from 60/hr (anonymous) to 5000/hr
+#
+# Disk cache (optional but recommended for batch mode):
+#   LNI_CACHE_DIR → path to cache directory   (default: .lni_cache in working dir)
+#                   Stores API results on disk; subsequent runs skip network calls
+#
+# Unpaywall open-access links (optional):
+#   UNPAYWALL_EMAIL → your email address   required by Unpaywall polite pool
+# ──────────────────────────────────────────────────────────────────────────────
