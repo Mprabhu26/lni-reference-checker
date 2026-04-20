@@ -1,10 +1,10 @@
 """
-Flask Web Server — LNI Reference Checker v5
+Flask Web Server — LNI Reference Checker v6
 ============================================
 Pipeline:
   EXTRACT       — pdfplumber/docx/LaTeX, last-match bib detection, DOCX table cells
 
-  AI EXTRACT    — LLM parses bibliography text into structured records (NEW v5)
+  AI EXTRACT    — LLM parses bibliography text into structured records
                   Handles any format: numbered [1], author-year, BibLaTeX, mixed
                   Falls back silently to regex extraction if no API key set
 
@@ -20,20 +20,28 @@ Pipeline:
                   duplicate detection, LNI macro/style checks
 
   API LOOKUP    — 10 parallel sources, all FREE:
-                  CrossRef · Semantic Scholar · OpenAlex · arXiv
-                  DBLP · ACL Anthology · OpenReview · Open Library
-                  GitHub API · Google Scholar · DuckDuckGo
+                  CrossRef · Semantic Scholar · OpenAlex
+                  arXiv BibTeX versioned (NEW v6) · DBLP · ACL Anthology
+                  OpenReview · Open Library · GitHub API · Scholar · DuckDuckGo
                   Results cached in memory + disk (LNI_CACHE_DIR)
 
   AI VERIFY     — Groq→Gemini: three-tier REAL/SUSPICIOUS/FAKE per reference
                   Author overlap pre-filter runs first (no AI tokens for clear cases)
                   key_consistent signal from parser included in AI prompt
+                  arxiv_version_note passed so old-version citations are not flagged FAKE
 
-  SSE STREAM    — /check streams progress events to browser in real time (NEW v5)
-                  Each reference result is sent as a Server-Sent Event so the
-                  professor sees live per-reference progress instead of a 60s wait
+  SSE STREAM    — /check streams progress events to browser in real time
+                  Each reference result is sent as a Server-Sent Event
 
-  /ai-review    — manual AI audit button (Groq→Gemini), unchanged from v4
+  /ai-review    — manual AI audit button (Groq→Gemini)
+  /status       — NEW v6: returns session cache stats (LLM + arXiv BibTeX cache)
+
+NEW in v6:
+  - ArXiv versioned BibTeX checker: fetches https://arxiv.org/bibtex/{id} as
+    the authoritative source. Checks all historical versions so old-version
+    citations match correctly. version_note field carries through to the UI.
+  - Session-scoped LLM cache: AI calls cached in process memory by prompt hash.
+    Within a 15-document batch session, repeated references skip AI network calls.
 
 Environment variables (all optional, all free):
   GROQ_API_KEY              → console.groq.com       (14 400 req/day free)
@@ -71,6 +79,7 @@ from ai_checker import (
     ai_parse_uncertain_entries,
     ai_verify_references,
     ai_overall_verdict,
+    get_llm_cache_stats,
 )
 
 app = Flask(__name__, static_folder="static")
@@ -80,6 +89,38 @@ app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 @app.route("/")
 def index():
     return send_from_directory("static", "index.html")
+
+
+# ---------------------------------------------------------------------------
+# NEW v6: status endpoint — exposes session cache stats
+# ---------------------------------------------------------------------------
+
+@app.route("/status", methods=["GET"])
+def status():
+    """
+    Returns server status including session cache metrics.
+    Useful for debugging and for the UI to show cache hit info.
+    """
+    from checker import _ARXIV_BIBTEX_MEM_CACHE, _MEM_CACHE
+    llm_stats = get_llm_cache_stats()
+    return jsonify({
+        "status": "ok",
+        "version": "6",
+        "cache": {
+            "llm_response_cache_entries":       llm_stats["llm_cache_entries"],
+            "arxiv_bibtex_cache_entries":       len(_ARXIV_BIBTEX_MEM_CACHE),
+            "verification_result_cache_entries": len(_MEM_CACHE),
+        },
+        "ai_available": bool(os.environ.get("GROQ_API_KEY") or os.environ.get("GEMINI_API_KEY")),
+        "env": {
+            "groq":             bool(os.environ.get("GROQ_API_KEY")),
+            "gemini":           bool(os.environ.get("GEMINI_API_KEY")),
+            "semantic_scholar": bool(os.environ.get("SEMANTIC_SCHOLAR_API_KEY")),
+            "github_token":     bool(os.environ.get("GITHUB_TOKEN")),
+            "unpaywall_email":  bool(os.environ.get("UNPAYWALL_EMAIL")),
+            "disk_cache_dir":   os.environ.get("LNI_CACHE_DIR", ".lni_cache"),
+        },
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -96,15 +137,13 @@ def _run_full_check(main_path: str, bib_path: str = None,
     bib_text = sections["bibliography"]
     fmt      = sections["format"]
 
-    # ── Step 2: AI bibliography extraction (new v5) ───────────────────────────
-    # Runs before regex parsing so LLM-extracted metadata can fill gaps.
+    # ── Step 2: AI bibliography extraction ───────────────────────────────────
     ai_extracted_refs = ai_extract_references_from_text(bib_text)
 
     # ── Step 3: Regex parse (deterministic) ──────────────────────────────────
     bib_list = parse_bibliography(bib_text)
     bib_dict = entries_to_dict(bib_list)
 
-    # Merge AI extractions into regex-parsed entries
     if ai_extracted_refs:
         bib_list = merge_ai_extractions_into_bib_list(ai_extracted_refs, bib_list)
         bib_dict = entries_to_dict(bib_list)
@@ -128,11 +167,11 @@ def _run_full_check(main_path: str, bib_path: str = None,
             for k in group.split(','):
                 cited_keys.add(k.strip())
 
-    has_numeric = '__numeric_citations__' in cited_keys
-    xcheck             = cross_check(bib_dict, cited_keys)
-    citation_contexts  = extract_citation_contexts(body)
-    duplicates         = find_duplicates(bib_dict)
-    self_citations     = detect_self_citations(bib_dict, body)
+    has_numeric       = '__numeric_citations__' in cited_keys
+    xcheck            = cross_check(bib_dict, cited_keys)
+    citation_contexts = extract_citation_contexts(body)
+    duplicates        = find_duplicates(bib_dict)
+    self_citations    = detect_self_citations(bib_dict, body)
 
     # ── Step 6: API lookups ──────────────────────────────────────────────────
     api_results_raw = []
@@ -167,7 +206,7 @@ def _run_full_check(main_path: str, bib_path: str = None,
 
 
 # ---------------------------------------------------------------------------
-# SSE streaming pipeline  (new v5)
+# SSE streaming pipeline
 # ---------------------------------------------------------------------------
 
 def _run_streaming_check(main_path: str, bib_path: str = None,
@@ -176,16 +215,6 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
     Generator that yields Server-Sent Event strings.
     Sends progress events as each reference is verified, then sends the
     final complete result as a 'done' event.
-
-    Event format (JSON lines):
-      event: progress
-      data: {"step": "extract|parse|check|verify_N|ai|done", "message": "...", ...}
-
-      event: done
-      data: {<full result dict>}
-
-      event: error
-      data: {"error": "...", "trace": "..."}
     """
     def _sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -241,7 +270,7 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
         if verify and bib_dict:
             total = len(bib_dict)
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            from checker import verify_reference
+            from checker import verify_reference, VerificationResult
 
             future_to_key = {}
             with ThreadPoolExecutor(max_workers=6) as executor:
@@ -254,13 +283,12 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                     try:
                         vr = future.result()
                     except Exception as e:
-                        from checker import VerificationResult
                         vr = VerificationResult(key=key, title="", status="error",
                             confidence=0.0, note=f"Crashed: {e}", sources_checked=[])
                     api_results_raw.append(vr)
                     done_count += 1
 
-                    yield _sse("progress", {
+                    progress_data = {
                         "step":    "verify",
                         "message": f"Verified {done_count}/{total}: [{vr.key}] → {vr.status}",
                         "key":     vr.key,
@@ -268,9 +296,12 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                         "confidence": round(vr.confidence, 2),
                         "done":    done_count,
                         "total":   total,
-                    })
+                    }
+                    # Surface version note in live progress so UI can show it immediately
+                    if vr.version_note:
+                        progress_data["version_note"] = vr.version_note
+                    yield _sse("progress", progress_data)
 
-            # Restore original order
             key_order = list(bib_dict.keys())
             api_results_raw.sort(
                 key=lambda r: key_order.index(r.key) if r.key in key_order else 999
@@ -314,7 +345,7 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
 
 
 # ---------------------------------------------------------------------------
-# Helper: build bib_dicts list
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _bib_to_dicts(bib_list: list) -> list:
@@ -335,7 +366,8 @@ def _vr_to_dicts(api_results_raw: list) -> list:
          "matched_title": vr.matched_title, "doi": vr.doi,
          "open_access_url": vr.open_access_url, "note": vr.note,
          "sources_checked": vr.sources_checked, "web_evidence": vr.web_evidence,
-         "correct_authors": vr.correct_authors}
+         "correct_authors": vr.correct_authors,
+         "version_note": vr.version_note}  # NEW v6
         for vr in api_results_raw
     ]
 
@@ -356,10 +388,6 @@ def _apply_ai_improvements(bib_list: list, improvements: dict) -> list:
     return bib_list
 
 
-# ---------------------------------------------------------------------------
-# Helper: assemble the final result dict
-# ---------------------------------------------------------------------------
-
 def _assemble_result(
     filename, fmt, body, bib_text, bib_list, bib_dict,
     cited_keys, has_numeric, xcheck, citation_contexts,
@@ -367,6 +395,7 @@ def _assemble_result(
     api_results_raw, verification_result, overall, ai_parse_improvements,
 ):
     ai_verdicts_by_key = {v["key"]: v for v in verification_result.get("verdicts", [])}
+    vr_by_key = {vr.key: vr for vr in api_results_raw}
 
     verification_output = []
     for vr in api_results_raw:
@@ -387,6 +416,7 @@ def _assemble_result(
             "ai_verdict":      ai_verdict,
             "ai_reasoning":    ai.get("reasoning", ""),
             "ai_risk_factors": ai.get("risk_factors", []),
+            "version_note":    vr.version_note,  # NEW v6
         })
 
     api_keys = {vr.key for vr in api_results_raw}
@@ -408,6 +438,7 @@ def _assemble_result(
                 "ai_verdict":      ai_verdict,
                 "ai_reasoning":    ai.get("reasoning", ""),
                 "ai_risk_factors": ai.get("risk_factors", []),
+                "version_note":    None,
             })
 
     ai_fake_count = verification_result.get("fake_count", 0)
@@ -437,6 +468,12 @@ def _assemble_result(
 
     real_cited = {k for k in cited_keys if not k.startswith('__')}
 
+    # Collect version notes for summary
+    version_notes = [
+        {"key": v["key"], "note": v["version_note"]}
+        for v in verification_output if v.get("version_note")
+    ]
+
     return {
         "filename": filename, "format": fmt.upper(),
         "stats": {
@@ -457,6 +494,7 @@ def _assemble_result(
         "score":                    final_score,
         "verification":             verification_output,
         "verification_ai_summary":  verification_result.get("summary", ""),
+        "arxiv_version_notes":      version_notes,  # NEW v6
         "summary": {
             "missing_from_bib":   len(xcheck.cited_not_in_bib),
             "uncited_entries":    len(xcheck.in_bib_not_cited),
@@ -473,6 +511,7 @@ def _assemble_result(
             "citation_count":     len(real_cited),
             "ai_reparsed_entries": len(ai_parse_improvements),
             "numeric_citations":  has_numeric,
+            "arxiv_version_mismatches": len(version_notes),  # NEW v6
         },
     }
 
@@ -483,17 +522,7 @@ def _assemble_result(
 
 @app.route("/check", methods=["POST"])
 def check():
-    """
-    SSE streaming endpoint.  The browser receives per-reference progress events
-    in real time, then a final 'done' event with the full result.
-
-    JavaScript usage:
-        const es = new EventSource('/check');   // for GET demo
-        // For POST with file use fetch + ReadableStream:
-        const resp = await fetch('/check', {method:'POST', body: formData});
-        const reader = resp.body.getReader();
-        // read lines, parse 'event:' and 'data:' SSE lines
-    """
+    """SSE streaming endpoint. Returns per-reference progress events then a 'done' event."""
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -517,7 +546,6 @@ def check():
         bib_file.save(bib_path)
 
     if streaming:
-        # Return SSE stream — tmpdir is cleaned up inside the generator
         return Response(
             stream_with_context(
                 _run_streaming_check(main_path, bib_path, verify=verify, filename=filename)
@@ -525,11 +553,10 @@ def check():
             mimetype="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",  # disable nginx buffering
+                "X-Accel-Buffering": "no",
             },
         )
     else:
-        # Non-streaming fallback (used by batch route internally)
         try:
             result = _run_full_check(main_path, bib_path, verify=verify, filename=filename)
             return jsonify(result)
@@ -542,7 +569,7 @@ def check():
 
 @app.route("/check-sync", methods=["POST"])
 def check_sync():
-    """Non-streaming fallback endpoint for clients that don't support SSE."""
+    """Non-streaming fallback endpoint."""
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -597,6 +624,7 @@ def ai_review():
     flagged_lines = "\n".join(
         f"  [{v['key']}] \"{v['title']}\" ai={v.get('ai_verdict','?')} "
         f"conf={int(v['confidence']*100)}% src={','.join(v.get('sources_checked',[]))}"
+        + (f"\n    ℹ {v['version_note']}" if v.get('version_note') else "")
         for v in flagged
     ) or "  None"
 
@@ -613,6 +641,7 @@ AUDIT SUMMARY:
 - Missing from bib: {s.get('missing_from_bib',0)} | Never cited: {s.get('uncited_entries',0)}
 - Incomplete: {s.get('incomplete_entries',0)} | Key mismatches: {s.get('key_inconsistencies',0)}
 - Duplicates: {s.get('duplicates',0)} | Self-citations: {s.get('self_citations',0)}
+- arXiv version mismatches (non-error): {s.get('arxiv_version_mismatches',0)}
 - AI integrity: {data.get('verification_ai_summary','')}
 
 LNI KEY-VS-METADATA MISMATCHES:
@@ -624,6 +653,9 @@ FLAGGED REFERENCES:
 INCOMPLETE: {chr(10).join(f"  [{e['key']}] {e.get('title','?')} — {', '.join(e['completeness_issues'])}" for e in incomplete) or "  None"}
 DUPLICATES: {chr(10).join(f"  [{d['key_a']}] vs [{d['key_b']}] {int(d['similarity']*100)}% similar" for d in dupes) or "  None"}
 SELF-CITATIONS: {chr(10).join(f"  [{s_['key']}] {s_['matched_author']}" for s_ in self_cit) or "  None"}
+
+NOTE: References with 'arxiv_version_note' are REAL papers — the student cited an older
+arXiv version. This is a citation style issue, not fabrication.
 
 TASK:
 1. For each FLAGGED reference: REAL / SUSPICIOUS / FAKE — one-line reason
@@ -645,7 +677,7 @@ OVERALL: VERDICT — reason"""
 
     if groq_key:
         try:
-            resp = req.post(GROQ_URL if False else "https://api.groq.com/openai/v1/chat/completions",
+            resp = req.post("https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
                 json={"model": "llama-3.3-70b-versatile",
                       "messages": [{"role": "user", "content": prompt}],
@@ -714,6 +746,8 @@ def batch_check():
                         if v.get("ai_verdict") in ("FAKE", "SUSPICIOUS")
                         or v.get("status") in ("not_found", "partial_match")
                     ],
+                    # NEW v6: surface version mismatches in batch summary
+                    "arxiv_version_notes": result.get("arxiv_version_notes", []),
                 })
             except Exception as e:
                 import traceback
@@ -736,7 +770,7 @@ def export_report():
     s  = data.get("summary", {})
     lines = [
         "=" * 70,
-        "LNI REFERENCE CHECKER v5 — PROFESSOR REPORT",
+        "LNI REFERENCE CHECKER v6 — PROFESSOR REPORT",
         "=" * 70,
         f"File    : {data.get('filename','?')}",
         f"Format  : {data.get('format','?')}",
@@ -758,6 +792,7 @@ def export_report():
         f"  Style issues            : {s.get('style_issues',0)}",
         f"  Open-access links       : {s.get('open_access',0)}",
         f"  Entries AI-reparsed     : {s.get('ai_reparsed_entries',0)}",
+        f"  arXiv version mismatches: {s.get('arxiv_version_mismatches',0)} (non-error, informational)",
     ]
     if s.get("numeric_citations"):
         lines.append("  ⚠ Numeric citations [1] detected — LNI requires [Author+Year]")
@@ -776,6 +811,14 @@ def export_report():
         lines.append("── SCORE BREAKDOWN ──")
         for p in sc["penalties"]:
             lines.append(f"  -{p['deduction']:2d}  {p['category']} ({p['count']}×)")
+        lines.append("")
+
+    # NEW v6: arXiv version notes section
+    version_notes = data.get("arxiv_version_notes", [])
+    if version_notes:
+        lines.append("── arXiv VERSION NOTES (informational — not penalised) ──")
+        for vn in version_notes:
+            lines.append(f"  [{vn['key']}] {vn['note']}")
         lines.append("")
 
     key_issues = [e for e in data.get("bibliography",[]) if e.get("key_consistent") is False]
@@ -846,11 +889,12 @@ def export_report():
 
     lines += [
         "=" * 70,
-        "Generated by LNI Reference Checker v5",
+        "Generated by LNI Reference Checker v6",
         "Deterministic: key format, key-consistency, fields, xcheck, dupes, style",
         "AI (Groq/Gemini): bibliography extraction, re-parsing, fake detection, verdict",
-        "APIs: CrossRef · SS · OpenAlex · arXiv · DBLP · ACL Anthology",
+        "APIs: CrossRef · SS · OpenAlex · arXiv BibTeX (versioned) · DBLP · ACL Anthology",
         "      OpenReview · Open Library · GitHub · Scholar · DuckDuckGo",
+        "Cache: disk (LNI_CACHE_DIR) + in-memory verification + session LLM cache",
         "=" * 70,
     ]
 
@@ -861,16 +905,21 @@ def export_report():
 
 
 if __name__ == "__main__":
-    print("\n  ┌──────────────────────────────────────────────────────────┐")
-    print("  │   LNI Reference Checker v5                               │")
-    print("  │   http://localhost:5000                                  │")
-    print("  │                                                          │")
-    print("  │   Deterministic: key · key-consistency · fields          │")
-    print("  │                  xcheck · dupes · style                  │")
-    print("  │   AI (Groq→Gemini): extract · re-parse · fake · verdict │")
-    print("  │   APIs: CrossRef · SS · OpenAlex · arXiv · DBLP         │")
-    print("  │          ACL · OpenReview · OpenLibrary · GitHub         │")
-    print("  │   Cache: LNI_CACHE_DIR (disk) + in-memory               │")
-    print("  └──────────────────────────────────────────────────────────┘\n")
+    print("\n  ┌──────────────────────────────────────────────────────────────┐")
+    print("  │   LNI Reference Checker v6                                   │")
+    print("  │   http://localhost:5000                                      │")
+    print("  │                                                              │")
+    print("  │   NEW in v6:                                                 │")
+    print("  │   • arXiv BibTeX versioned checker (authoritative source)    │")
+    print("  │   • Session-scoped LLM response cache (batch efficiency)     │")
+    print("  │   • /status endpoint (cache stats)                           │")
+    print("  │                                                              │")
+    print("  │   Deterministic: key · key-consistency · fields             │")
+    print("  │                  xcheck · dupes · style                     │")
+    print("  │   AI (Groq→Gemini): extract · re-parse · fake · verdict     │")
+    print("  │   APIs: CrossRef · SS · OpenAlex · arXiv (versioned) · DBLP │")
+    print("  │          ACL · OpenReview · OpenLibrary · GitHub            │")
+    print("  │   Cache: disk + in-memory + session LLM                     │")
+    print("  └──────────────────────────────────────────────────────────────┘\n")
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)

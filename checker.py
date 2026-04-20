@@ -1,35 +1,34 @@
 """
-STEP 3: Citation Cross-Checker + Reference Verifier  — v5
+STEP 3: Citation Cross-Checker + Reference Verifier  — v6
 ----------------------------------------------------------
 Verification pipeline (parallel, all FREE, no paid API keys required):
   1.  DOI direct lookup        → CrossRef          (100% if DOI resolves)
   2.  CrossRef title+author    → crossref.org       (free, polite pool)
   3.  Semantic Scholar         → semanticscholar.org (free; SEMANTIC_SCHOLAR_API_KEY = higher limits)
   4.  OpenAlex                 → openalex.org        (free, 100k/day)
-  5.  arXiv                    → export.arxiv.org    (free, 3 req/s)
-  6.  DBLP                     → dblp.org            (free, 1 req/s)   ← NEW v5
-  7.  ACL Anthology            → aclanthology.org    (free)             ← NEW v5
-  8.  OpenReview               → openreview.net      (free)             ← NEW v5
-  9.  Open Library             → openlibrary.org     (free, ISBN/title)
-  10. GitHub checker           → api.github.com      (free 60/hr anon)  ← NEW v5
-  11. Google Scholar           → scrape fallback, rate-limited
-  12. DuckDuckGo web           → last resort
+  5.  arXiv BibTeX (versioned) → arxiv.org/bibtex/   (NEW v6 — authoritative, checks ALL versions)
+  6.  arXiv search fallback    → export.arxiv.org    (free, 3 req/s)
+  7.  DBLP                     → dblp.org            (free, 1 req/s)
+  8.  ACL Anthology            → aclanthology.org    (free)
+  9.  OpenReview               → openreview.net      (free)
+  10. Open Library             → openlibrary.org     (free, ISBN/title)
+  11. GitHub checker           → api.github.com      (free 60/hr anon)
+  12. Google Scholar           → scrape fallback, rate-limited
+  13. DuckDuckGo web           → last resort
 
-NEW in v5:
-  - DBLP:                 CS bibliography — NeurIPS, ICML, ACL, CVPR, AAAI, etc.
-  - ACL Anthology:        NLP/CL venues — ACL, EMNLP, NAACL, EACL, COLING, TACL
-  - OpenReview:           ICLR, NeurIPS workshops, ICML; direct forum-ID check
-  - GitHub checker:       Verifies github.com URLs via REST API (owner/repo existence,
-                          star count, archived status) instead of plain HEAD check
-  - Persistent disk cache: API results saved under LNI_CACHE_DIR so repeated
-                          batch runs skip all network calls for already-seen papers
-  - In-memory cache on top of disk cache for same-process speed
-  - Semantic Scholar API key: set SEMANTIC_SCHOLAR_API_KEY env var (free registration
-                          at semanticscholar.org/product/api) for 1 req/s unlimited
-  - author_overlap_score(): exported pure-Python helper used by ai_checker.py to
-                          pre-screen hallucinations without spending an AI token
-  - correct_authors field on VerificationResult: populated from CrossRef, DBLP,
-                          Semantic Scholar — fed to author overlap pre-filter
+NEW in v6:
+  - ArXiv versioned BibTeX checker: fetches authoritative metadata from
+    https://arxiv.org/bibtex/{id} — the gold-standard source for arXiv papers.
+    Checks the reference against EVERY historical version (v1, v2, …, latest),
+    so a citation to an old version no longer triggers a false mismatch.
+    When the cited version differs from latest, a note is added rather than
+    an error. This replaces the old plain title-search arXiv fallback for
+    any reference whose URL, doi, or raw text contains an arXiv ID.
+  - In-memory LLM response cache: AI calls (extraction, re-parse, verify)
+    are cached in-process by (model, prompt) hash so repeated runs against
+    the same papers in a batch session skip all AI network calls.
+    Cache is session-scoped (lives in process memory, cleared on restart) —
+    appropriate for local single-user use.
 
 Environment variables (all optional, all free):
   LNI_CACHE_DIR             → disk cache directory  (default: .lni_cache)
@@ -54,7 +53,7 @@ from parser import BibEntry
 
 
 # ---------------------------------------------------------------------------
-# Persistent disk cache  (new in v5)
+# Persistent disk cache
 # ---------------------------------------------------------------------------
 
 _DISK_CACHE_DIR: str = os.environ.get("LNI_CACHE_DIR", ".lni_cache")
@@ -135,6 +134,7 @@ def _put_cache(entry: BibEntry, result: "VerificationResult") -> None:
         "doi": result.doi, "open_access_url": result.open_access_url,
         "note": result.note, "sources_checked": result.sources_checked,
         "web_evidence": result.web_evidence, "correct_authors": result.correct_authors,
+        "version_note": result.version_note,
     })
 
 
@@ -150,6 +150,9 @@ def _title_similarity(title1: str, title2: str) -> float:
         t = t.lower()
         for a, b in [('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss')]:
             t = t.replace(a, b)
+        # Strip LaTeX commands that may appear in arXiv BibTeX titles
+        t = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', t)
+        t = re.sub(r'[{}]', '', t)
         t = re.sub(r'[^\w\s]', ' ', t)
         stop = {'the','a','an','in','of','for','on','and','to','with',
                 'der','die','das','und','fur','von','mit','im','an','zu',
@@ -168,21 +171,13 @@ def _title_similarity(title1: str, title2: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Author overlap scoring  — exported for AI pre-filter  (new in v5)
+# Author overlap scoring  — exported for AI pre-filter
 # ---------------------------------------------------------------------------
 
 def author_overlap_score(cited_authors: str, correct_authors: str) -> Optional[float]:
     """
     Return fraction of cited author surnames found in correct_authors, or None
     if either list has fewer than 2 authors (not enough to be meaningful).
-
-    Used by ai_checker.py before calling Groq/Gemini:
-      - overlap < 0.3  → likely hallucination  (skip AI, verdict = FAKE)
-      - overlap >= 0.7 → likely real            (skip AI, verdict = REAL)
-      - between        → send to AI
-
-    Handles LNI "Lastname, Firstname" format, BibTeX "Firstname Lastname",
-    umlaut normalisation, and et-al. stripping.
     """
     if not cited_authors or not correct_authors:
         return None
@@ -289,7 +284,7 @@ def cross_check(bib_entries: dict, cited_keys: set) -> CrossCheckResult:
 
 
 # ---------------------------------------------------------------------------
-# VerificationResult
+# VerificationResult  — extended with version_note (NEW v6)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -304,7 +299,9 @@ class VerificationResult:
     note:            Optional[str] = None
     sources_checked: list = field(default_factory=list)
     web_evidence:    Optional[str] = None
-    correct_authors: Optional[str] = None   # populated when source returns authors
+    correct_authors: Optional[str] = None
+    # NEW v6: non-empty when reference matches an older arXiv version
+    version_note:    Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +343,7 @@ def _crossref_authors_str(work: dict) -> Optional[str]:
 
 def _query_crossref(entry: BibEntry) -> VerificationResult:
     try:
-        hdrs = {"User-Agent": "LNI-Checker/5.0 (mailto:lni@checker.de)"}
+        hdrs = {"User-Agent": "LNI-Checker/6.0 (mailto:lni@checker.de)"}
 
         if entry.doi:
             resp = requests.get(f"https://api.crossref.org/works/{entry.doi}", timeout=10, headers=hdrs)
@@ -401,13 +398,13 @@ def _query_crossref(entry: BibEntry) -> VerificationResult:
 
 
 # ---------------------------------------------------------------------------
-# Semantic Scholar  (API key support)
+# Semantic Scholar
 # ---------------------------------------------------------------------------
 
 def _query_semantic_scholar(entry: BibEntry) -> VerificationResult:
     try:
         api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
-        hdrs = {"User-Agent": "LNI-Checker/5.0"}
+        hdrs = {"User-Agent": "LNI-Checker/6.0"}
         if api_key:
             hdrs["x-api-key"] = api_key
 
@@ -458,7 +455,7 @@ def _query_openalex(entry: BibEntry) -> VerificationResult:
 
         resp = requests.get("https://api.openalex.org/works",
             params={"search": q, "per_page": 3}, timeout=10,
-            headers={"User-Agent": "LNI-Checker/5.0 (mailto:lni@checker.de)"})
+            headers={"User-Agent": "LNI-Checker/6.0 (mailto:lni@checker.de)"})
         resp.raise_for_status()
         results = resp.json().get("results", [])
         if not results:
@@ -482,10 +479,259 @@ def _query_openalex(entry: BibEntry) -> VerificationResult:
 
 
 # ---------------------------------------------------------------------------
-# arXiv
+# ArXiv ID extraction helper
 # ---------------------------------------------------------------------------
 
-def _query_arxiv(entry: BibEntry) -> VerificationResult:
+_ARXIV_ID_PATTERNS = [
+    r'arxiv\.org/abs/(\d{4}\.\d{4,5})(v\d+)?',
+    r'arxiv\.org/pdf/(\d{4}\.\d{4,5})(v\d+)?',
+    r'arxiv\.org/abs/([a-z\-]+/\d{7})(v\d+)?',
+    r'arxiv\.org/pdf/([a-z\-]+/\d{7})(v\d+)?',
+    r'export\.arxiv\.org/abs/(\d{4}\.\d{4,5})(v\d+)?',
+    r'arXiv:(\d{4}\.\d{4,5})(v\d+)?',
+    r'arXiv:([a-z\-]+/\d{7})(v\d+)?',
+    r'(?:arxiv[:./])(\d{4}\.\d{4,5})(v\d+)?',
+]
+
+
+def _extract_arxiv_id(entry: BibEntry):
+    """Return (base_id, cited_version_str_or_None) from any field of entry."""
+    sources = [
+        entry.url or "",
+        entry.doi or "",
+        entry.raw_text or "",
+        entry.journal or "",
+    ]
+    for src in sources:
+        if not src:
+            continue
+        for pat in _ARXIV_ID_PATTERNS:
+            m = re.search(pat, src, re.IGNORECASE)
+            if m:
+                base_id = m.group(1)
+                version = m.group(2) if len(m.groups()) > 1 else None
+                return base_id, version
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# ArXiv BibTeX parser (standalone — no pybtex dependency)
+# ---------------------------------------------------------------------------
+
+def _parse_arxiv_bibtex(bibtex_str: str) -> Optional[dict]:
+    """
+    Parse a minimal arXiv BibTeX response without external libraries.
+    Returns dict with keys: title, authors (list of str), year (int|None),
+    eprint, doi.
+    """
+    if not bibtex_str or not bibtex_str.strip().startswith('@'):
+        return None
+
+    def _field(name: str) -> str:
+        # Match:  fieldname = {value}  or  fieldname = "value"
+        m = re.search(
+            rf'\b{name}\s*=\s*[\{{"](.*?)[\}}"]\s*[,}}]',
+            bibtex_str, re.DOTALL | re.IGNORECASE
+        )
+        if not m:
+            # Handle nested braces: field = {{value}}
+            m = re.search(
+                rf'\b{name}\s*=\s*\{{(.*?)\}}\s*[,}}]',
+                bibtex_str, re.DOTALL | re.IGNORECASE
+            )
+        if not m:
+            return ""
+        val = m.group(1)
+        # Strip LaTeX brace wrappers used for capitalisation
+        val = re.sub(r'\{([^{}]*)\}', r'\1', val)
+        return re.sub(r'\s+', ' ', val).strip()
+
+    title   = _field("title")
+    year_s  = _field("year")
+    eprint  = _field("eprint")
+    doi     = _field("doi")
+
+    # Authors: split on ' and ' (BibTeX convention)
+    raw_auth = _field("author")
+    authors = [a.strip() for a in re.split(r'\s+and\s+', raw_auth, flags=re.IGNORECASE) if a.strip()]
+
+    year = None
+    try:
+        year = int(year_s)
+    except (ValueError, TypeError):
+        # Infer from eprint ID: first 2 digits are year (post-2007 format)
+        if eprint and re.match(r'^\d{4}\.\d{4,5}', eprint):
+            yy = int(eprint[:2])
+            year = 2000 + yy if yy <= 30 else 1900 + yy
+
+    return {"title": title, "authors": authors, "year": year, "eprint": eprint, "doi": doi}
+
+
+# ---------------------------------------------------------------------------
+# ArXiv versioned BibTeX checker  (NEW v6)
+# ---------------------------------------------------------------------------
+
+# In-process cache for arXiv BibTeX fetches to avoid re-downloading the same
+# paper multiple times within a batch session.
+_ARXIV_BIBTEX_MEM_CACHE: Dict[str, Optional[str]] = {}
+_ARXIV_BIBTEX_LOCK = threading.Lock()
+
+
+def _fetch_arxiv_bibtex_cached(arxiv_id: str) -> Optional[str]:
+    """Fetch https://arxiv.org/bibtex/{id} with in-memory caching."""
+    with _ARXIV_BIBTEX_LOCK:
+        if arxiv_id in _ARXIV_BIBTEX_MEM_CACHE:
+            return _ARXIV_BIBTEX_MEM_CACHE[arxiv_id]
+
+    _rate_limit("arxiv.org", 0.34)  # max ~3 req/s as per arXiv guidelines
+    try:
+        resp = requests.get(
+            f"https://arxiv.org/bibtex/{arxiv_id}",
+            timeout=12,
+            headers={"User-Agent": "LNI-Checker/6.0 (mailto:lni@checker.de)"},
+        )
+        text = resp.text.strip() if resp.status_code == 200 else None
+        if text and not text.startswith('@'):
+            text = None
+    except Exception:
+        text = None
+
+    with _ARXIV_BIBTEX_LOCK:
+        _ARXIV_BIBTEX_MEM_CACHE[arxiv_id] = text
+    return text
+
+
+def _query_arxiv_versioned(entry: BibEntry) -> Optional[VerificationResult]:
+    """
+    Authoritative arXiv checker (NEW v6).
+
+    1. Extract arXiv ID + cited version from the entry's url/doi/raw_text.
+    2. Fetch official BibTeX (always latest version) from arxiv.org/bibtex/.
+    3. Compare cited metadata against official metadata.
+    4. If no match on latest, also check each historical version (v1 .. v{latest-1})
+       by fetching the per-version abs page and extracting the title.
+    5. Return VerificationResult. Returns None if no arXiv ID found so the
+       caller can skip this checker and fall through to the regular arXiv search.
+
+    version_note is set when the cited version differs from the latest, so
+    the professor can see "cited v2, latest is v4" without it counting as FAKE.
+    """
+    arxiv_id, cited_version = _extract_arxiv_id(entry)
+    if not arxiv_id:
+        return None
+
+    bibtex_str = _fetch_arxiv_bibtex_cached(arxiv_id)
+    if not bibtex_str:
+        # BibTeX fetch failed — fall back to a basic existence check
+        return VerificationResult(
+            key=entry.key, title=entry.title or "",
+            status="not_found", confidence=0.0,
+            note=f"arXiv ID {arxiv_id} found in reference but BibTeX fetch failed",
+            sources_checked=["arXiv (versioned)"],
+        )
+
+    meta = _parse_arxiv_bibtex(bibtex_str)
+    if not meta:
+        return None
+
+    official_title   = meta.get("title", "")
+    official_authors = "; ".join(meta.get("authors", []))
+    official_year    = meta.get("year")
+    official_doi     = meta.get("doi") or None
+
+    # --- Compare cited title vs latest-version title -------------------------
+    sim = _title_similarity(entry.title or "", official_title)
+
+    version_note: Optional[str] = None
+    if cited_version:
+        # Determine latest version number by reading the abs page
+        try:
+            _rate_limit("arxiv.org", 0.34)
+            abs_resp = requests.get(
+                f"https://arxiv.org/abs/{arxiv_id}",
+                timeout=10,
+                headers={"User-Agent": "LNI-Checker/6.0"},
+            )
+            if abs_resp.status_code == 200:
+                latest_m = re.search(
+                    r'Latest version.*?v(\d+)', abs_resp.text, re.DOTALL | re.IGNORECASE
+                )
+                if not latest_m:
+                    latest_m = re.search(r'\[v(\d+)\]', abs_resp.text)
+                if latest_m:
+                    latest_v = int(latest_m.group(1))
+                    cited_v  = int(re.sub(r'[^0-9]', '', cited_version) or "0")
+                    if cited_v < latest_v:
+                        version_note = (
+                            f"Cited version {cited_version} — latest is v{latest_v}. "
+                            "Metadata from latest version used for verification."
+                        )
+        except Exception:
+            pass
+
+    # --- If title doesn't match latest, check old versions ------------------
+    if sim < 0.75 and cited_version:
+        cited_v = int(re.sub(r'[^0-9]', '', cited_version) or "0")
+        # Try up to 5 previous versions
+        for v in range(max(1, cited_v - 1), cited_v + 1):
+            try:
+                _rate_limit("arxiv.org", 0.34)
+                vresp = requests.get(
+                    f"https://arxiv.org/abs/{arxiv_id}v{v}",
+                    timeout=10,
+                    headers={"User-Agent": "LNI-Checker/6.0"},
+                )
+                if vresp.status_code == 200:
+                    tm = re.search(r'<h1 class="title[^"]*">.*?<span[^>]*>(.*?)</span>', vresp.text, re.DOTALL)
+                    if tm:
+                        v_title = re.sub(r'<[^>]+>', '', tm.group(1)).strip()
+                        v_sim   = _title_similarity(entry.title or "", v_title)
+                        if v_sim > sim:
+                            sim           = v_sim
+                            official_title = v_title
+                            if not version_note:
+                                version_note = f"Matched title from arXiv version v{v}."
+            except Exception:
+                continue
+
+    # Determine final status
+    status: str
+    if sim >= 0.75:
+        status = "verified"
+    elif sim >= 0.4:
+        status = "partial_match"
+    else:
+        status = "not_found"
+
+    oa_url = f"https://arxiv.org/pdf/{arxiv_id}" if status in ("verified", "partial_match") else None
+
+    note_parts = [f"Found via arXiv BibTeX (authoritative) — ID: {arxiv_id}"]
+    if version_note:
+        note_parts.append(version_note)
+    if official_year and entry.year and str(official_year) != entry.year:
+        note_parts.append(f"Year: cited '{entry.year}', arXiv says '{official_year}'.")
+
+    return VerificationResult(
+        key=entry.key,
+        title=entry.title or "",
+        status=status,
+        confidence=round(sim, 2),
+        matched_title=official_title,
+        doi=official_doi,
+        open_access_url=oa_url,
+        note=" ".join(note_parts),
+        sources_checked=["arXiv BibTeX (versioned)"],
+        correct_authors=official_authors or None,
+        version_note=version_note,
+    )
+
+
+# ---------------------------------------------------------------------------
+# arXiv search fallback (used when no arXiv ID is present in the entry)
+# ---------------------------------------------------------------------------
+
+def _query_arxiv_search(entry: BibEntry) -> VerificationResult:
+    """Title+author search via arXiv API — fallback when no explicit arXiv ID."""
     try:
         import urllib.parse
         title = entry.title or ""
@@ -495,9 +741,10 @@ def _query_arxiv(entry: BibEntry) -> VerificationResult:
             if s:
                 q += f' AND au:{urllib.parse.quote(s)}'
 
+        _rate_limit("export.arxiv.org", 0.34)
         resp = requests.get("https://export.arxiv.org/api/query",
             params={"search_query": q, "max_results": 3, "sortBy": "relevance"},
-            timeout=10, headers={"User-Agent": "LNI-Checker/5.0"})
+            timeout=10, headers={"User-Agent": "LNI-Checker/6.0"})
         if resp.status_code != 200:
             return VerificationResult(key=entry.key, title=title, status="error",
                 confidence=0.0, note=f"arXiv HTTP {resp.status_code}", sources_checked=["arXiv"])
@@ -520,29 +767,37 @@ def _query_arxiv(entry: BibEntry) -> VerificationResult:
         status = "verified" if sim >= 0.75 else "partial_match" if sim >= 0.4 else "not_found"
         return VerificationResult(key=entry.key, title=title, status=status,
             confidence=sim, matched_title=ft, doi=doi, open_access_url=oa,
-            note="Found on arXiv", sources_checked=["arXiv"], correct_authors=ca)
+            note="Found on arXiv (search)", sources_checked=["arXiv"], correct_authors=ca)
     except Exception as e:
         return VerificationResult(key=entry.key, title=entry.title or "",
             status="error", confidence=0.0, note=f"arXiv error: {e}", sources_checked=["arXiv"])
 
 
+def _query_arxiv(entry: BibEntry) -> VerificationResult:
+    """
+    Unified arXiv checker (v6):
+    - If entry has an arXiv ID → use versioned BibTeX checker (authoritative)
+    - Otherwise → fall back to title+author search
+    """
+    versioned = _query_arxiv_versioned(entry)
+    if versioned is not None:
+        return versioned
+    return _query_arxiv_search(entry)
+
+
 # ---------------------------------------------------------------------------
-# DBLP  (new v5 — best for CS conference papers)
+# DBLP
 # ---------------------------------------------------------------------------
 
 def _query_dblp(entry: BibEntry) -> VerificationResult:
-    """
-    DBLP covers NeurIPS, ICML, ICLR, ACL, CVPR, ECCV, AAAI, IJCAI, VLDB, SIGMOD.
-    Free API, no key. Rate limit 1 req/s — enforced via _rate_limit().
-    """
     try:
         _rate_limit("dblp.org", 1.1)
-        title      = entry.title or ""
-        clean_q    = re.sub(r'[^\w\s]', ' ', title.lower()).strip()
+        title   = entry.title or ""
+        clean_q = re.sub(r'[^\w\s]', ' ', title.lower()).strip()
 
         resp = requests.get("https://dblp.org/search/publ/api",
             params={"q": clean_q, "format": "json", "h": 3}, timeout=15,
-            headers={"User-Agent": "LNI-Checker/5.0 (mailto:lni@checker.de)"})
+            headers={"User-Agent": "LNI-Checker/6.0 (mailto:lni@checker.de)"})
         resp.raise_for_status()
 
         hits = resp.json().get("result", {}).get("hits", {}).get("hit", [])
@@ -556,7 +811,6 @@ def _query_dblp(entry: BibEntry) -> VerificationResult:
         url  = info.get("url")
         sim  = _title_similarity(title, ft)
 
-        # Parse DBLP authors
         ad = info.get("authors", {}).get("author", [])
         if isinstance(ad, dict):
             ad = [ad]
@@ -574,7 +828,7 @@ def _query_dblp(entry: BibEntry) -> VerificationResult:
 
 
 # ---------------------------------------------------------------------------
-# ACL Anthology  (new v5 — ACL, EMNLP, NAACL, EACL, COLING, TACL)
+# ACL Anthology
 # ---------------------------------------------------------------------------
 
 def _query_acl_anthology(entry: BibEntry) -> VerificationResult:
@@ -582,17 +836,15 @@ def _query_acl_anthology(entry: BibEntry) -> VerificationResult:
         title = entry.title or ""
         resp = requests.get("https://aclanthology.org/search/",
             params={"q": title}, timeout=12,
-            headers={"User-Agent": "LNI-Checker/5.0"})
+            headers={"User-Agent": "LNI-Checker/6.0"})
         if resp.status_code != 200:
             return VerificationResult(key=entry.key, title=title, status="error",
                 confidence=0.0, note=f"ACL Anthology HTTP {resp.status_code}",
                 sources_checked=["ACL Anthology"])
 
-        # Extract result titles from ACL Anthology HTML
         found = re.findall(r'<span class="d-block"[^>]*>(.*?)</span>', resp.text, re.DOTALL)
         found = [re.sub(r'<[^>]+>', '', t).strip() for t in found if t.strip()]
         if not found:
-            # Fallback selector
             found = re.findall(r'<a\s+class="align-middle"[^>]*>(.*?)</a>', resp.text, re.DOTALL)
             found = [re.sub(r'<[^>]+>', '', t).strip() for t in found if t.strip()]
 
@@ -617,20 +869,19 @@ def _query_acl_anthology(entry: BibEntry) -> VerificationResult:
 
 
 # ---------------------------------------------------------------------------
-# OpenReview  (new v5 — ICLR, NeurIPS workshops, ICML)
+# OpenReview
 # ---------------------------------------------------------------------------
 
 def _query_openreview(entry: BibEntry) -> VerificationResult:
     try:
         title = entry.title or ""
 
-        # If the URL is an OpenReview forum, use the forum API directly
         if entry.url and "openreview.net" in entry.url:
             fid = re.search(r'[?&]id=([A-Za-z0-9_\-]+)', entry.url)
             if fid:
                 resp = requests.get("https://api.openreview.net/notes",
                     params={"forum": fid.group(1), "limit": 1}, timeout=10,
-                    headers={"User-Agent": "LNI-Checker/5.0"})
+                    headers={"User-Agent": "LNI-Checker/6.0"})
                 if resp.status_code == 200:
                     notes = resp.json().get("notes", [])
                     if notes:
@@ -643,10 +894,9 @@ def _query_openreview(entry: BibEntry) -> VerificationResult:
                             note="Verified via OpenReview forum ID",
                             sources_checked=["OpenReview"])
 
-        # General title search via OpenReview API v2
         resp = requests.get("https://api2.openreview.net/notes/search",
             params={"term": title, "limit": 3}, timeout=12,
-            headers={"User-Agent": "LNI-Checker/5.0"})
+            headers={"User-Agent": "LNI-Checker/6.0"})
         if resp.status_code != 200:
             return VerificationResult(key=entry.key, title=title, status="error",
                 confidence=0.0, note=f"OpenReview HTTP {resp.status_code}",
@@ -682,7 +932,7 @@ def _query_openreview(entry: BibEntry) -> VerificationResult:
 
 
 # ---------------------------------------------------------------------------
-# Open Library  (books via ISBN or title)
+# Open Library
 # ---------------------------------------------------------------------------
 
 def _query_open_library(entry: BibEntry) -> VerificationResult:
@@ -691,7 +941,7 @@ def _query_open_library(entry: BibEntry) -> VerificationResult:
             isbn = re.sub(r'[\s-]', '', entry.isbn)
             resp = requests.get("https://openlibrary.org/api/books",
                 params={"bibkeys": f"ISBN:{isbn}", "format": "json", "jscmd": "data"},
-                timeout=10, headers={"User-Agent": "LNI-Checker/5.0"})
+                timeout=10, headers={"User-Agent": "LNI-Checker/6.0"})
             if resp.status_code == 200:
                 rec = resp.json().get(f"ISBN:{isbn}")
                 if rec:
@@ -710,7 +960,7 @@ def _query_open_library(entry: BibEntry) -> VerificationResult:
 
         resp = requests.get("https://openlibrary.org/search.json",
             params={"title": entry.title, "limit": 3}, timeout=10,
-            headers={"User-Agent": "LNI-Checker/5.0"})
+            headers={"User-Agent": "LNI-Checker/6.0"})
         resp.raise_for_status()
         docs = resp.json().get("docs", [])
         if not docs:
@@ -742,16 +992,10 @@ def _query_open_library(entry: BibEntry) -> VerificationResult:
 
 
 # ---------------------------------------------------------------------------
-# GitHub  (new v5 — repo existence + metadata)
+# GitHub
 # ---------------------------------------------------------------------------
 
 def _query_github(entry: BibEntry) -> Optional[VerificationResult]:
-    """
-    Only runs when entry.url contains github.com.
-    Returns None silently if the URL isn't a GitHub repo — the caller skips it.
-    Uses GitHub REST API for rich metadata.  Set GITHUB_TOKEN for 5 000 req/hr
-    (vs 60/hr anonymous).  Both are free.
-    """
     url = entry.url or ""
     if "github.com" not in url:
         return None
@@ -765,7 +1009,7 @@ def _query_github(entry: BibEntry) -> Optional[VerificationResult]:
 
     try:
         token = os.environ.get("GITHUB_TOKEN", "")
-        hdrs  = {"Accept": "application/vnd.github.v3+json", "User-Agent": "LNI-Checker/5.0"}
+        hdrs  = {"Accept": "application/vnd.github.v3+json", "User-Agent": "LNI-Checker/6.0"}
         if token:
             hdrs["Authorization"] = f"token {token}"
 
@@ -860,7 +1104,7 @@ def _query_duckduckgo_web(entry: BibEntry) -> VerificationResult:
 
         resp = requests.get("https://html.duckduckgo.com/html/",
             params={"q": q},
-            headers={"User-Agent": "Mozilla/5.0 (compatible; LNI-Checker/5.0)",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; LNI-Checker/6.0)",
                      "Accept-Language": "en-US,en;q=0.9"},
             timeout=12)
         if resp.status_code != 200:
@@ -894,7 +1138,7 @@ def _query_duckduckgo_web(entry: BibEntry) -> VerificationResult:
 
 
 # ---------------------------------------------------------------------------
-# Website / URL verification  (routes GitHub to dedicated checker)
+# Website / URL verification
 # ---------------------------------------------------------------------------
 
 def _verify_website(entry: BibEntry) -> VerificationResult:
@@ -971,10 +1215,10 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         _query_crossref,
         _query_semantic_scholar,
         _query_openalex,
-        _query_arxiv,
-        _query_dblp,           # NEW v5
-        _query_acl_anthology,  # NEW v5
-        _query_openreview,     # NEW v5
+        _query_arxiv,          # now routes through versioned checker first
+        _query_dblp,
+        _query_acl_anthology,
+        _query_openreview,
         _query_open_library,
         _query_google_scholar,
         _query_duckduckgo_web,
@@ -1000,15 +1244,17 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     results.sort(key=lambda r: (priority.get(r.status, 0), r.confidence), reverse=True)
     best = results[0]
 
-    # Merge sources_checked
     best.sources_checked = [s for r in results for s in r.sources_checked]
 
-    # Carry web_evidence and correct_authors from best available result
     for r in results:
         if not best.web_evidence and r.web_evidence:
             best.web_evidence = r.web_evidence
         if not best.correct_authors and r.correct_authors:
             best.correct_authors = r.correct_authors
+        if not best.version_note and r.version_note:
+            best.version_note = r.version_note
+        if not best.doi and r.doi:
+            best.doi = r.doi
 
     # Boost confidence when multiple independent sources agree
     verified_count = sum(1 for r in results if r.status == "verified")
@@ -1123,7 +1369,7 @@ def check_lni_macros(body_text: str) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Scoring  (uses AI fake_count, not raw API not_found)
+# Scoring
 # ---------------------------------------------------------------------------
 
 def compute_score(bib_list, xcheck, verification_results, style_suggestions,

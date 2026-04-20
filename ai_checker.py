@@ -1,5 +1,5 @@
 """
-AI Checker — v5
+AI Checker — v6
 ---------------
 Groq (llama-3.3-70b) primary → Gemini 1.5 Flash fallback.
 Both FREE tier:
@@ -10,20 +10,27 @@ WHAT USES AI:
   1. ai_extract_references_from_text()  — LLM-based bibliography extraction
        Parses ANY reference format (numeric [1], author-year, BibLaTeX, raw text)
        into structured dicts. Runs BEFORE parser.py regex for best coverage.
-       Falls back silently to regex extraction if AI is unavailable.  ← NEW v5
+       Falls back silently to regex extraction if AI is unavailable.
 
   2. ai_parse_uncertain_entries()       — re-parses entries flagged needs_ai_parsing=True
        (regex extraction was uncertain). Runs BEFORE API lookups.
 
   3. ai_verify_references()             — THREE-TIER verdict per reference:
        REAL / SUSPICIOUS / FAKE
-       Now includes author overlap pre-filter (from checker.author_overlap_score):
-         - overlap < 0.30 → FAKE  (no AI token spent)         ← NEW v5
-         - overlap >= 0.70 → REAL (no AI token spent)         ← NEW v5
+       Includes author overlap pre-filter:
+         - overlap < 0.30 → FAKE  (no AI token spent)
+         - overlap >= 0.70 → REAL (no AI token spent)
          - otherwise → send to AI
-       Also includes key_consistent signal from parser.
 
-  4. ai_overall_verdict()               — PASS / FLAG / FAIL + student feedback
+  4. ai_overall_verdict()               — PASS / FLAG / FAIL + professor feedback
+
+NEW in v6 — Session-scoped LLM response cache:
+  All AI calls are cached in process memory keyed by (model, prompt) hash.
+  Within a batch session (e.g. 15 documents uploaded at once), if two papers
+  cite the same reference, the second AI call is served from cache instantly —
+  no network round-trip, no Groq/Gemini quota spent.
+  Cache lives in process memory only (no disk). Cleared on server restart.
+  This is appropriate for local single-user deployment.
 
 WHAT DOES NOT USE AI (100% deterministic):
   - LNI key format validation
@@ -37,9 +44,11 @@ WHAT DOES NOT USE AI (100% deterministic):
   - Score computation
 """
 
+import hashlib
 import os
 import re
 import json
+import threading
 import requests
 from typing import List, Dict, Any, Optional
 
@@ -47,6 +56,41 @@ GROQ_MODEL  = "llama-3.3-70b-versatile"
 GROQ_URL    = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL  = ("https://generativelanguage.googleapis.com/v1beta/models/"
                "gemini-1.5-flash:generateContent")
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped LLM response cache  (NEW v6)
+# ---------------------------------------------------------------------------
+# Keyed by SHA256(model + system + prompt).
+# Thread-safe. Lives in process memory — cleared on restart.
+# For a local professor tool processing 15 papers in one session, this
+# prevents re-calling the AI for the same reference text twice.
+
+_LLM_CACHE: Dict[str, str] = {}
+_LLM_CACHE_LOCK = threading.Lock()
+
+
+def _llm_cache_key(model: str, system: str, prompt: str) -> str:
+    raw = f"{model}|{system}|{prompt}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _llm_cache_get(model: str, system: str, prompt: str) -> Optional[str]:
+    key = _llm_cache_key(model, system, prompt)
+    with _LLM_CACHE_LOCK:
+        return _LLM_CACHE.get(key)
+
+
+def _llm_cache_put(model: str, system: str, prompt: str, response: str) -> None:
+    key = _llm_cache_key(model, system, prompt)
+    with _LLM_CACHE_LOCK:
+        _LLM_CACHE[key] = response
+
+
+def get_llm_cache_stats() -> dict:
+    """Return current cache stats — exposed to /status endpoint."""
+    with _LLM_CACHE_LOCK:
+        return {"llm_cache_entries": len(_LLM_CACHE)}
 
 
 # ---------------------------------------------------------------------------
@@ -58,10 +102,19 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
     groq_key   = os.environ.get("GROQ_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
+    # ── Check session cache first ──────────────────────────────────────────
+    model_tag = f"groq:{GROQ_MODEL}" if groq_key else "gemini:1.5-flash"
+    cached = _llm_cache_get(model_tag, system, prompt)
+    if cached is not None:
+        return cached
+
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
+
+    result: Optional[str] = None
+    used_model: Optional[str] = None
 
     if groq_key:
         try:
@@ -74,11 +127,12 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
                 timeout=30,
             )
             if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"].strip()
+                result = resp.json()["choices"][0]["message"]["content"].strip()
+                used_model = f"groq:{GROQ_MODEL}"
         except Exception:
             pass
 
-    if gemini_key:
+    if result is None and gemini_key:
         try:
             full_prompt = (system + "\n\n" + prompt) if system else prompt
             resp = requests.post(
@@ -91,20 +145,25 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
             )
             if resp.status_code == 200:
                 parts = resp.json()["candidates"][0]["content"]["parts"]
-                return "".join(p.get("text", "") for p in parts).strip()
+                result = "".join(p.get("text", "") for p in parts).strip()
+                used_model = "gemini:1.5-flash"
         except Exception:
             pass
 
-    missing = [k for k, v in [("GROQ_API_KEY", groq_key), ("GEMINI_API_KEY", gemini_key)] if not v]
-    raise RuntimeError(
-        f"No AI API key configured. Set {' or '.join(missing)}. "
-        "Groq: console.groq.com (free) | Gemini: aistudio.google.com (free)"
-    )
+    if result is None:
+        missing = [k for k, v in [("GROQ_API_KEY", groq_key), ("GEMINI_API_KEY", gemini_key)] if not v]
+        raise RuntimeError(
+            f"No AI API key configured. Set {' or '.join(missing)}. "
+            "Groq: console.groq.com (free) | Gemini: aistudio.google.com (free)"
+        )
+
+    # Store in session cache
+    _llm_cache_put(used_model or model_tag, system, prompt, result)
+    return result
 
 
 def _call_ai_json(prompt: str, max_tokens: int = 2000, system: str = "") -> dict:
     text = _call_ai(prompt, max_tokens, system).strip()
-    # Strip markdown fences
     if text.startswith("```"):
         text = "\n".join(text.split("\n")[1:])
     if text.endswith("```"):
@@ -121,7 +180,7 @@ def _ai_available() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 1. LLM-based reference extraction  (NEW v5)
+# 1. LLM-based reference extraction
 # ---------------------------------------------------------------------------
 
 _EXTRACT_SYSTEM = (
@@ -145,25 +204,13 @@ _EXTRACT_SYSTEM = (
 def ai_extract_references_from_text(bib_text: str) -> List[Dict[str, Any]]:
     """
     Use the LLM to extract structured reference records from raw bibliography text.
-
-    This handles ANY citation format (numbered, author-year, BibLaTeX, mixed),
-    including layouts that defeat the regex parser (missing punctuation, multi-line
-    entries without consistent delimiters, scanned PDFs with OCR artefacts).
-
-    Returns a list of dicts. Each dict has at minimum:
-        raw, title, authors, year
-    and optionally: journal, booktitle, publisher, pages, doi, url, isbn.
-
-    Falls back to empty list silently when AI is unavailable — the caller
-    then uses the pure-regex parser result instead.
+    Falls back to empty list silently when AI is unavailable.
     """
     if not bib_text or not bib_text.strip():
         return []
-
     if not _ai_available():
         return []
 
-    # Chunk large bibliographies (> 6 000 chars) into ~3 000-char pieces
     chunks = []
     if len(bib_text) > 6000:
         lines  = bib_text.split('\n')
@@ -191,7 +238,7 @@ def ai_extract_references_from_text(bib_text: str) -> List[Dict[str, Any]]:
             if isinstance(data, list):
                 all_refs.extend(data)
         except Exception:
-            pass  # fall through; caller uses regex result
+            pass
 
     return all_refs
 
@@ -199,10 +246,7 @@ def ai_extract_references_from_text(bib_text: str) -> List[Dict[str, Any]]:
 def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> list:
     """
     Merge AI-extracted metadata into the existing regex-parsed bib_list.
-    For each entry in bib_list, if there is a close AI match (by raw_text
-    substring or title similarity), fill in any fields that the regex left None.
-
-    This is non-destructive: existing non-None values are kept.
+    Non-destructive: existing non-None values are kept.
     """
     if not ai_refs or not bib_list:
         return bib_list
@@ -210,7 +254,6 @@ def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> l
     def _norm(t: str) -> str:
         return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', (t or "").lower())).strip()
 
-    # Index AI refs by normalised title
     ai_by_title: Dict[str, dict] = {}
     for ar in ai_refs:
         t = _norm(ar.get("title", ""))
@@ -218,12 +261,10 @@ def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> l
             ai_by_title[t] = ar
 
     for entry in bib_list:
-        # Try to find a matching AI ref
         entry_title_norm = _norm(entry.title or "")
         ai = ai_by_title.get(entry_title_norm)
 
         if not ai:
-            # Fuzzy match by raw_text
             for ar in ai_refs:
                 raw = (ar.get("raw") or "")[:200]
                 if entry.raw_text[:80].lower() in raw.lower() or raw[:80].lower() in entry.raw_text.lower():
@@ -233,7 +274,6 @@ def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> l
         if not ai:
             continue
 
-        # Merge: only fill fields that are currently None or empty
         if not entry.title     and ai.get("title"):     entry.title     = ai["title"]
         if not entry.authors   and ai.get("authors"):   entry.authors   = ai["authors"]
         if not entry.year      and ai.get("year"):       entry.year      = str(ai["year"])
@@ -245,7 +285,6 @@ def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> l
         if not entry.url       and ai.get("url"):       entry.url       = ai["url"]
         if not entry.isbn      and ai.get("isbn"):      entry.isbn      = ai["isbn"]
         if not entry.entry_type or entry.entry_type == "unknown":
-            # Infer type from AI fields
             if ai.get("journal"):
                 entry.entry_type = "article"
             elif ai.get("booktitle"):
@@ -264,9 +303,6 @@ def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
     """
     For entries flagged needs_ai_parsing=True, ask the AI to extract
     structured metadata from raw bibliography text.
-    Runs BEFORE the API lookup loop so improved titles/authors flow into
-    CrossRef, DBLP, Semantic Scholar etc. for better matching.
-    Returns dict keyed by citation key with improved fields.
     """
     uncertain = [e for e in bib_entries_raw if e.get("needs_ai_parsing")]
     if not uncertain:
@@ -305,18 +341,13 @@ def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 3. Author overlap pre-filter  (new in v5 — runs before AI call)
+# 3. Author overlap pre-filter
 # ---------------------------------------------------------------------------
 
 def _pre_screen_by_author_overlap(entry: dict, api_result: dict) -> Optional[dict]:
     """
     Deterministic pre-screen using author overlap. Returns an early verdict
-    dict {verdict, confidence, reasoning, risk_factors} or None (= send to AI).
-
-    Rules:
-      overlap < 0.30  → FAKE   (very few authors match — strong signal)
-      overlap >= 0.70 → REAL   (most authors match — safe to skip AI)
-      None or between → None   (insufficient data, let AI decide)
+    dict or None (= send to AI).
     """
     from checker import author_overlap_score
 
@@ -333,7 +364,6 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict) -> Optional[dic
     api_status = api_result.get("status", "not_checked")
 
     if overlap < 0.30 and api_status in ("verified", "partial_match"):
-        # Paper was found in a database, but cited authors barely match → hallucination
         pct = int(overlap * 100)
         return {
             "verdict":     "FAKE",
@@ -359,7 +389,7 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict) -> Optional[dic
             "risk_factors": [],
         }
 
-    return None  # inconclusive — let AI decide
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -371,14 +401,8 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     Determine REAL / SUSPICIOUS / FAKE for each reference.
 
     Pipeline per entry:
-      1. Author overlap pre-filter (deterministic, free)  ← NEW v5
-      2. If inconclusive → send to AI (batched, max 20/call)
-
-    Three-tier verdict:
-      REAL       — reference exists; high API confidence or strong author match
-      SUSPICIOUS — cannot confirm but not enough evidence for FAKE
-                   (old German workshop, book chapter, grey literature)
-      FAKE       — strong evidence of fabrication (see FAKE SIGNALS in prompt)
+      1. Author overlap pre-filter (deterministic, free)
+      2. If inconclusive → send to AI (batched, max 20/call, cached per session)
     """
     if not bib_entries:
         return {"verdicts": [], "summary": "No entries to verify.",
@@ -387,10 +411,9 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     vr_by_key = {vr["key"]: vr for vr in api_results}
 
     all_verdicts:     List[dict] = []
-    needs_ai:         List[dict] = []  # (entry, vr) pairs that need AI
-    pre_screen_cache: Dict[str, dict] = {}  # key → early_verdict
+    needs_ai:         List[dict] = []
+    pre_screen_cache: Dict[str, dict] = {}
 
-    # ── Author overlap pre-screen ──────────────────────────────────────────
     for entry in bib_entries:
         vr = vr_by_key.get(entry["key"], {})
         early = _pre_screen_by_author_overlap(entry, vr)
@@ -399,7 +422,6 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         else:
             needs_ai.append((entry, vr))
 
-    # ── AI verification for remaining entries ──────────────────────────────
     ai_verdicts_by_key: Dict[str, dict] = {}
     fake_count = suspicious_count = real_count = 0
     summaries: List[str] = []
@@ -426,6 +448,8 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 "open_access_url":   vr.get("open_access_url") or "",
                 "web_evidence":      vr.get("web_evidence") or "",
                 "api_note":          vr.get("note") or "",
+                # NEW v6: pass version note so AI doesn't flag version mismatches as FAKE
+                "arxiv_version_note": vr.get("version_note") or "",
             })
 
         prompt = f"""You are an academic integrity officer detecting fabricated references
@@ -449,14 +473,12 @@ FAKE       — Strong fabrication evidence — requires 2+ FAKE signals below.
 • Author+year+venue combination not found even by web search
 
 ━━━ DO NOT OVER-FLAG ━━━
+• arxiv_version_note is set → the paper IS real, just cited as an older version. Do NOT flag.
 • German workshop/book chapter papers often not indexed — SUSPICIOUS not FAKE
-• Websites are verified by URL only (not academic DBs) — don't flag missing DB entry
+• Websites are verified by URL only — don't flag missing DB entry
 • Pre-2000 papers often not indexed — be lenient
 • Low API confidence alone ≠ FAKE
 • key_consistent=null means the check couldn't run — do not penalise
-
-Focus ONLY on whether the publication EXISTS. Do NOT re-check missing fields
-(title, year, pages) — that is already done deterministically.
 
 Return ONLY valid JSON, no markdown:
 {{
@@ -480,7 +502,6 @@ References:
             if s:
                 summaries.append(s)
         except Exception as e:
-            # Fallback: map API status directly
             for entry, vr in chunk:
                 status  = vr.get("status", "not_checked")
                 verdict = "REAL" if status == "verified" else "SUSPICIOUS"
@@ -491,7 +512,6 @@ References:
                     "risk_factors": [], "open_access_url": vr.get("open_access_url"),
                 }
 
-    # ── Combine pre-screen and AI verdicts ─────────────────────────────────
     for entry in bib_entries:
         key = entry["key"]
         if key in pre_screen_cache:
