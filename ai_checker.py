@@ -364,19 +364,50 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict) -> Optional[dic
     api_status = api_result.get("status", "not_checked")
 
     if overlap < 0.30 and api_status in ("verified", "partial_match"):
+        # Only escalate to FAKE if the title match itself is strong (>= 0.5).
+        # A weak title hit (e.g. keyword overlap from CrossRef) returning
+        # mismatched authors is not evidence of fabrication — it is a false API
+        # hit on a reference that simply is not indexed. Escalating those to FAKE
+        # produces false positives on legitimate niche/non-indexed references.
+        from checker import _title_similarity
+        cited_title   = (entry.get("title") or "").strip()
+        matched_title = (api_result.get("matched_title") or "").strip()
+        title_sim = _title_similarity(cited_title, matched_title) if cited_title and matched_title else 0.0
+
         pct = int(overlap * 100)
-        return {
-            "verdict":     "FAKE",
-            "confidence":  round(1.0 - overlap, 2),
-            "reasoning":   (
-                f"Paper title found in academic database but only {pct}% of cited authors "
-                "match the actual authors — strong sign of a fabricated or misattributed reference."
-            ),
-            "risk_factors": [
-                f"Author overlap: {pct}% (threshold: 30%)",
-                f"API status: {api_status}",
-            ],
-        }
+        if title_sim >= 0.50:
+            # Strong title hit + wrong authors = genuine FAKE signal
+            return {
+                "verdict":     "FAKE",
+                "confidence":  round(1.0 - overlap, 2),
+                "reasoning":   (
+                    f"Paper title found in academic database (title match {int(title_sim*100)}%) "
+                    f"but only {pct}% of cited authors match — strong sign of a fabricated "
+                    "or misattributed reference."
+                ),
+                "risk_factors": [
+                    f"Author overlap: {pct}% (threshold: 30%)",
+                    f"Title similarity: {int(title_sim*100)}%",
+                    f"API status: {api_status}",
+                ],
+            }
+        else:
+            # Weak title hit — API found something with similar keywords but it is
+            # not the same paper. Treat as not found rather than fabricated.
+            return {
+                "verdict":     "SUSPICIOUS",
+                "confidence":  0.45,
+                "reasoning":   (
+                    f"Reference not found in academic databases with confidence. "
+                    f"API returned a weak keyword match ({int(title_sim*100)}% title similarity, "
+                    f"{pct}% author overlap) — not treated as a genuine hit. "
+                    "May be a niche, non-indexed, or incorrectly formatted entry."
+                ),
+                "risk_factors": [
+                    f"Weak API title match: {int(title_sim*100)}% title similarity",
+                    "Reference may not be indexed in CrossRef / Semantic Scholar",
+                ],
+            }
 
     if overlap >= 0.70 and api_status == "verified":
         return {
