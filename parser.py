@@ -366,17 +366,25 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
 
         if surnames:
             n = len(surnames)
-            if n == 1:
-                # [XX00]: first 2 letters of single surname
-                expected = surnames[0][:2].lower()
-            elif n <= 3:
-                # [ABC00]: first letter of each surname
-                expected = ''.join(s[0].lower() for s in surnames[:3])
-            else:
-                # [Az00]: first 2 letters of first surname
-                expected = surnames[0][:2].lower()
+            # Build the set of ALL valid expected initials for this author list.
+            # LNI allows some variation in practice, so we accept any valid form:
+            #   1 author:   first 2 letters of surname         → "ez" for Ezkiri
+            #   2–3 authors: first letter of each surname      → "ms" for Mueller+Schmidt
+            #   4+ authors:  first 2 letters of first surname  → "mu" for Mueller et al.
+            # Additionally, students sometimes apply the 4+-author rule to 2–3 author
+            # entries by mistake, so we also accept the 2-letter prefix as a fallback
+            # for any count to avoid false positives.
+            valid_forms = set()
+            # Always accept first-2-letters of first surname (covers 1-author + common mistake)
+            valid_forms.add(surnames[0][:2].lower())
+            if n >= 2:
+                # Accept per-surname initials form (strict LNI for 2–3 authors)
+                valid_forms.add(''.join(s[0].lower() for s in surnames[:min(n, 3)]))
 
-            initials_ok = key_initials.startswith(expected) or expected.startswith(key_initials)
+            initials_ok = any(
+                key_initials.startswith(form) or form.startswith(key_initials)
+                for form in valid_forms
+            )
 
     # ── Combine ───────────────────────────────────────────────────────────────
     checks = [c for c in [year_ok, initials_ok] if c is not None]
