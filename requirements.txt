@@ -1,4 +1,4 @@
-# LNI Reference Checker v5 — requirements
+# LNI Reference Checker v6 — requirements
 # All packages are free/open-source. No paid API subscriptions required.
 
 flask>=3.0.0
@@ -28,3 +28,4 @@ rapidfuzz>=3.0.0
 # Unpaywall open-access links (optional):
 #   UNPAYWALL_EMAIL → your email address   required by Unpaywall polite pool
 # ──────────────────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0

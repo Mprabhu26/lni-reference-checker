@@ -54,6 +54,13 @@ Environment variables (all optional, all free):
 
 import os
 import re
+
+# Load .env file if present (for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed; rely on shell env vars
 import json
 import tempfile
 import shutil
@@ -227,6 +234,9 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
         bib_text = sections["bibliography"]
         fmt      = sections["format"]
 
+        if len(body) < 200:
+            yield _sse("progress", {"step": "warning",
+                "message": "Very little text extracted — this may be a scanned/image-only PDF. Results may be incomplete."})
         yield _sse("progress", {"step": "ai_extract",
                                   "message": "AI extracting bibliography structure…"})
         ai_extracted_refs = ai_extract_references_from_text(bib_text)
@@ -444,10 +454,16 @@ def _assemble_result(
     ai_fake_count = verification_result.get("fake_count", 0)
     det_score = compute_score(bib_list, xcheck, api_results_raw,
                               style_suggestions, duplicates, ai_fake_count=ai_fake_count)
+    # Derive a deterministic verdict from the score when AI is unavailable
+    s = det_score["score"]
+    det_verdict = "PASS" if s >= 75 else "FLAG" if s >= 50 else "FAIL"
+
+    # Score and grade are ALWAYS deterministic — never overridden by AI.
+    # AI only provides verdict, reasoning, and feedback text.
     final_score = {
-        "score":            overall.get("score", det_score["score"]),
-        "grade":            overall.get("grade", det_score["grade"]),
-        "verdict":          overall.get("verdict", "FLAG"),
+        "score":            det_score["score"],
+        "grade":            det_score["grade"],
+        "verdict":          overall.get("verdict", det_verdict),
         "verdict_reason":   overall.get("verdict_reason", ""),
         "student_feedback": overall.get("student_feedback", []),
         "professor_note":   overall.get("professor_note", ""),
@@ -899,7 +915,7 @@ def export_report():
     ]
 
     report = "\n".join(lines)
-    fname  = data.get("filename","report").replace(" ","_") + "_lni_report.txt"
+    fname  = re.sub(r'[^\w\-.]', '_', data.get("filename", "report")) + "_lni_report.txt"
     return Response(report, mimetype="text/plain",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 

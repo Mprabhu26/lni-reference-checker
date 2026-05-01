@@ -370,6 +370,7 @@ main{display:grid;grid-template-columns:300px 1fr;overflow:hidden}
 
     <div class="results" id="resultsPanel">
       <div class="summary-bar" id="summaryBar"></div>
+      <div id="newCheckBar" style="display:none;padding:8px 24px 0;"><button id="newCheckBtn" onclick="clearResults()" style="font-size:12px;padding:5px 14px;border-radius:99px;border:1px solid var(--border);background:var(--bg2);color:var(--text2);cursor:pointer;display:flex;align-items:center;gap:6px;">&#8635; New Check</button></div>
       <div class="tabs-bar">
         <div class="tab active" data-tab="bib">Bibliography <span class="tab-count" id="badgeBib">0</span></div>
         <div class="tab" data-tab="xcheck">Cross-Check <span class="tab-count" id="badgeX">0</span></div>
@@ -646,12 +647,37 @@ function renderBatchResults(data){
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+function clearResults(){
+  // Reset file selection state
+  selectedFile=null; selectedBib=null; selectedBatch=[];
+  $('fileInput').value='';
+  // Hide file chip
+  $('fileChip').classList.remove('visible');
+  // Clear result content
+  $('bibList').innerHTML='';
+  $('xcheckContent').innerHTML='';
+  $('verifyList').innerHTML='';
+  const sl=$('styleList'); if(sl) sl.innerHTML='';
+  $('summaryBar').innerHTML='';
+  // Reset tabs to first tab
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',i===0));
+  document.querySelectorAll('.tab-panel').forEach((p,i)=>p.classList.toggle('active',i===0));
+  // Remove AI feedback banner if present
+  const fb=$('feedbackPanel'); if(fb) fb.remove();
+  // Reset batch list
+  const bl=$('batchList'); if(bl) bl.innerHTML='';
+  showState('empty');
+}
+
 function showState(s){
   $('emptyState').style.display=s==='empty'?'flex':'none';
   $('loadingState').classList.toggle('show',s==='loading');
   $('errorState').classList.toggle('show',s==='error');
   $('resultsPanel').classList.toggle('show',s==='results');
   $('batchResultsPanel').classList.toggle('show',s==='batch');
+  // Show New Check button only when results are visible
+  const ncb=$('newCheckBar');
+  if(ncb) ncb.style.display=(s==='results'||s==='batch')?'block':'none';
 }
 function showError(msg){$('errorMsg').textContent=msg;showState('error');}
 function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -707,15 +733,14 @@ function renderSummary(data){
 
 function renderFeedback(data){
   const sc=data.score||{};
-  if(!sc.student_feedback||!sc.student_feedback.length)return;
   const existing=$('feedbackPanel');if(existing)existing.remove();
+  // Only show the banner when AI is unavailable — no student/professor labels
+  const aiUnavailable = sc.professor_note && sc.professor_note.toLowerCase().includes('unavailable');
+  if(!aiUnavailable) return;
   const panel=document.createElement('div');
   panel.id='feedbackPanel';
-  panel.style.cssText='margin:0 24px 16px;background:var(--blue-light);border:1px solid var(--blue);border-radius:var(--r);padding:14px 16px;';
-  const pfNote=sc.professor_note?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--text3)"><strong>For professor:</strong> ${esc(sc.professor_note)}</div>`:'';
-  panel.innerHTML=`<div style="font-size:12px;font-weight:600;color:var(--blue);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.8px">AI Feedback for Student</div>`
-    +sc.student_feedback.map(f=>`<div style="font-size:13px;color:var(--text2);margin-bottom:4px">• ${esc(f)}</div>`).join('')
-    +pfNote;
+  panel.style.cssText='margin:0 24px 16px;background:var(--blue-light);border:1px solid var(--blue);border-radius:var(--r);padding:10px 16px;';
+  panel.innerHTML=`<div style="font-size:13px;color:var(--text2)">⚠ ${esc(sc.professor_note)}</div>`;
   $('resultsPanel').prepend(panel);
 }
 

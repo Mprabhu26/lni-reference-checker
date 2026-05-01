@@ -146,7 +146,16 @@ def extract_pdf(path: str) -> dict:
         # Re-insert a newline before every [Key] marker (entry boundary)
         bib_part = re.sub(r'\s+(\[[A-Za-z]{2,6}\d{2}[a-z]?\])', r'\n\1', bib_part)
 
-        text = body_part + bib_part
+        # Return directly from the already-known split point.
+        # Do NOT call split_body_bib() again — the bib normalisation collapses
+        # the newline before the heading, which would cause the heading regex
+        # (anchored to \n or ^) to miss it, resulting in an empty bib section.
+        return {
+            "full_text":    body_part + bib_part,
+            "body":         body_part.strip(),
+            "bibliography": bib_part.strip(),
+            "format":       "pdf",
+        }
 
     result = split_body_bib(text)
     result["format"] = "pdf"

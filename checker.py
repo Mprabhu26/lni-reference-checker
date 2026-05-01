@@ -163,8 +163,12 @@ def _title_similarity(title1: str, title2: str) -> float:
     if not t1 or not t2:
         return 0.0
     try:
-        from rapidfuzz.fuzz import token_set_ratio
-        return token_set_ratio(t1, t2) / 100.0
+        from rapidfuzz.fuzz import token_sort_ratio
+        # token_sort_ratio instead of token_set_ratio: the set variant scores
+        # 100% whenever one title's words are a subset of the other, which causes
+        # false positives when a short title matches a much longer unrelated one.
+        # token_sort_ratio requires both titles to cover similar ground.
+        return token_sort_ratio(t1, t2) / 100.0
     except ImportError:
         from difflib import SequenceMatcher
         return SequenceMatcher(None, t1, t2).ratio()
@@ -249,7 +253,7 @@ def _norm_name(name: str) -> str:
 
 
 def detect_self_citations(bib_entries: dict, body_text: str) -> list:
-    candidates = {_norm_name(c) for c in re.findall(r'\b([A-ZÄÖÜ][a-zäöüß]{3,})\b', body_text[:2000])}
+    candidates = {_norm_name(c) for c in re.findall(r'\b([A-ZÄÖÜ][a-zäöüß]{3,})\b', body_text)}
     self_cites = []
     for key, entry in bib_entries.items():
         if not entry.authors:

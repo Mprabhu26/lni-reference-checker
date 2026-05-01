@@ -26,6 +26,7 @@ FIXES vs v3:
 """
 
 import re
+import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -77,8 +78,8 @@ _PUBLISHER_WORDS = re.compile(
 )
 
 _PROCEEDINGS_WORDS = re.compile(
-    r'\bIn\s*[\(\[]|Proc\.|Proceedings|Conference|Workshop|Symposium|'
-    r'Tagung|Konferenz|Hrsg\b|[Ee]ds?\b|editors?\b',
+    r'\bIn:\s*|\bProc\.|\bProceedings\b|\bConference\b|\bWorkshop\b|\bSymposium\b|'
+    r'\bTagung\b|\bKonferenz\b|\bHrsg\b|\bEds?\.\B|\beditors?\b',
     re.IGNORECASE,
 )
 
@@ -151,10 +152,14 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         return
 
     # ── Entry type classification ─────────────────────────────────────────────
-    if _JOURNAL_WORDS.search(raw) or _JOURNAL_NAME_HINTS.search(raw):
-        entry.entry_type = "article"
-    elif _PROCEEDINGS_WORDS.search(raw):
+    # IMPORTANT: check proceedings FIRST — a proceedings entry often contains
+    # journal-like words (e.g. "Informatik", "Jg.") that would falsely trigger
+    # the article branch. "In: Proceedings" is an unambiguous proceedings signal
+    # and must take priority over any journal name hints.
+    if _PROCEEDINGS_WORDS.search(raw):
         entry.entry_type = "proceedings"
+    elif _JOURNAL_WORDS.search(raw) or _JOURNAL_NAME_HINTS.search(raw):
+        entry.entry_type = "article"
     elif _PUBLISHER_WORDS.search(raw):
         entry.entry_type = "book"
     else:
@@ -455,7 +460,6 @@ def _check_completeness(entry: BibEntry) -> None:
     # Future-year check
     if entry.year:
         try:
-            import datetime
             if int(entry.year) > datetime.date.today().year + 1:
                 entry.completeness_issues.append(
                     f"Year '{entry.year}' is in the future — likely an error."
