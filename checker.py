@@ -350,7 +350,7 @@ def _query_crossref(entry: BibEntry) -> VerificationResult:
         hdrs = {"User-Agent": "LNI-Checker/6.0 (mailto:lni@checker.de)"}
 
         if entry.doi:
-            resp = requests.get(f"https://api.crossref.org/works/{entry.doi}", timeout=10, headers=hdrs)
+            resp = requests.get(f"https://api.crossref.org/works/{entry.doi}", timeout=5, headers=hdrs)
             if resp.status_code == 200:
                 work  = resp.json().get("message", {})
                 ft    = (work.get("title") or [""])[0]
@@ -367,7 +367,7 @@ def _query_crossref(entry: BibEntry) -> VerificationResult:
         if entry.authors:
             params["query.author"] = entry.authors.split(';')[0].split(',')[0].strip()
 
-        resp = requests.get("https://api.crossref.org/works", params=params, timeout=10, headers=hdrs)
+        resp = requests.get("https://api.crossref.org/works", params=params, timeout=5, headers=hdrs)
         resp.raise_for_status()
         items = resp.json().get("message", {}).get("items", [])
         if not items:
@@ -420,7 +420,7 @@ def _query_semantic_scholar(entry: BibEntry) -> VerificationResult:
             "https://api.semanticscholar.org/graph/v1/paper/search",
             params={"query": query, "limit": 3,
                     "fields": "title,authors,year,openAccessPdf,externalIds"},
-            timeout=10, headers=hdrs)
+            timeout=5, headers=hdrs)
         resp.raise_for_status()
         papers = resp.json().get("data", [])
         if not papers:
@@ -458,7 +458,7 @@ def _query_openalex(entry: BibEntry) -> VerificationResult:
             q += " " + entry.authors.split(';')[0].split(',')[0].strip()
 
         resp = requests.get("https://api.openalex.org/works",
-            params={"search": q, "per_page": 3}, timeout=10,
+            params={"search": q, "per_page": 3}, timeout=5,
             headers={"User-Agent": "LNI-Checker/6.0 (mailto:lni@checker.de)"})
         resp.raise_for_status()
         results = resp.json().get("results", [])
@@ -591,7 +591,7 @@ def _fetch_arxiv_bibtex_cached(arxiv_id: str) -> Optional[str]:
     try:
         resp = requests.get(
             f"https://arxiv.org/bibtex/{arxiv_id}",
-            timeout=12,
+            timeout=5,
             headers={"User-Agent": "LNI-Checker/6.0 (mailto:lni@checker.de)"},
         )
         text = resp.text.strip() if resp.status_code == 200 else None
@@ -653,7 +653,7 @@ def _query_arxiv_versioned(entry: BibEntry) -> Optional[VerificationResult]:
             _rate_limit("arxiv.org", 0.34)
             abs_resp = requests.get(
                 f"https://arxiv.org/abs/{arxiv_id}",
-                timeout=10,
+                timeout=5,
                 headers={"User-Agent": "LNI-Checker/6.0"},
             )
             if abs_resp.status_code == 200:
@@ -682,7 +682,7 @@ def _query_arxiv_versioned(entry: BibEntry) -> Optional[VerificationResult]:
                 _rate_limit("arxiv.org", 0.34)
                 vresp = requests.get(
                     f"https://arxiv.org/abs/{arxiv_id}v{v}",
-                    timeout=10,
+                    timeout=5,
                     headers={"User-Agent": "LNI-Checker/6.0"},
                 )
                 if vresp.status_code == 200:
@@ -748,7 +748,7 @@ def _query_arxiv_search(entry: BibEntry) -> VerificationResult:
         _rate_limit("export.arxiv.org", 0.34)
         resp = requests.get("https://export.arxiv.org/api/query",
             params={"search_query": q, "max_results": 3, "sortBy": "relevance"},
-            timeout=10, headers={"User-Agent": "LNI-Checker/6.0"})
+            timeout=5, headers={"User-Agent": "LNI-Checker/6.0"})
         if resp.status_code != 200:
             return VerificationResult(key=entry.key, title=title, status="error",
                 confidence=0.0, note=f"arXiv HTTP {resp.status_code}", sources_checked=["arXiv"])
@@ -800,7 +800,7 @@ def _query_dblp(entry: BibEntry) -> VerificationResult:
         clean_q = re.sub(r'[^\w\s]', ' ', title.lower()).strip()
 
         resp = requests.get("https://dblp.org/search/publ/api",
-            params={"q": clean_q, "format": "json", "h": 3}, timeout=15,
+            params={"q": clean_q, "format": "json", "h": 3}, timeout=5,
             headers={"User-Agent": "LNI-Checker/6.0 (mailto:lni@checker.de)"})
         resp.raise_for_status()
 
@@ -839,7 +839,7 @@ def _query_acl_anthology(entry: BibEntry) -> VerificationResult:
     try:
         title = entry.title or ""
         resp = requests.get("https://aclanthology.org/search/",
-            params={"q": title}, timeout=12,
+            params={"q": title}, timeout=5,
             headers={"User-Agent": "LNI-Checker/6.0"})
         if resp.status_code != 200:
             return VerificationResult(key=entry.key, title=title, status="error",
@@ -884,7 +884,7 @@ def _query_openreview(entry: BibEntry) -> VerificationResult:
             fid = re.search(r'[?&]id=([A-Za-z0-9_\-]+)', entry.url)
             if fid:
                 resp = requests.get("https://api.openreview.net/notes",
-                    params={"forum": fid.group(1), "limit": 1}, timeout=10,
+                    params={"forum": fid.group(1), "limit": 1}, timeout=5,
                     headers={"User-Agent": "LNI-Checker/6.0"})
                 if resp.status_code == 200:
                     notes = resp.json().get("notes", [])
@@ -899,7 +899,7 @@ def _query_openreview(entry: BibEntry) -> VerificationResult:
                             sources_checked=["OpenReview"])
 
         resp = requests.get("https://api2.openreview.net/notes/search",
-            params={"term": title, "limit": 3}, timeout=12,
+            params={"term": title, "limit": 3}, timeout=5,
             headers={"User-Agent": "LNI-Checker/6.0"})
         if resp.status_code != 200:
             return VerificationResult(key=entry.key, title=title, status="error",
@@ -945,7 +945,7 @@ def _query_open_library(entry: BibEntry) -> VerificationResult:
             isbn = re.sub(r'[\s-]', '', entry.isbn)
             resp = requests.get("https://openlibrary.org/api/books",
                 params={"bibkeys": f"ISBN:{isbn}", "format": "json", "jscmd": "data"},
-                timeout=10, headers={"User-Agent": "LNI-Checker/6.0"})
+                timeout=5, headers={"User-Agent": "LNI-Checker/6.0"})
             if resp.status_code == 200:
                 rec = resp.json().get(f"ISBN:{isbn}")
                 if rec:
@@ -963,7 +963,7 @@ def _query_open_library(entry: BibEntry) -> VerificationResult:
                 sources_checked=["Open Library"])
 
         resp = requests.get("https://openlibrary.org/search.json",
-            params={"title": entry.title, "limit": 3}, timeout=10,
+            params={"title": entry.title, "limit": 3}, timeout=5,
             headers={"User-Agent": "LNI-Checker/6.0"})
         resp.raise_for_status()
         docs = resp.json().get("docs", [])
@@ -1018,7 +1018,7 @@ def _query_github(entry: BibEntry) -> Optional[VerificationResult]:
             hdrs["Authorization"] = f"token {token}"
 
         resp = requests.get(f"https://api.github.com/repos/{owner}/{repo}",
-            headers=hdrs, timeout=8)
+            headers=hdrs, timeout=5)
 
         if resp.status_code == 200:
             data     = resp.json()
@@ -1062,7 +1062,7 @@ def _query_google_scholar(entry: BibEntry) -> VerificationResult:
             "Accept-Language": "en-US,en;q=0.9",
         }
         resp = requests.get("https://scholar.google.com/scholar",
-            params={"q": q, "hl": "en", "num": 3}, headers=hdrs, timeout=12)
+            params={"q": q, "hl": "en", "num": 3}, headers=hdrs, timeout=5)
 
         if resp.status_code == 429:
             return VerificationResult(key=entry.key, title=entry.title or "",
@@ -1110,7 +1110,7 @@ def _query_duckduckgo_web(entry: BibEntry) -> VerificationResult:
             params={"q": q},
             headers={"User-Agent": "Mozilla/5.0 (compatible; LNI-Checker/6.0)",
                      "Accept-Language": "en-US,en;q=0.9"},
-            timeout=12)
+            timeout=5)
         if resp.status_code != 200:
             return VerificationResult(key=entry.key, title=title, status="error",
                 confidence=0.0, note=f"DuckDuckGo HTTP {resp.status_code}",
@@ -1160,7 +1160,7 @@ def _verify_website(entry: BibEntry) -> VerificationResult:
     try:
         if not url.startswith("http"):
             url = "https://" + url
-        resp = requests.head(url, timeout=8, allow_redirects=True)
+        resp = requests.head(url, timeout=5, allow_redirects=True)
         if resp.status_code < 400:
             return VerificationResult(key=entry.key, title=entry.title or url,
                 status="verified", confidence=1.0, open_access_url=url,
@@ -1183,7 +1183,7 @@ def _verify_website(entry: BibEntry) -> VerificationResult:
 def _check_unpaywall(doi: str) -> Optional[str]:
     email = os.environ.get("UNPAYWALL_EMAIL", "lni-checker@uni-project.de")
     try:
-        resp = requests.get(f"https://api.unpaywall.org/v2/{doi}?email={email}", timeout=8)
+        resp = requests.get(f"https://api.unpaywall.org/v2/{doi}?email={email}", timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("is_oa"):
@@ -1231,7 +1231,7 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     results: List[VerificationResult] = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(fn, entry): fn.__name__ for fn in source_fns}
-        for future in as_completed(futures, timeout=35):
+        for future in as_completed(futures, timeout=20):
             try:
                 r = future.result()
                 if r is not None:
@@ -1278,7 +1278,7 @@ def verify_all_references(bib_entries: dict, delay: float = 0.0) -> list:
             executor.submit(verify_reference, entry): key
             for key, entry in bib_entries.items()
         }
-        for future in as_completed(future_to_key, timeout=120):
+        for future in as_completed(future_to_key, timeout=60):
             try:
                 results.append(future.result())
             except Exception as e:
