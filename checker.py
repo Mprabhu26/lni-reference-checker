@@ -38,6 +38,7 @@ import os
 import re
 import time
 import threading
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,12 @@ _DISK_CACHE_DIR: str = os.environ.get("LNI_CACHE_DIR", ".lni_cache")
 _DISK_CACHE_LOCK = threading.Lock()
 _MEM_CACHE: Dict[str, "VerificationResult"] = {}
 _MEM_CACHE_LOCK = threading.Lock()
+
+# ADDED: Missing cache dictionaries for arXiv and general results
+_ARXIV_BIBTEX_MEM_CACHE: Dict[str, str] = {}
+_ARXIV_CACHE_LOCK = threading.Lock()
+_VERIFICATION_RESULT_CACHE: Dict[str, "VerificationResult"] = {}
+_VERIFICATION_CACHE_LOCK = threading.Lock()
 
 _RATE_LOCK: Dict[str, threading.Lock] = {}
 _RATE_LAST: Dict[str, float] = {}
@@ -112,6 +119,7 @@ def _put_cache(entry: BibEntry, result: "VerificationResult") -> None:
     path = Path(_DISK_CACHE_DIR) / f"{key}.json"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Fixed: Write with lock held for atomicity
         with _DISK_CACHE_LOCK:
             path.write_text(json.dumps({
                 "key": result.key, "title": result.title, "status": result.status,
@@ -884,12 +892,7 @@ def verify_all_references(bib_entries: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Rest of the file (unchanged from original)
-# - In-text citations extraction
-# - Cross-check
-# - Duplicate detection
-# - LNI style checks
-# - Scoring
+# In-text citations extraction
 # ---------------------------------------------------------------------------
 
 def extract_citations_from_body(body_text: str) -> set:

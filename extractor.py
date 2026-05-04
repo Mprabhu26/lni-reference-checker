@@ -171,8 +171,8 @@ def extract_pdf(path: str) -> dict:
             
             text = "\n".join(extracted_pages)
             
-            # Check if PDF might be scanned
-            if pages_with_text == 0 or (pages_with_text / page_count) < 0.3:
+            # Check if PDF might be scanned - FIXED division by zero
+            if pages_with_text == 0 or (page_count > 0 and pages_with_text / page_count < 0.3):
                 is_scanned = True
                 extraction_method = "pdfplumber (likely scanned)"
     
@@ -213,7 +213,7 @@ def extract_pdf(path: str) -> dict:
                 pages_with_text = text_pages
                 
                 # Re-check if scanned
-                if pages_with_text == 0 or (pages_with_text / page_count) < 0.3:
+                if pages_with_text == 0 or (page_count > 0 and pages_with_text / page_count < 0.3):
                     is_scanned = True
                     
         except Exception as e:
@@ -380,11 +380,6 @@ def extract_docx(path: str) -> dict:
             t = header.text.strip()
             if t and len(t) > 20:
                 parts.append("[HEADER] " + t)
-        # Footer extraction (optional, often contains page numbers only)
-        # for footer in section.footer.paragraphs:
-        #     t = footer.text.strip()
-        #     if t and len(t) > 10:
-        #         parts.append("[FOOTER] " + t)
     
     text = "\n".join(parts)
     
@@ -399,8 +394,140 @@ def extract_docx(path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# LaTeX Extraction - IMPROVED
+# LaTeX Extraction - IMPROVED with recursive crossref resolution
 # ---------------------------------------------------------------------------
+
+def _parse_bibtex_fields(body: str) -> dict:
+    fields = {}
+    field_start = re.compile(r'(\w+)\s*=\s*([{"])', re.DOTALL)
+    pos = 0
+    while pos < len(body):
+        m = field_start.search(body, pos)
+        if not m:
+            break
+        field_name = m.group(1).lower()
+        delimiter = m.group(2)
+        content_start = m.end()
+        
+        if delimiter == '{':
+            depth = 1
+            i = content_start
+            while i < len(body) and depth > 0:
+                if body[i] == '{':
+                    depth += 1
+                elif body[i] == '}':
+                    depth -= 1
+                i += 1
+            value = body[content_start:i - 1]
+            pos = i
+        else:
+            end = body.find('"', content_start)
+            while end != -1 and body[end - 1] == '\\':
+                end = body.find('"', end + 1)
+            if end == -1:
+                break
+            value = body[content_start:end]
+            pos = end + 1
+        
+        value = re.sub(r'\{([^{}]*)\}', r'\1', value)
+        fields[field_name] = re.sub(r'\s+', ' ', value).strip()
+    
+    return fields
+
+
+def _resolve_crossref_recursive(key: str, all_fields: dict, visited: set = None) -> dict:
+    """Recursively resolve crossref inheritance."""
+    if visited is None:
+        visited = set()
+    if key in visited:
+        return {}
+    visited.add(key)
+    
+    fields = all_fields.get(key, {}).copy()
+    parent_key = fields.get("crossref", "").strip()
+    
+    if parent_key and parent_key in all_fields:
+        parent_fields = _resolve_crossref_recursive(parent_key, all_fields, visited)
+        for fn, val in parent_fields.items():
+            if fn != "crossref" and fn not in fields:
+                fields[fn] = val
+    
+    return fields
+
+
+def _bibtex_to_lni_text(bibtex: str) -> str:
+    lines = ["Literaturverzeichnis\n"]
+    entry_pattern = re.compile(r'@\w+\{(\w+),(.*?)\}(?=\s*@|\s*$)', re.DOTALL)
+    
+    all_fields: dict = {}
+    for entry_match in entry_pattern.finditer(bibtex):
+        key = entry_match.group(1)
+        body = entry_match.group(2)
+        fields = _parse_bibtex_fields(body)
+        all_fields[key] = fields
+    
+    # Recursively resolve crossref inheritance
+    resolved_fields = {}
+    for key in all_fields:
+        resolved_fields[key] = _resolve_crossref_recursive(key, all_fields)
+    
+    for key, fields in resolved_fields.items():
+        author = fields.get("author", "")
+        title = fields.get("title", "")
+        year = fields.get("year", "")
+        pub = fields.get("publisher", "")
+        journal = fields.get("journal", "")
+        pages = fields.get("pages", "")
+        url = fields.get("url", "")
+        urldate = fields.get("urldate", "")
+        booktitle = fields.get("booktitle", "")
+        doi = fields.get("doi", "")
+        
+        parts = []
+        if author:
+            parts.append(f"{author}:")
+        if title:
+            parts.append(title + ".")
+        if journal:
+            parts.append(journal + ".")
+        if booktitle and not journal:
+            parts.append(f"In: {booktitle}.")
+        if pub:
+            parts.append(pub + ".")
+        if pages:
+            parts.append(f"S. {pages}.")
+        if doi:
+            parts.append(f"doi: {doi}")
+        if url:
+            parts.append(url)
+        if urldate:
+            parts.append(f"Stand: {urldate}")
+        if year:
+            parts.append(year + ".")
+        
+        lines.append(f"[{key}] {' '.join(parts)}")
+    
+    return "\n".join(lines)
+
+
+def _extract_tex_bib_section(tex: str) -> str:
+    match = re.search(
+        r'\\begin\{thebibliography\}(.*?)\\end\{thebibliography\}',
+        tex, re.DOTALL
+    )
+    if not match:
+        return ""
+    raw = match.group(1)
+    lines = ["Literaturverzeichnis\n"]
+    for item in re.finditer(
+        r'\\bibitem\{(\w+)\}(.*?)(?=\\bibitem|\Z)', raw, re.DOTALL
+    ):
+        key = item.group(1)
+        text = re.sub(r'\\[a-zA-Z]+\*?\{([^}]*)\}', r'\1', item.group(2))
+        text = re.sub(r'[{}\\]', '', text).strip()
+        lines.append(f"[{key}] {text}")
+    return "\n".join(lines)
+
 
 def extract_latex(tex_path: str, bib_path: str = None) -> dict:
     with open(tex_path, encoding="utf-8", errors="replace") as f:
@@ -481,122 +608,6 @@ def _clean_latex(tex: str) -> str:
     tex = re.sub(r'\$\$[^$]+\$\$', '[DISPLAY MATH]', tex)
     
     return tex.strip()
-
-
-def _parse_bibtex_fields(body: str) -> dict:
-    fields = {}
-    field_start = re.compile(r'(\w+)\s*=\s*([{"])', re.DOTALL)
-    pos = 0
-    while pos < len(body):
-        m = field_start.search(body, pos)
-        if not m:
-            break
-        field_name = m.group(1).lower()
-        delimiter = m.group(2)
-        content_start = m.end()
-        
-        if delimiter == '{':
-            depth = 1
-            i = content_start
-            while i < len(body) and depth > 0:
-                if body[i] == '{':
-                    depth += 1
-                elif body[i] == '}':
-                    depth -= 1
-                i += 1
-            value = body[content_start:i - 1]
-            pos = i
-        else:
-            end = body.find('"', content_start)
-            while end != -1 and body[end - 1] == '\\':
-                end = body.find('"', end + 1)
-            if end == -1:
-                break
-            value = body[content_start:end]
-            pos = end + 1
-        
-        value = re.sub(r'\{([^{}]*)\}', r'\1', value)
-        fields[field_name] = re.sub(r'\s+', ' ', value).strip()
-    
-    return fields
-
-
-def _bibtex_to_lni_text(bibtex: str) -> str:
-    lines = ["Literaturverzeichnis\n"]
-    entry_pattern = re.compile(r'@\w+\{(\w+),(.*?)\}(?=\s*@|\s*$)', re.DOTALL)
-    
-    all_fields: dict = {}
-    for entry_match in entry_pattern.finditer(bibtex):
-        key = entry_match.group(1)
-        body = entry_match.group(2)
-        fields = _parse_bibtex_fields(body)
-        all_fields[key] = fields
-    
-    # Resolve crossref inheritance
-    for key, fields in all_fields.items():
-        parent_key = fields.get("crossref", "").strip()
-        if parent_key and parent_key in all_fields:
-            parent = all_fields[parent_key]
-            for fn, val in parent.items():
-                if fn != "crossref" and fn not in fields:
-                    fields[fn] = val
-    
-    for key, fields in all_fields.items():
-        author = fields.get("author", "")
-        title = fields.get("title", "")
-        year = fields.get("year", "")
-        pub = fields.get("publisher", "")
-        journal = fields.get("journal", "")
-        pages = fields.get("pages", "")
-        url = fields.get("url", "")
-        urldate = fields.get("urldate", "")
-        booktitle = fields.get("booktitle", "")
-        doi = fields.get("doi", "")
-        
-        parts = []
-        if author:
-            parts.append(f"{author}:")
-        if title:
-            parts.append(title + ".")
-        if journal:
-            parts.append(journal + ".")
-        if booktitle and not journal:
-            parts.append(f"In: {booktitle}.")
-        if pub:
-            parts.append(pub + ".")
-        if pages:
-            parts.append(f"S. {pages}.")
-        if doi:
-            parts.append(f"doi: {doi}")
-        if url:
-            parts.append(url)
-        if urldate:
-            parts.append(f"Stand: {urldate}")
-        if year:
-            parts.append(year + ".")
-        
-        lines.append(f"[{key}] {' '.join(parts)}")
-    
-    return "\n".join(lines)
-
-
-def _extract_tex_bib_section(tex: str) -> str:
-    match = re.search(
-        r'\\begin\{thebibliography\}(.*?)\\end\{thebibliography\}',
-        tex, re.DOTALL
-    )
-    if not match:
-        return ""
-    raw = match.group(1)
-    lines = ["Literaturverzeichnis\n"]
-    for item in re.finditer(
-        r'\\bibitem\{(\w+)\}(.*?)(?=\\bibitem|\Z)', raw, re.DOTALL
-    ):
-        key = item.group(1)
-        text = re.sub(r'\\[a-zA-Z]+\*?\{([^}]*)\}', r'\1', item.group(2))
-        text = re.sub(r'[{}\\]', '', text).strip()
-        lines.append(f"[{key}] {text}")
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

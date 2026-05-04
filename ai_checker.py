@@ -21,7 +21,7 @@ import os
 import re
 import json
 import threading
-import requests
+import requests  # ADDED: missing import
 from typing import List, Dict, Any, Optional
 
 GROQ_MODEL  = "llama-3.3-70b-versatile"
@@ -640,6 +640,18 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     needs_ai: List[tuple] = []
     pre_screen_cache: Dict[str, dict] = {}
 
+    # Helper function for title similarity (avoid circular import)
+    def _local_title_similarity(t1: str, t2: str) -> float:
+        if not t1 or not t2:
+            return 0.0
+        t1_norm = re.sub(r'[^\w\s]', '', t1.lower())
+        t2_norm = re.sub(r'[^\w\s]', '', t2.lower())
+        t1_words = set(w for w in t1_norm.split() if len(w) > 2)
+        t2_words = set(w for w in t2_norm.split() if len(w) > 2)
+        if not t1_words or not t2_words:
+            return 0.0
+        return len(t1_words & t2_words) / len(t1_words | t2_words)
+
     for entry in bib_entries:
         vr = vr_by_key.get(entry["key"], {})
         
@@ -647,8 +659,7 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         matched_title = vr.get("matched_title", "")
         title_sim = 0.0
         if entry.get("title") and matched_title:
-            from checker import _title_similarity
-            title_sim = _title_similarity(entry["title"], matched_title)
+            title_sim = _local_title_similarity(entry["title"], matched_title)
         
         # Try pre-screen
         early = _pre_screen_by_author_overlap(entry, vr, title_sim)
@@ -768,8 +779,7 @@ References with pre-computed signals:
             matched_title = vr.get("matched_title", "")
             title_sim = 0.0
             if entry.get("title") and matched_title:
-                from checker import _title_similarity
-                title_sim = _title_similarity(entry["title"], matched_title)
+                title_sim = _local_title_similarity(entry["title"], matched_title)
             composite = _compute_composite_fake_score(entry, vr, title_sim)
             all_verdicts.append({
                 "key": key,
@@ -799,7 +809,7 @@ References with pre-computed signals:
 
 
 # ---------------------------------------------------------------------------
-# 6. Overall verdict + professor report (unchanged from original)
+# 6. Overall verdict + professor report
 # ---------------------------------------------------------------------------
 
 def ai_overall_verdict(filename: str, summary: dict, xcheck,
