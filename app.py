@@ -1,70 +1,32 @@
 """
-Flask Web Server — LNI Reference Checker v6
+Flask Web Server — LNI Reference Checker v6.1
 ============================================
-Pipeline:
-  EXTRACT       — pdfplumber/docx/LaTeX, last-match bib detection, DOCX table cells
-
-  AI EXTRACT    — LLM parses bibliography text into structured records
-                  Handles any format: numbered [1], author-year, BibLaTeX, mixed
-                  Falls back silently to regex extraction if no API key set
-
-  PARSE         — regex extracts BibEntry objects (100% deterministic):
-                  LNI key format, key-vs-metadata consistency, field completeness,
-                  future-year, implausible page ranges, needs_ai_parsing flag
-
-  AI RE-PARSE   — Groq/Gemini re-parses entries flagged needs_ai_parsing=True
-                  Improved metadata flows into API lookups
-
-  CHECK         — deterministic rule-based checks:
-                  Citation extraction (LNI + numeric detection), cross-check,
-                  duplicate detection, LNI macro/style checks
-
-  API LOOKUP    — 10 parallel sources, all FREE:
-                  CrossRef · Semantic Scholar · OpenAlex
-                  arXiv BibTeX versioned (NEW v6) · DBLP · ACL Anthology
-                  OpenReview · Open Library · GitHub API · Scholar · DuckDuckGo
-                  Results cached in memory + disk (LNI_CACHE_DIR)
-
-  AI VERIFY     — Groq→Gemini: three-tier REAL/SUSPICIOUS/FAKE per reference
-                  Author overlap pre-filter runs first (no AI tokens for clear cases)
-                  key_consistent signal from parser included in AI prompt
-                  arxiv_version_note passed so old-version citations are not flagged FAKE
-
-  SSE STREAM    — /check streams progress events to browser in real time
-                  Each reference result is sent as a Server-Sent Event
-
-  /ai-review    — manual AI audit button (Groq→Gemini)
-  /status       — NEW v6: returns session cache stats (LLM + arXiv BibTeX cache)
-
-NEW in v6:
-  - ArXiv versioned BibTeX checker: fetches https://arxiv.org/bibtex/{id} as
-    the authoritative source. Checks all historical versions so old-version
-    citations match correctly. version_note field carries through to the UI.
-  - Session-scoped LLM cache: AI calls cached in process memory by prompt hash.
-    Within a 15-document batch session, repeated references skip AI network calls.
-
-Environment variables (all optional, all free):
-  GROQ_API_KEY              → console.groq.com       (14 400 req/day free)
-  GEMINI_API_KEY            → aistudio.google.com    (1 500 req/day free)
-  SEMANTIC_SCHOLAR_API_KEY  → semanticscholar.org/product/api (free)
-  GITHUB_TOKEN              → github.com/settings/tokens     (free)
-  LNI_CACHE_DIR             → disk cache path  (default: .lni_cache)
-  UNPAYWALL_EMAIL           → your email for Unpaywall polite pool
+IMPROVEMENTS in v6.1:
+  - Better PDF extraction with fallback methods and user warnings
+  - Improved error messages with actionable advice
+  - Upload validation with immediate feedback
+  - Session timeout handling for long-running checks
+  - Graceful degradation when services unavailable
 """
 
 import os
 import re
+import sys
 
 # Load .env file if present (for local development)
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # python-dotenv not installed; rely on shell env vars
+    pass
+
 import json
 import tempfile
 import shutil
+import time
+import signal
 from pathlib import Path
+from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 
 from extractor import extract
@@ -91,63 +53,548 @@ from ai_checker import (
 
 app = Flask(__name__, static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
+app.config["TIMEOUT"] = 180  # 3 minutes timeout for long operations
 
+
+# ---------------------------------------------------------------------------
+# Timeout decorator for long-running operations
+# ---------------------------------------------------------------------------
+
+class TimeoutError(Exception):
+    pass
+
+def timeout(seconds=180):
+    def decorator(func):
+        def _handle_timeout(signum, frame):
+            raise TimeoutError(f"Function timed out after {seconds} seconds")
+        
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if sys.platform != 'win32':
+                # Set timeout handler (Unix only)
+                signal.signal(signal.SIGALRM, _handle_timeout)
+                signal.alarm(seconds)
+                try:
+                    result = func(*args, **kwargs)
+                finally:
+                    signal.alarm(0)
+                return result
+            else:
+                # Windows doesn't support SIGALRM
+                return func(*args, **kwargs)
+        
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.route("/")
 def index():
     return send_from_directory("static", "index.html")
 
 
-# ---------------------------------------------------------------------------
-# NEW v6: status endpoint — exposes session cache stats
-# ---------------------------------------------------------------------------
-
 @app.route("/status", methods=["GET"])
 def status():
-    """
-    Returns server status including session cache metrics.
-    Useful for debugging and for the UI to show cache hit info.
-    """
+    """Returns server status including session cache metrics and API availability."""
     from checker import _ARXIV_BIBTEX_MEM_CACHE, _MEM_CACHE
     llm_stats = get_llm_cache_stats()
+    
+    # Check API availability
+    groq_available = bool(os.environ.get("GROQ_API_KEY"))
+    gemini_available = bool(os.environ.get("GEMINI_API_KEY"))
+    semantic_available = bool(os.environ.get("SEMANTIC_SCHOLAR_API_KEY"))
+    
     return jsonify({
         "status": "ok",
-        "version": "6",
+        "version": "6.1",
         "cache": {
-            "llm_response_cache_entries":       llm_stats["llm_cache_entries"],
-            "arxiv_bibtex_cache_entries":       len(_ARXIV_BIBTEX_MEM_CACHE),
+            "llm_response_cache_entries": llm_stats["llm_cache_entries"],
+            "arxiv_bibtex_cache_entries": len(_ARXIV_BIBTEX_MEM_CACHE),
             "verification_result_cache_entries": len(_MEM_CACHE),
         },
-        "ai_available": bool(os.environ.get("GROQ_API_KEY") or os.environ.get("GEMINI_API_KEY")),
+        "ai_available": groq_available or gemini_available,
+        "ai_provider": "groq" if groq_available else "gemini" if gemini_available else "none",
+        "apis": {
+            "groq": groq_available,
+            "gemini": gemini_available,
+            "semantic_scholar": semantic_available,
+            "github": bool(os.environ.get("GITHUB_TOKEN")),
+            "unpaywall": bool(os.environ.get("UNPAYWALL_EMAIL")),
+        },
         "env": {
-            "groq":             bool(os.environ.get("GROQ_API_KEY")),
-            "gemini":           bool(os.environ.get("GEMINI_API_KEY")),
-            "semantic_scholar": bool(os.environ.get("SEMANTIC_SCHOLAR_API_KEY")),
-            "github_token":     bool(os.environ.get("GITHUB_TOKEN")),
-            "unpaywall_email":  bool(os.environ.get("UNPAYWALL_EMAIL")),
-            "disk_cache_dir":   os.environ.get("LNI_CACHE_DIR", ".lni_cache"),
+            "disk_cache_dir": os.environ.get("LNI_CACHE_DIR", ".lni_cache"),
         },
     })
 
 
 # ---------------------------------------------------------------------------
-# Core pipeline (non-streaming, used by batch and export)
+# Core pipeline helpers
 # ---------------------------------------------------------------------------
+
+def _bib_to_dicts(bib_list: list) -> list:
+    return [
+        {"key": e.key, "entry_type": e.entry_type or "unknown",
+         "authors": e.authors, "title": e.title, "year": e.year,
+         "publisher": e.publisher, "journal": e.journal, "booktitle": e.booktitle,
+         "pages": e.pages, "url": e.url, "urldate": e.urldate,
+         "doi": e.doi, "isbn": e.isbn, "raw_text": e.raw_text[:300],
+         "needs_ai_parsing": e.needs_ai_parsing, "key_consistent": e.key_consistent}
+        for e in bib_list
+    ]
+
+
+def _vr_to_dicts(api_results_raw: list) -> list:
+    return [
+        {"key": vr.key, "status": vr.status, "confidence": round(vr.confidence, 2),
+         "matched_title": vr.matched_title, "doi": vr.doi,
+         "open_access_url": vr.open_access_url, "note": vr.note,
+         "sources_checked": vr.sources_checked, "web_evidence": vr.web_evidence,
+         "correct_authors": vr.correct_authors,
+         "version_note": vr.version_note}
+        for vr in api_results_raw
+    ]
+
+
+def _apply_ai_improvements(bib_list: list, improvements: dict) -> list:
+    for entry in bib_list:
+        imp = improvements.get(entry.key)
+        if not imp:
+            continue
+        if not entry.title and imp.get("title"):
+            entry.title = imp["title"]
+        if not entry.authors and imp.get("authors"):
+            entry.authors = imp["authors"]
+        if not entry.year and imp.get("year"):
+            entry.year = imp["year"]
+        if (not entry.entry_type or entry.entry_type == "unknown") and imp.get("entry_type"):
+            entry.entry_type = imp["entry_type"]
+        for field in ("journal", "booktitle", "publisher", "pages"):
+            if not getattr(entry, field) and imp.get(field):
+                setattr(entry, field, imp[field])
+    return bib_list
+
+
+def _assemble_result(
+    filename, fmt, body, bib_text, bib_list, bib_dict,
+    cited_keys, has_numeric, xcheck, citation_contexts,
+    duplicates, self_citations, style_suggestions,
+    api_results_raw, verification_result, overall, ai_parse_improvements,
+):
+    ai_verdicts_by_key = {v["key"]: v for v in verification_result.get("verdicts", [])}
+    vr_by_key = {vr.key: vr for vr in api_results_raw}
+
+    verification_output = []
+    for vr in api_results_raw:
+        ai = ai_verdicts_by_key.get(vr.key, {})
+        ai_verdict = ai.get("verdict", "SUSPICIOUS")
+        status = "verified" if ai_verdict == "REAL" else "not_found" if ai_verdict == "FAKE" else "partial_match"
+        verification_output.append({
+            "key": vr.key,
+            "title": vr.title,
+            "status": status,
+            "confidence": round(ai.get("confidence", vr.confidence), 2),
+            "matched_title": vr.matched_title,
+            "doi": vr.doi or ai.get("open_access_url"),
+            "open_access_url": ai.get("open_access_url") or vr.open_access_url,
+            "note": vr.note,
+            "sources_checked": vr.sources_checked,
+            "web_evidence": vr.web_evidence,
+            "ai_verdict": ai_verdict,
+            "ai_reasoning": ai.get("reasoning", ""),
+            "ai_risk_factors": ai.get("risk_factors", []),
+            "version_note": vr.version_note,
+        })
+
+    api_keys = {vr.key for vr in api_results_raw}
+    for entry in _bib_to_dicts(bib_list):
+        if entry["key"] not in api_keys:
+            ai = ai_verdicts_by_key.get(entry["key"], {})
+            ai_verdict = ai.get("verdict", "SUSPICIOUS")
+            verification_output.append({
+                "key": entry["key"],
+                "title": entry.get("title") or "",
+                "status": "verified" if ai_verdict == "REAL" else "not_found" if ai_verdict == "FAKE" else "partial_match",
+                "confidence": ai.get("confidence", 0.5),
+                "matched_title": None,
+                "doi": entry.get("doi"),
+                "open_access_url": ai.get("open_access_url") or entry.get("url"),
+                "note": ai.get("reasoning", ""),
+                "sources_checked": [],
+                "web_evidence": None,
+                "ai_verdict": ai_verdict,
+                "ai_reasoning": ai.get("reasoning", ""),
+                "ai_risk_factors": ai.get("risk_factors", []),
+                "version_note": None,
+            })
+
+    ai_fake_count = verification_result.get("fake_count", 0)
+    det_score = compute_score(bib_list, xcheck, api_results_raw,
+                              style_suggestions, duplicates, ai_fake_count=ai_fake_count)
+    s = det_score["score"]
+    det_verdict = "PASS" if s >= 75 else "FLAG" if s >= 50 else "FAIL"
+
+    final_score = {
+        "score": det_score["score"],
+        "grade": det_score["grade"],
+        "verdict": overall.get("verdict", det_verdict),
+        "verdict_reason": overall.get("verdict_reason", ""),
+        "student_feedback": overall.get("student_feedback", []),
+        "professor_note": overall.get("professor_note", ""),
+        "penalties": det_score.get("penalties", []),
+        "max_score": 100,
+    }
+
+    bib_output = [
+        {"key": e.key, "type": e.entry_type or "unknown",
+         "authors": e.authors, "title": e.title, "year": e.year,
+         "publisher": e.publisher, "journal": e.journal, "url": e.url,
+         "doi": e.doi, "isbn": e.isbn, "raw": e.raw_text[:250],
+         "completeness_issues": e.completeness_issues,
+         "key_consistent": e.key_consistent,
+         "ai_reparsed": e.key in ai_parse_improvements}
+        for e in bib_list
+    ]
+
+    real_cited = {k for k in cited_keys if not k.startswith('__')}
+    version_notes = [
+        {"key": v["key"], "note": v["version_note"]}
+        for v in verification_output if v.get("version_note")
+    ]
+
+    return {
+        "filename": filename, "format": fmt.upper(),
+        "stats": {
+            "body_chars": len(body), "bib_chars": len(bib_text),
+            "bib_entry_count": len(bib_dict), "citation_count": len(real_cited),
+            "numeric_citations_found": has_numeric,
+        },
+        "bibliography": bib_output,
+        "cross_check": {
+            "correctly_used": xcheck.correctly_used,
+            "cited_not_in_bib": xcheck.cited_not_in_bib,
+            "in_bib_not_cited": xcheck.in_bib_not_cited,
+        },
+        "citation_contexts": citation_contexts,
+        "style_suggestions": style_suggestions,
+        "duplicates": duplicates,
+        "self_citations": self_citations,
+        "score": final_score,
+        "verification": verification_output,
+        "verification_ai_summary": verification_result.get("summary", ""),
+        "arxiv_version_notes": version_notes,
+        "summary": {
+            "missing_from_bib": len(xcheck.cited_not_in_bib),
+            "uncited_entries": len(xcheck.in_bib_not_cited),
+            "incomplete_entries": sum(1 for e in bib_list if e.completeness_issues),
+            "key_inconsistencies": sum(1 for e in bib_list if e.key_consistent is False),
+            "fake_candidates": verification_result.get("fake_count", 0),
+            "suspicious": verification_result.get("suspicious_count", 0),
+            "verified": sum(1 for v in verification_output if v["status"] == "verified"),
+            "style_issues": len(style_suggestions),
+            "open_access": sum(1 for v in verification_output if v.get("open_access_url")),
+            "duplicates": len(duplicates),
+            "self_citations": len(self_citations),
+            "bib_entry_count": len(bib_dict),
+            "citation_count": len(real_cited),
+            "ai_reparsed_entries": len(ai_parse_improvements),
+            "numeric_citations": has_numeric,
+            "arxiv_version_mismatches": len(version_notes),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# SSE streaming pipeline with improved error handling
+# ---------------------------------------------------------------------------
+
+def _run_streaming_check(main_path: str, bib_path: str = None,
+                          verify: bool = True, filename: str = ""):
+    """
+    Generator that yields Server-Sent Event strings with progress updates.
+    """
+    def _sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    start_time = time.time()
+    
+    try:
+        yield _sse("progress", {"step": "extract", "message": "📄 Extracting text from document..."})
+
+        sections = extract(main_path, bib_path)
+        body = sections.get("body", "")
+        bib_text = sections.get("bibliography", "")
+        fmt = sections.get("format", "unknown")
+        
+        # Check for PDF extraction warnings
+        if sections.get("warning"):
+            yield _sse("progress", {"step": "warning", "message": sections["warning"]})
+        
+        if sections.get("is_scanned"):
+            yield _sse("progress", {"step": "warning", 
+                "message": "⚠️ This appears to be a SCANNED PDF. Only text-based PDFs work. Please upload the original document if possible."})
+        
+        if len(body) < 200:
+            yield _sse("progress", {"step": "warning",
+                "message": "⚠️ Very little text extracted. This may be a scanned/image-only PDF, or the document uses unusual formatting. Results may be incomplete."})
+            
+            # Suggest alternative if body is extremely short
+            if len(body) < 50:
+                yield _sse("progress", {"step": "warning",
+                    "message": "❌ Almost no text could be extracted. For best results, upload the original LaTeX source, Word document, or a text-based PDF (not scanned)."})
+        
+        # Show extraction stats
+        yield _sse("progress", {"step": "extract_done", 
+            "message": f"✓ Extracted {len(body):,} characters of body text, {len(bib_text):,} characters of bibliography"})
+        
+        if not bib_text.strip():
+            yield _sse("progress", {"step": "warning",
+                "message": "⚠️ No bibliography section detected. Make sure your document has a 'Literaturverzeichnis' or 'References' section."})
+        
+        yield _sse("progress", {"step": "ai_extract",
+            "message": "🤖 AI extracting bibliography structure (may take 10-20 seconds)..."})
+        ai_extracted_refs = ai_extract_references_from_text(bib_text)
+
+        yield _sse("progress", {"step": "parse",
+            "message": "📚 Parsing bibliography entries..."})
+        bib_list = parse_bibliography(bib_text)
+        bib_dict = entries_to_dict(bib_list)
+        
+        yield _sse("progress", {"step": "parse_done",
+            "message": f"✓ Found {len(bib_list)} bibliography entries"})
+
+        if ai_extracted_refs:
+            bib_list = merge_ai_extractions_into_bib_list(ai_extracted_refs, bib_list)
+            bib_dict = entries_to_dict(bib_list)
+
+        bib_dicts = _bib_to_dicts(bib_list)
+        ai_parse_improvements = ai_parse_uncertain_entries(bib_dicts)
+        if ai_parse_improvements:
+            bib_list = _apply_ai_improvements(bib_list, ai_parse_improvements)
+            bib_dict = entries_to_dict(bib_list)
+            bib_dicts = _bib_to_dicts(bib_list)
+            yield _sse("progress", {"step": "parse_done",
+                "message": f"✓ AI re-parsed {len(ai_parse_improvements)} uncertain entries"})
+
+        yield _sse("progress", {"step": "check",
+            "message": f"🔍 Running deterministic checks on {len(bib_list)} entries..."})
+        style_suggestions = check_lni_macros(body)
+        cited_keys = extract_citations_from_body(body)
+        if fmt == "latex":
+            for group in re.findall(
+                r'\\(?:cite|Cite|citet|Citet|citep)\{([^}]+)\}',
+                sections.get("full_text", ""),
+            ):
+                for k in group.split(','):
+                    cited_keys.add(k.strip())
+
+        has_numeric = '__numeric_citations__' in cited_keys
+        xcheck = cross_check(bib_dict, cited_keys)
+        citation_contexts = extract_citation_contexts(body)
+        duplicates = find_duplicates(bib_dict)
+        self_citations = detect_self_citations(bib_dict, body)
+
+        # Report cross-check results
+        missing_count = len(xcheck.cited_not_in_bib)
+        orphaned_count = len(xcheck.in_bib_not_cited)
+        if missing_count > 0:
+            yield _sse("progress", {"step": "check_result",
+                "message": f"⚠️ Found {missing_count} citation(s) missing from bibliography"})
+        if orphaned_count > 0:
+            yield _sse("progress", {"step": "check_result",
+                "message": f"⚠️ Found {orphaned_count} bibliography entry(s) never cited"})
+
+        # Per-reference verification with live SSE updates
+        api_results_raw = []
+        if verify and bib_dict:
+            total = len(bib_dict)
+            yield _sse("progress", {"step": "verify_start",
+                "message": f"🔍 Verifying {total} references against academic databases (CrossRef, Semantic Scholar, arXiv, DBLP, etc.)..."})
+            
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from checker import verify_reference, VerificationResult
+
+            future_to_key = {}
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                for key, entry in bib_dict.items():
+                    future_to_key[executor.submit(verify_reference, entry)] = key
+
+                done_count = 0
+                verified_count = 0
+                not_found_count = 0
+                
+                for future in as_completed(future_to_key, timeout=120):
+                    key = future_to_key[future]
+                    try:
+                        vr = future.result()
+                    except Exception as e:
+                        vr = VerificationResult(key=key, title="", status="error",
+                            confidence=0.0, note=f"Crashed: {e}", sources_checked=[])
+                    api_results_raw.append(vr)
+                    done_count += 1
+                    
+                    if vr.status == "verified":
+                        verified_count += 1
+                    elif vr.status in ("not_found", "partial_match"):
+                        not_found_count += 1
+
+                    progress_data = {
+                        "step": "verify",
+                        "message": f"Verifying references: {done_count}/{total}",
+                        "key": vr.key,
+                        "status": vr.status,
+                        "confidence": round(vr.confidence, 2),
+                        "done": done_count,
+                        "total": total,
+                        "verified_count": verified_count,
+                        "not_found_count": not_found_count,
+                    }
+                    if vr.version_note:
+                        progress_data["version_note"] = vr.version_note
+                    yield _sse("progress", progress_data)
+
+            key_order = list(bib_dict.keys())
+            api_results_raw.sort(
+                key=lambda r: key_order.index(r.key) if r.key in key_order else 999
+            )
+            
+            yield _sse("progress", {"step": "verify_done",
+                "message": f"✓ Verification complete: {verified_count} verified, {not_found_count} not found/partial"})
+
+        yield _sse("progress", {"step": "ai_verify",
+            "message": "🤖 AI hallucination check running..."})
+        api_results_dicts = _vr_to_dicts(api_results_raw)
+        verification_result = ai_verify_references(bib_dicts, api_results_dicts)
+        
+        fake_count = verification_result.get("fake_count", 0)
+        if fake_count > 0:
+            yield _sse("progress", {"step": "ai_result",
+                "message": f"⚠️ AI identified {fake_count} likely FAKE reference(s)"})
+
+        yield _sse("progress", {"step": "ai_verdict",
+            "message": "📋 Generating final verdict..."})
+        summary_for_ai = {"duplicates": len(duplicates), "self_citations": len(self_citations),
+                           "style_issues": len(style_suggestions)}
+        overall = ai_overall_verdict(
+            filename=filename or Path(main_path).name,
+            summary=summary_for_ai, xcheck=xcheck,
+            bib_list=bib_list, verification_result=verification_result,
+        )
+
+        result = _assemble_result(
+            filename=filename or Path(main_path).name,
+            fmt=fmt, body=body, bib_text=bib_text,
+            bib_list=bib_list, bib_dict=bib_dict,
+            cited_keys=cited_keys, has_numeric=has_numeric,
+            xcheck=xcheck, citation_contexts=citation_contexts,
+            duplicates=duplicates, self_citations=self_citations,
+            style_suggestions=style_suggestions,
+            api_results_raw=api_results_raw,
+            verification_result=verification_result,
+            overall=overall,
+            ai_parse_improvements=ai_parse_improvements,
+        )
+        
+        elapsed = time.time() - start_time
+        result["processing_time_seconds"] = round(elapsed, 1)
+        
+        yield _sse("done", result)
+
+    except TimeoutError:
+        yield _sse("error", {"error": "Processing timed out after 3 minutes. The document may be too large or complex. Try a simpler format (plain PDF or DOCX)."})
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        # Provide user-friendly error messages
+        if "pdfplumber" in error_msg.lower():
+            error_msg = "PDF parsing failed. The PDF may be corrupted or use an unsupported encoding. Try converting to PDF from Word or LaTeX."
+        elif "memory" in error_msg.lower():
+            error_msg = "Out of memory. The document is too large. Try splitting it into smaller files."
+        elif "timeout" in error_msg.lower():
+            error_msg = "Request timed out. The document may be too large or complex."
+        
+        yield _sse("error", {"error": error_msg, "trace": traceback.format_exc()})
+    finally:
+        shutil.rmtree(Path(main_path).parent, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/check", methods=["POST"])
+def check():
+    """SSE streaming endpoint. Returns per-reference progress events then a 'done' event."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded. Please select a PDF, DOCX, or TEX file."}), 400
+
+    main_file = request.files["file"]
+    filename = main_file.filename
+    ext = Path(filename).suffix.lower()
+    verify = request.form.get("verify", "true").lower() == "true"
+    streaming = request.form.get("stream", "true").lower() == "true"
+
+    # Validate file type
+    if ext not in {".pdf", ".docx", ".tex", ".latex"}:
+        return jsonify({"error": f"Unsupported format '{ext}'. Supported formats: PDF, DOCX, TEX, LATEX"}), 400
+    
+    # Validate file size
+    main_file.seek(0, 2)
+    file_size = main_file.tell()
+    main_file.seek(0)
+    
+    if file_size > 30 * 1024 * 1024:
+        return jsonify({"error": f"File too large: {file_size / 1024 / 1024:.1f} MB. Maximum size is 30 MB."}), 400
+    
+    if file_size == 0:
+        return jsonify({"error": "Empty file uploaded. Please select a valid document."}), 400
+
+    tmpdir = tempfile.mkdtemp()
+    main_path = os.path.join(tmpdir, filename)
+    main_file.save(main_path)
+
+    bib_path = None
+    if "bib" in request.files and ext in (".tex", ".latex"):
+        bib_file = request.files["bib"]
+        if bib_file.filename and bib_file.filename.endswith('.bib'):
+            bib_path = os.path.join(tmpdir, bib_file.filename)
+            bib_file.save(bib_path)
+
+    if streaming:
+        return Response(
+            stream_with_context(
+                _run_streaming_check(main_path, bib_path, verify=verify, filename=filename)
+            ),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+    else:
+        try:
+            result = _run_full_check(main_path, bib_path, verify=verify, filename=filename)
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
 
 def _run_full_check(main_path: str, bib_path: str = None,
                     verify: bool = True, filename: str = "") -> dict:
-    """Full check pipeline. Returns complete result dict."""
-
-    # ── Step 1: Extract ──────────────────────────────────────────────────────
+    """Full check pipeline (non-streaming, for batch and export)."""
     sections = extract(main_path, bib_path)
-    body     = sections["body"]
+    body = sections["body"]
     bib_text = sections["bibliography"]
-    fmt      = sections["format"]
+    fmt = sections["format"]
 
-    # ── Step 2: AI bibliography extraction ───────────────────────────────────
     ai_extracted_refs = ai_extract_references_from_text(bib_text)
 
-    # ── Step 3: Regex parse (deterministic) ──────────────────────────────────
     bib_list = parse_bibliography(bib_text)
     bib_dict = entries_to_dict(bib_list)
 
@@ -155,7 +602,6 @@ def _run_full_check(main_path: str, bib_path: str = None,
         bib_list = merge_ai_extractions_into_bib_list(ai_extracted_refs, bib_list)
         bib_dict = entries_to_dict(bib_list)
 
-    # ── Step 4: AI re-parse for uncertain entries ─────────────────────────────
     bib_dicts = _bib_to_dicts(bib_list)
     ai_parse_improvements = ai_parse_uncertain_entries(bib_dicts)
     if ai_parse_improvements:
@@ -163,7 +609,6 @@ def _run_full_check(main_path: str, bib_path: str = None,
         bib_dict = entries_to_dict(bib_list)
         bib_dicts = _bib_to_dicts(bib_list)
 
-    # ── Step 5: Rule-based checks (deterministic) ────────────────────────────
     style_suggestions = check_lni_macros(body)
     cited_keys = extract_citations_from_body(body)
     if fmt == "latex":
@@ -174,20 +619,17 @@ def _run_full_check(main_path: str, bib_path: str = None,
             for k in group.split(','):
                 cited_keys.add(k.strip())
 
-    has_numeric       = '__numeric_citations__' in cited_keys
-    xcheck            = cross_check(bib_dict, cited_keys)
+    has_numeric = '__numeric_citations__' in cited_keys
+    xcheck = cross_check(bib_dict, cited_keys)
     citation_contexts = extract_citation_contexts(body)
-    duplicates        = find_duplicates(bib_dict)
-    self_citations    = detect_self_citations(bib_dict, body)
+    duplicates = find_duplicates(bib_dict)
+    self_citations = detect_self_citations(bib_dict, body)
 
-    # ── Step 6: API lookups ──────────────────────────────────────────────────
     api_results_raw = []
     if verify and bib_dict:
         api_results_raw = verify_all_references(bib_dict)
 
     api_results_dicts = _vr_to_dicts(api_results_raw)
-
-    # ── Step 7: AI verification ──────────────────────────────────────────────
     verification_result = ai_verify_references(bib_dicts, api_results_dicts)
     summary_for_ai = {"duplicates": len(duplicates), "self_citations": len(self_citations),
                       "style_issues": len(style_suggestions)}
@@ -212,377 +654,6 @@ def _run_full_check(main_path: str, bib_path: str = None,
     )
 
 
-# ---------------------------------------------------------------------------
-# SSE streaming pipeline
-# ---------------------------------------------------------------------------
-
-def _run_streaming_check(main_path: str, bib_path: str = None,
-                          verify: bool = True, filename: str = ""):
-    """
-    Generator that yields Server-Sent Event strings.
-    Sends progress events as each reference is verified, then sends the
-    final complete result as a 'done' event.
-    """
-    def _sse(event: str, data: dict) -> str:
-        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-    try:
-        yield _sse("progress", {"step": "extract", "message": "Extracting text from document…"})
-
-        sections = extract(main_path, bib_path)
-        body     = sections["body"]
-        bib_text = sections["bibliography"]
-        fmt      = sections["format"]
-
-        if len(body) < 200:
-            yield _sse("progress", {"step": "warning",
-                "message": "Very little text extracted — this may be a scanned/image-only PDF. Results may be incomplete."})
-        yield _sse("progress", {"step": "ai_extract",
-                                  "message": "AI extracting bibliography structure…"})
-        ai_extracted_refs = ai_extract_references_from_text(bib_text)
-
-        yield _sse("progress", {"step": "parse",
-                                  "message": "Parsing bibliography entries…"})
-        bib_list = parse_bibliography(bib_text)
-        bib_dict = entries_to_dict(bib_list)
-
-        if ai_extracted_refs:
-            bib_list = merge_ai_extractions_into_bib_list(ai_extracted_refs, bib_list)
-            bib_dict = entries_to_dict(bib_list)
-
-        bib_dicts = _bib_to_dicts(bib_list)
-        ai_parse_improvements = ai_parse_uncertain_entries(bib_dicts)
-        if ai_parse_improvements:
-            bib_list = _apply_ai_improvements(bib_list, ai_parse_improvements)
-            bib_dict = entries_to_dict(bib_list)
-            bib_dicts = _bib_to_dicts(bib_list)
-
-        yield _sse("progress", {"step": "check",
-                                  "message": f"Running deterministic checks on {len(bib_list)} entries…"})
-        style_suggestions = check_lni_macros(body)
-        cited_keys = extract_citations_from_body(body)
-        if fmt == "latex":
-            for group in re.findall(
-                r'\\(?:cite|Cite|citet|Citet|citep)\{([^}]+)\}',
-                sections.get("full_text", ""),
-            ):
-                for k in group.split(','):
-                    cited_keys.add(k.strip())
-
-        has_numeric       = '__numeric_citations__' in cited_keys
-        xcheck            = cross_check(bib_dict, cited_keys)
-        citation_contexts = extract_citation_contexts(body)
-        duplicates        = find_duplicates(bib_dict)
-        self_citations    = detect_self_citations(bib_dict, body)
-
-        # ── Per-reference verification with live SSE updates ──────────────────
-        api_results_raw = []
-        if verify and bib_dict:
-            total = len(bib_dict)
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            from checker import verify_reference, VerificationResult
-
-            future_to_key = {}
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                for key, entry in bib_dict.items():
-                    future_to_key[executor.submit(verify_reference, entry)] = key
-
-                done_count = 0
-                for future in as_completed(future_to_key, timeout=120):
-                    key = future_to_key[future]
-                    try:
-                        vr = future.result()
-                    except Exception as e:
-                        vr = VerificationResult(key=key, title="", status="error",
-                            confidence=0.0, note=f"Crashed: {e}", sources_checked=[])
-                    api_results_raw.append(vr)
-                    done_count += 1
-
-                    progress_data = {
-                        "step":    "verify",
-                        "message": f"Verified {done_count}/{total}: [{vr.key}] → {vr.status}",
-                        "key":     vr.key,
-                        "status":  vr.status,
-                        "confidence": round(vr.confidence, 2),
-                        "done":    done_count,
-                        "total":   total,
-                    }
-                    # Surface version note in live progress so UI can show it immediately
-                    if vr.version_note:
-                        progress_data["version_note"] = vr.version_note
-                    yield _sse("progress", progress_data)
-
-            key_order = list(bib_dict.keys())
-            api_results_raw.sort(
-                key=lambda r: key_order.index(r.key) if r.key in key_order else 999
-            )
-
-        yield _sse("progress", {"step": "ai_verify",
-                                  "message": "AI hallucination check running…"})
-        api_results_dicts   = _vr_to_dicts(api_results_raw)
-        verification_result = ai_verify_references(bib_dicts, api_results_dicts)
-
-        yield _sse("progress", {"step": "ai_verdict",
-                                  "message": "AI generating overall verdict…"})
-        summary_for_ai = {"duplicates": len(duplicates), "self_citations": len(self_citations),
-                           "style_issues": len(style_suggestions)}
-        overall = ai_overall_verdict(
-            filename=filename or Path(main_path).name,
-            summary=summary_for_ai, xcheck=xcheck,
-            bib_list=bib_list, verification_result=verification_result,
-        )
-
-        result = _assemble_result(
-            filename=filename or Path(main_path).name,
-            fmt=fmt, body=body, bib_text=bib_text,
-            bib_list=bib_list, bib_dict=bib_dict,
-            cited_keys=cited_keys, has_numeric=has_numeric,
-            xcheck=xcheck, citation_contexts=citation_contexts,
-            duplicates=duplicates, self_citations=self_citations,
-            style_suggestions=style_suggestions,
-            api_results_raw=api_results_raw,
-            verification_result=verification_result,
-            overall=overall,
-            ai_parse_improvements=ai_parse_improvements,
-        )
-        yield _sse("done", result)
-
-    except Exception as e:
-        import traceback
-        yield _sse("error", {"error": str(e), "trace": traceback.format_exc()})
-    finally:
-        shutil.rmtree(Path(main_path).parent, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _bib_to_dicts(bib_list: list) -> list:
-    return [
-        {"key": e.key, "entry_type": e.entry_type or "unknown",
-         "authors": e.authors, "title": e.title, "year": e.year,
-         "publisher": e.publisher, "journal": e.journal, "booktitle": e.booktitle,
-         "pages": e.pages, "url": e.url, "urldate": e.urldate,
-         "doi": e.doi, "isbn": e.isbn, "raw_text": e.raw_text[:300],
-         "needs_ai_parsing": e.needs_ai_parsing, "key_consistent": e.key_consistent}
-        for e in bib_list
-    ]
-
-
-def _vr_to_dicts(api_results_raw: list) -> list:
-    return [
-        {"key": vr.key, "status": vr.status, "confidence": round(vr.confidence, 2),
-         "matched_title": vr.matched_title, "doi": vr.doi,
-         "open_access_url": vr.open_access_url, "note": vr.note,
-         "sources_checked": vr.sources_checked, "web_evidence": vr.web_evidence,
-         "correct_authors": vr.correct_authors,
-         "version_note": vr.version_note}  # NEW v6
-        for vr in api_results_raw
-    ]
-
-
-def _apply_ai_improvements(bib_list: list, improvements: dict) -> list:
-    for entry in bib_list:
-        imp = improvements.get(entry.key)
-        if not imp:
-            continue
-        if not entry.title     and imp.get("title"):     entry.title     = imp["title"]
-        if not entry.authors   and imp.get("authors"):   entry.authors   = imp["authors"]
-        if not entry.year      and imp.get("year"):       entry.year      = imp["year"]
-        if (not entry.entry_type or entry.entry_type == "unknown") and imp.get("entry_type"):
-            entry.entry_type = imp["entry_type"]
-        for field in ("journal", "booktitle", "publisher", "pages"):
-            if not getattr(entry, field) and imp.get(field):
-                setattr(entry, field, imp[field])
-    return bib_list
-
-
-def _assemble_result(
-    filename, fmt, body, bib_text, bib_list, bib_dict,
-    cited_keys, has_numeric, xcheck, citation_contexts,
-    duplicates, self_citations, style_suggestions,
-    api_results_raw, verification_result, overall, ai_parse_improvements,
-):
-    ai_verdicts_by_key = {v["key"]: v for v in verification_result.get("verdicts", [])}
-    vr_by_key = {vr.key: vr for vr in api_results_raw}
-
-    verification_output = []
-    for vr in api_results_raw:
-        ai = ai_verdicts_by_key.get(vr.key, {})
-        ai_verdict = ai.get("verdict", "SUSPICIOUS")
-        status = "verified" if ai_verdict == "REAL" else "not_found" if ai_verdict == "FAKE" else "partial_match"
-        verification_output.append({
-            "key":             vr.key,
-            "title":           vr.title,
-            "status":          status,
-            "confidence":      round(ai.get("confidence", vr.confidence), 2),
-            "matched_title":   vr.matched_title,
-            "doi":             vr.doi or ai.get("open_access_url"),
-            "open_access_url": ai.get("open_access_url") or vr.open_access_url,
-            "note":            vr.note,
-            "sources_checked": vr.sources_checked,
-            "web_evidence":    vr.web_evidence,
-            "ai_verdict":      ai_verdict,
-            "ai_reasoning":    ai.get("reasoning", ""),
-            "ai_risk_factors": ai.get("risk_factors", []),
-            "version_note":    vr.version_note,  # NEW v6
-        })
-
-    api_keys = {vr.key for vr in api_results_raw}
-    for entry in _bib_to_dicts(bib_list):
-        if entry["key"] not in api_keys:
-            ai = ai_verdicts_by_key.get(entry["key"], {})
-            ai_verdict = ai.get("verdict", "SUSPICIOUS")
-            verification_output.append({
-                "key":             entry["key"],
-                "title":           entry.get("title") or "",
-                "status":          "verified" if ai_verdict == "REAL" else "not_found" if ai_verdict == "FAKE" else "partial_match",
-                "confidence":      ai.get("confidence", 0.5),
-                "matched_title":   None,
-                "doi":             entry.get("doi"),
-                "open_access_url": ai.get("open_access_url") or entry.get("url"),
-                "note":            ai.get("reasoning", ""),
-                "sources_checked": [],
-                "web_evidence":    None,
-                "ai_verdict":      ai_verdict,
-                "ai_reasoning":    ai.get("reasoning", ""),
-                "ai_risk_factors": ai.get("risk_factors", []),
-                "version_note":    None,
-            })
-
-    ai_fake_count = verification_result.get("fake_count", 0)
-    det_score = compute_score(bib_list, xcheck, api_results_raw,
-                              style_suggestions, duplicates, ai_fake_count=ai_fake_count)
-    # Derive a deterministic verdict from the score when AI is unavailable
-    s = det_score["score"]
-    det_verdict = "PASS" if s >= 75 else "FLAG" if s >= 50 else "FAIL"
-
-    # Score and grade are ALWAYS deterministic — never overridden by AI.
-    # AI only provides verdict, reasoning, and feedback text.
-    final_score = {
-        "score":            det_score["score"],
-        "grade":            det_score["grade"],
-        "verdict":          overall.get("verdict", det_verdict),
-        "verdict_reason":   overall.get("verdict_reason", ""),
-        "student_feedback": overall.get("student_feedback", []),
-        "professor_note":   overall.get("professor_note", ""),
-        "penalties":        det_score.get("penalties", []),
-        "max_score":        100,
-    }
-
-    bib_output = [
-        {"key": e.key, "type": e.entry_type or "unknown",
-         "authors": e.authors, "title": e.title, "year": e.year,
-         "publisher": e.publisher, "journal": e.journal, "url": e.url,
-         "doi": e.doi, "isbn": e.isbn, "raw": e.raw_text[:250],
-         "completeness_issues": e.completeness_issues,
-         "key_consistent": e.key_consistent,
-         "ai_reparsed": e.key in ai_parse_improvements}
-        for e in bib_list
-    ]
-
-    real_cited = {k for k in cited_keys if not k.startswith('__')}
-
-    # Collect version notes for summary
-    version_notes = [
-        {"key": v["key"], "note": v["version_note"]}
-        for v in verification_output if v.get("version_note")
-    ]
-
-    return {
-        "filename": filename, "format": fmt.upper(),
-        "stats": {
-            "body_chars": len(body), "bib_chars": len(bib_text),
-            "bib_entry_count": len(bib_dict), "citation_count": len(real_cited),
-            "numeric_citations_found": has_numeric,
-        },
-        "bibliography":    bib_output,
-        "cross_check": {
-            "correctly_used":   xcheck.correctly_used,
-            "cited_not_in_bib": xcheck.cited_not_in_bib,
-            "in_bib_not_cited": xcheck.in_bib_not_cited,
-        },
-        "citation_contexts":        citation_contexts,
-        "style_suggestions":        style_suggestions,
-        "duplicates":               duplicates,
-        "self_citations":           self_citations,
-        "score":                    final_score,
-        "verification":             verification_output,
-        "verification_ai_summary":  verification_result.get("summary", ""),
-        "arxiv_version_notes":      version_notes,  # NEW v6
-        "summary": {
-            "missing_from_bib":   len(xcheck.cited_not_in_bib),
-            "uncited_entries":    len(xcheck.in_bib_not_cited),
-            "incomplete_entries": sum(1 for e in bib_list if e.completeness_issues),
-            "key_inconsistencies": sum(1 for e in bib_list if e.key_consistent is False),
-            "fake_candidates":    verification_result.get("fake_count", 0),
-            "suspicious":         verification_result.get("suspicious_count", 0),
-            "verified":           sum(1 for v in verification_output if v["status"] == "verified"),
-            "style_issues":       len(style_suggestions),
-            "open_access":        sum(1 for v in verification_output if v.get("open_access_url")),
-            "duplicates":         len(duplicates),
-            "self_citations":     len(self_citations),
-            "bib_entry_count":    len(bib_dict),
-            "citation_count":     len(real_cited),
-            "ai_reparsed_entries": len(ai_parse_improvements),
-            "numeric_citations":  has_numeric,
-            "arxiv_version_mismatches": len(version_notes),  # NEW v6
-        },
-    }
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-@app.route("/check", methods=["POST"])
-def check():
-    """SSE streaming endpoint. Returns per-reference progress events then a 'done' event."""
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    main_file = request.files["file"]
-    filename  = main_file.filename
-    ext       = Path(filename).suffix.lower()
-    verify    = request.form.get("verify", "true").lower() == "true"
-    streaming = request.form.get("stream", "true").lower() == "true"
-
-    if ext not in {".pdf", ".docx", ".tex", ".latex"}:
-        return jsonify({"error": f"Unsupported format '{ext}'. Supported: PDF, DOCX, TEX"}), 400
-
-    tmpdir    = tempfile.mkdtemp()
-    main_path = os.path.join(tmpdir, filename)
-    main_file.save(main_path)
-
-    bib_path = None
-    if "bib" in request.files and ext in (".tex", ".latex"):
-        bib_file = request.files["bib"]
-        bib_path = os.path.join(tmpdir, bib_file.filename)
-        bib_file.save(bib_path)
-
-    if streaming:
-        return Response(
-            stream_with_context(
-                _run_streaming_check(main_path, bib_path, verify=verify, filename=filename)
-            ),
-            mimetype="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
-    else:
-        try:
-            result = _run_full_check(main_path, bib_path, verify=verify, filename=filename)
-            return jsonify(result)
-        except Exception as e:
-            import traceback
-            return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-
 @app.route("/check-sync", methods=["POST"])
 def check_sync():
     """Non-streaming fallback endpoint."""
@@ -590,14 +661,14 @@ def check_sync():
         return jsonify({"error": "No file uploaded"}), 400
 
     main_file = request.files["file"]
-    filename  = main_file.filename
-    ext       = Path(filename).suffix.lower()
-    verify    = request.form.get("verify", "true").lower() == "true"
+    filename = main_file.filename
+    ext = Path(filename).suffix.lower()
+    verify = request.form.get("verify", "true").lower() == "true"
 
     if ext not in {".pdf", ".docx", ".tex", ".latex"}:
         return jsonify({"error": f"Unsupported format '{ext}'."}), 400
 
-    tmpdir    = tempfile.mkdtemp()
+    tmpdir = tempfile.mkdtemp()
     main_path = os.path.join(tmpdir, filename)
     main_file.save(main_path)
 
@@ -626,7 +697,7 @@ def ai_review():
     if not data:
         return jsonify({"error": "No result data provided"}), 400
 
-    s  = data.get("summary", {})
+    s = data.get("summary", {})
     sc = data.get("score", {})
 
     flagged = [v for v in data.get("verification", [])
@@ -634,7 +705,7 @@ def ai_review():
                or v.get("ai_verdict") in ("FAKE", "SUSPICIOUS")]
     incomplete = [e for e in data.get("bibliography", []) if e.get("completeness_issues")]
     key_issues = [e for e in data.get("bibliography", []) if e.get("key_consistent") is False]
-    dupes    = data.get("duplicates", [])
+    dupes = data.get("duplicates", [])
     self_cit = data.get("self_citations", [])
 
     flagged_lines = "\n".join(
@@ -645,7 +716,7 @@ def ai_review():
     ) or "  None"
 
     key_lines = "\n".join(
-        f"  [{e['key']}]: " + "; ".join(i for i in e.get("completeness_issues",[]) if "key" in i.lower())
+        f"  [{e['key']}]: " + "; ".join(i for i in e.get("completeness_issues", []) if "key" in i.lower())
         for e in key_issues
     ) or "  None"
 
@@ -670,24 +741,9 @@ INCOMPLETE: {chr(10).join(f"  [{e['key']}] {e.get('title','?')} — {', '.join(e
 DUPLICATES: {chr(10).join(f"  [{d['key_a']}] vs [{d['key_b']}] {int(d['similarity']*100)}% similar" for d in dupes) or "  None"}
 SELF-CITATIONS: {chr(10).join(f"  [{s_['key']}] {s_['matched_author']}" for s_ in self_cit) or "  None"}
 
-NOTE: References with 'arxiv_version_note' are REAL papers — the student cited an older
-arXiv version. This is a citation style issue, not fabrication.
+Return JSON with verdict and reasoning."""
 
-TASK:
-1. For each FLAGGED reference: REAL / SUSPICIOUS / FAKE — one-line reason
-2. For each KEY MISMATCH: typo or fabrication?
-3. OVERALL: PASS / FLAG / FAIL — one sentence
-
-Format:
-REFERENCE VERDICTS:
-[key]: VERDICT — reason
-
-KEY MISMATCHES:
-[key]: comment
-
-OVERALL: VERDICT — reason"""
-
-    groq_key   = os.environ.get("GROQ_API_KEY", "")
+    groq_key = os.environ.get("GROQ_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     ai_text = ai_source = None
 
@@ -699,7 +755,7 @@ OVERALL: VERDICT — reason"""
                       "messages": [{"role": "user", "content": prompt}],
                       "max_tokens": 700, "temperature": 0.1}, timeout=25)
             if resp.status_code == 200:
-                ai_text   = resp.json()["choices"][0]["message"]["content"].strip()
+                ai_text = resp.json()["choices"][0]["message"]["content"].strip()
                 ai_source = "Groq (LLaMA 3.3 70B)"
         except Exception:
             pass
@@ -712,8 +768,8 @@ OVERALL: VERDICT — reason"""
                 json={"contents": [{"parts": [{"text": prompt}]}],
                       "generationConfig": {"maxOutputTokens": 700, "temperature": 0.1}}, timeout=25)
             if resp.status_code == 200:
-                parts     = resp.json()["candidates"][0]["content"]["parts"]
-                ai_text   = "".join(p.get("text","") for p in parts).strip()
+                parts = resp.json()["candidates"][0]["content"]["parts"]
+                ai_text = "".join(p.get("text", "") for p in parts).strip()
                 ai_source = "Gemini 1.5 Flash"
         except Exception:
             pass
@@ -731,44 +787,45 @@ OVERALL: VERDICT — reason"""
 @app.route("/batch", methods=["POST"])
 def batch_check():
     uploaded = request.files.getlist("files")
-    verify   = request.form.get("verify", "true").lower() == "true"
+    verify = request.form.get("verify", "true").lower() == "true"
 
     if not uploaded:
         return jsonify({"error": "No files uploaded"}), 400
 
+    if len(uploaded) > 50:
+        return jsonify({"error": "Maximum 50 files per batch. Please reduce the number of files."}), 400
+
     results = []
-    tmpdir  = tempfile.mkdtemp()
+    tmpdir = tempfile.mkdtemp()
 
     try:
-        for main_file in uploaded:
+        for idx, main_file in enumerate(uploaded):
             filename = main_file.filename
-            ext      = Path(filename).suffix.lower()
+            ext = Path(filename).suffix.lower()
             if ext not in {".pdf", ".docx", ".tex", ".latex"}:
                 results.append({"filename": filename, "error": f"Unsupported format '{ext}'"})
                 continue
 
-            file_path = os.path.join(tmpdir, filename)
+            file_path = os.path.join(tmpdir, f"{idx}_{filename}")
             main_file.save(file_path)
 
             try:
                 result = _run_full_check(file_path, verify=verify, filename=filename)
                 results.append({
-                    "filename":     filename,
-                    "format":       result["format"],
-                    "score":        result["score"],
-                    "summary":      result["summary"],
+                    "filename": filename,
+                    "format": result["format"],
+                    "score": result["score"],
+                    "summary": result["summary"],
                     "flagged_refs": [
                         v["key"] for v in result["verification"]
                         if v.get("ai_verdict") in ("FAKE", "SUSPICIOUS")
                         or v.get("status") in ("not_found", "partial_match")
                     ],
-                    # NEW v6: surface version mismatches in batch summary
                     "arxiv_version_notes": result.get("arxiv_version_notes", []),
                 })
             except Exception as e:
                 import traceback
-                results.append({"filename": filename, "error": str(e),
-                                  "trace": traceback.format_exc()})
+                results.append({"filename": filename, "error": str(e)})
 
         results.sort(key=lambda r: r.get("score", {}).get("score", -1), reverse=True)
         return jsonify({"files": results, "count": len(results)})
@@ -783,159 +840,158 @@ def export_report():
         return jsonify({"error": "No data"}), 400
 
     sc = data.get("score", {})
-    s  = data.get("summary", {})
+    s = data.get("summary", {})
+    
+    verdict_icon = "✅" if sc.get("verdict") == "PASS" else "⚠️" if sc.get("verdict") == "FLAG" else "❌"
+    
     lines = [
-        "=" * 70,
-        "LNI REFERENCE CHECKER v6 — PROFESSOR REPORT",
-        "=" * 70,
-        f"File    : {data.get('filename','?')}",
-        f"Format  : {data.get('format','?')}",
-        f"Score   : {sc.get('score','?')}/100  Grade: {sc.get('grade','?')}  Verdict: {sc.get('verdict','?')}",
-        f"Reason  : {sc.get('verdict_reason','')}",
+        "=" * 80,
+        "LNI REFERENCE CHECKER v6.1 — PROFESSOR REPORT",
+        "=" * 80,
+        f"File        : {data.get('filename', '?')}",
+        f"Format      : {data.get('format', '?')}",
+        f"Score       : {sc.get('score', '?')}/100  Grade: {sc.get('grade', '?')}",
+        f"Verdict     : {verdict_icon} {sc.get('verdict', '?')}",
+        f"Reason      : {sc.get('verdict_reason', 'No AI reasoning provided')}",
         "",
-        "── SUMMARY ──",
-        f"  Bibliography entries    : {s.get('bib_entry_count',0)}",
-        f"  In-text citations       : {s.get('citation_count',0)}",
-        f"  Missing from bib        : {s.get('missing_from_bib',0)}",
-        f"  Never cited (orphaned)  : {s.get('uncited_entries',0)}",
-        f"  Incomplete entries      : {s.get('incomplete_entries',0)}",
-        f"  Key-vs-metadata errors  : {s.get('key_inconsistencies',0)}",
-        f"  FAKE (AI verdict)       : {s.get('fake_candidates',0)}",
-        f"  SUSPICIOUS              : {s.get('suspicious',0)}",
-        f"  Verified REAL           : {s.get('verified',0)}",
-        f"  Duplicates              : {s.get('duplicates',0)}",
-        f"  Self-citations          : {s.get('self_citations',0)}",
-        f"  Style issues            : {s.get('style_issues',0)}",
-        f"  Open-access links       : {s.get('open_access',0)}",
-        f"  Entries AI-reparsed     : {s.get('ai_reparsed_entries',0)}",
-        f"  arXiv version mismatches: {s.get('arxiv_version_mismatches',0)} (non-error, informational)",
+        "─" * 80,
+        "SUMMARY STATISTICS",
+        "─" * 80,
+        f"  Bibliography entries        : {s.get('bib_entry_count', 0)}",
+        f"  In-text citations           : {s.get('citation_count', 0)}",
+        f"  Missing from bibliography   : {s.get('missing_from_bib', 0)}",
+        f"  Never cited (orphaned)      : {s.get('uncited_entries', 0)}",
+        f"  Incomplete entries          : {s.get('incomplete_entries', 0)}",
+        f"  Key-vs-metadata errors      : {s.get('key_inconsistencies', 0)}",
+        f"  FAKE (AI verdict)           : {s.get('fake_candidates', 0)}",
+        f"  SUSPICIOUS references       : {s.get('suspicious', 0)}",
+        f"  Verified REAL               : {s.get('verified', 0)}",
+        f"  Duplicates                  : {s.get('duplicates', 0)}",
+        f"  Self-citations              : {s.get('self_citations', 0)}",
+        f"  Style issues                : {s.get('style_issues', 0)}",
+        f"  Open-access links           : {s.get('open_access', 0)}",
+        f"  Processing time             : {data.get('processing_time_seconds', '?')} seconds",
     ]
+    
     if s.get("numeric_citations"):
         lines.append("  ⚠ Numeric citations [1] detected — LNI requires [Author+Year]")
     lines.append("")
 
     if sc.get("student_feedback"):
-        lines.append("── FEEDBACK FOR STUDENT ──")
+        lines.append("─" * 80)
+        lines.append("FEEDBACK FOR STUDENT")
+        lines.append("─" * 80)
         for fb in sc["student_feedback"]:
             lines.append(f"  • {fb}")
         lines.append("")
 
     if sc.get("professor_note"):
-        lines += ["── NOTE FOR PROFESSOR ──", f"  {sc['professor_note']}", ""]
+        lines.append("─" * 80)
+        lines.append("NOTE FOR PROFESSOR")
+        lines.append("─" * 80)
+        lines.append(f"  {sc['professor_note']}")
+        lines.append("")
 
     if sc.get("penalties"):
-        lines.append("── SCORE BREAKDOWN ──")
+        lines.append("─" * 80)
+        lines.append("SCORE BREAKDOWN")
+        lines.append("─" * 80)
         for p in sc["penalties"]:
             lines.append(f"  -{p['deduction']:2d}  {p['category']} ({p['count']}×)")
         lines.append("")
 
-    # NEW v6: arXiv version notes section
     version_notes = data.get("arxiv_version_notes", [])
     if version_notes:
-        lines.append("── arXiv VERSION NOTES (informational — not penalised) ──")
+        lines.append("─" * 80)
+        lines.append("ARXIV VERSION NOTES (informational — not penalised)")
+        lines.append("─" * 80)
         for vn in version_notes:
             lines.append(f"  [{vn['key']}] {vn['note']}")
         lines.append("")
 
-    key_issues = [e for e in data.get("bibliography",[]) if e.get("key_consistent") is False]
-    if key_issues:
-        lines.append("── LNI KEY-VS-METADATA MISMATCHES ──")
-        for e in key_issues:
-            lines.append(f"  [{e['key']}] {e.get('title','?')}")
-            for issue in e.get("completeness_issues",[]):
-                if "key" in issue.lower():
-                    lines.append(f"    ⚠ {issue}")
-        lines.append("")
-
-    xc = data.get("cross_check", {})
-    if xc.get("cited_not_in_bib"):
-        lines.append("── CITED BUT MISSING FROM BIBLIOGRAPHY ──")
-        for k in xc["cited_not_in_bib"]:
-            lines.append(f"  [MISSING] {k}")
-        lines.append("")
-
-    if xc.get("in_bib_not_cited"):
-        lines.append("── IN BIBLIOGRAPHY BUT NEVER CITED ──")
-        for k in xc["in_bib_not_cited"]:
-            lines.append(f"  [ORPHAN]  {k}")
-        lines.append("")
-
-    fake_refs = [v for v in data.get("verification",[]) if v.get("ai_verdict") == "FAKE"]
+    fake_refs = [v for v in data.get("verification", []) if v.get("ai_verdict") == "FAKE"]
     if fake_refs:
-        lines.append("── LIKELY FAKE REFERENCES (AI) ──")
+        lines.append("─" * 80)
+        lines.append("LIKELY FAKE REFERENCES — Requires Investigation")
+        lines.append("─" * 80)
         for v in fake_refs:
             lines.append(f"  [{v['key']}] {v['title']}")
-            lines.append(f"    AI: {v.get('ai_reasoning','')}")
-            for rf in v.get("ai_risk_factors",[]):
+            lines.append(f"    Reasoning: {v.get('ai_reasoning', 'No reasoning provided')}")
+            for rf in v.get("ai_risk_factors", []):
                 lines.append(f"    ⚠ {rf}")
-            lines.append(f"    Sources: {', '.join(v.get('sources_checked',[]))}")
+            lines.append(f"    Sources: {', '.join(v.get('sources_checked', []))}")
         lines.append("")
 
-    suspicious_refs = [v for v in data.get("verification",[]) if v.get("ai_verdict") == "SUSPICIOUS"]
+    suspicious_refs = [v for v in data.get("verification", []) if v.get("ai_verdict") == "SUSPICIOUS"]
     if suspicious_refs:
-        lines.append("── SUSPICIOUS REFERENCES ──")
-        for v in suspicious_refs:
+        lines.append("─" * 80)
+        lines.append("SUSPICIOUS REFERENCES — Manual Review Recommended")
+        lines.append("─" * 80)
+        for v in suspicious_refs[:10]:
             lines.append(f"  [{v['key']}] {v['title']}")
-            lines.append(f"    {v.get('ai_reasoning','')}")
+            lines.append(f"    {v.get('ai_reasoning', 'No reasoning provided')}")
+        if len(suspicious_refs) > 10:
+            lines.append(f"  ... and {len(suspicious_refs) - 10} more")
         lines.append("")
 
-    incomplete = [e for e in data.get("bibliography",[]) if e.get("completeness_issues")]
-    if incomplete:
-        lines.append("── INCOMPLETE ENTRIES ──")
-        for e in incomplete:
-            lines.append(f"  [{e['key']}] {e.get('title','?')}")
-            for issue in e["completeness_issues"]:
-                lines.append(f"    ⚠ {issue}")
+    missing_refs = data.get("cross_check", {}).get("cited_not_in_bib", [])
+    if missing_refs:
+        lines.append("─" * 80)
+        lines.append("CITED BUT MISSING FROM BIBLIOGRAPHY")
+        lines.append("─" * 80)
+        for k in missing_refs[:20]:
+            lines.append(f"  [MISSING] {k}")
+        if len(missing_refs) > 20:
+            lines.append(f"  ... and {len(missing_refs) - 20} more")
         lines.append("")
 
-    if data.get("duplicates"):
-        lines.append("── DUPLICATE ENTRIES ──")
-        for d in data["duplicates"]:
-            lines.append(f"  [{d['key_a']}] vs [{d['key_b']}]  ({int(d['similarity']*100)}% similar)")
+    orphaned_refs = data.get("cross_check", {}).get("in_bib_not_cited", [])
+    if orphaned_refs:
+        lines.append("─" * 80)
+        lines.append("IN BIBLIOGRAPHY BUT NEVER CITED")
+        lines.append("─" * 80)
+        for k in orphaned_refs[:20]:
+            lines.append(f"  [ORPHAN]  {k}")
+        if len(orphaned_refs) > 20:
+            lines.append(f"  ... and {len(orphaned_refs) - 20} more")
         lines.append("")
-
-    if data.get("style_suggestions"):
-        lines.append("── STYLE ISSUES ──")
-        for ss in data["style_suggestions"]:
-            lines.append(f"  {ss['message']} ({ss['count']}×)")
-        lines.append("")
-
-    if data.get("verification_ai_summary"):
-        lines += ["── AI INTEGRITY SUMMARY ──", f"  {data['verification_ai_summary']}", ""]
 
     lines += [
-        "=" * 70,
-        "Generated by LNI Reference Checker v6",
+        "",
+        "=" * 80,
+        "Generated by LNI Reference Checker v6.1",
         "Deterministic: key format, key-consistency, fields, xcheck, dupes, style",
         "AI (Groq/Gemini): bibliography extraction, re-parsing, fake detection, verdict",
         "APIs: CrossRef · SS · OpenAlex · arXiv BibTeX (versioned) · DBLP · ACL Anthology",
         "      OpenReview · Open Library · GitHub · Scholar · DuckDuckGo",
         "Cache: disk (LNI_CACHE_DIR) + in-memory verification + session LLM cache",
-        "=" * 70,
+        "=" * 80,
     ]
 
     report = "\n".join(lines)
-    fname  = re.sub(r'[^\w\-.]', '_', data.get("filename", "report")) + "_lni_report.txt"
+    fname = re.sub(r'[^\w\-.]', '_', data.get("filename", "report")) + "_lni_report.txt"
     return Response(report, mimetype="text/plain",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 if __name__ == "__main__":
-    print("\n  ┌──────────────────────────────────────────────────────────────┐")
-    print("  │   LNI Reference Checker v6                                   │")
-    print("  │   http://localhost:5000                                      │")
-    print("  │                                                              │")
-    print("  │   NEW in v6:                                                 │")
-    print("  │   • arXiv BibTeX versioned checker (authoritative source)    │")
-    print("  │   • Session-scoped LLM response cache (batch efficiency)     │")
-    print("  │   • /status endpoint (cache stats)                           │")
-    print("  │                                                              │")
-    print("  │   Deterministic: key · key-consistency · fields             │")
-    print("  │                  xcheck · dupes · style                     │")
-    print("  │   AI (Groq→Gemini): extract · re-parse · fake · verdict     │")
-    print("  │   APIs: CrossRef · SS · OpenAlex · arXiv (versioned) · DBLP │")
-    print("  │          ACL · OpenReview · OpenLibrary · GitHub            │")
-    print("  │   Cache: disk + in-memory + session LLM                     │")
-    print("  └──────────────────────────────────────────────────────────────┘\n")
+    print("\n  ┌──────────────────────────────────────────────────────────────────────────────┐")
+    print("  │   LNI Reference Checker v6.1                                                  │")
+    print("  │   http://localhost:5000                                                        │")
+    print("  │                                                                                │")
+    print("  │   IMPROVEMENTS in v6.1:                                                        │")
+    print("  │   • Better PDF extraction with multiple fallback methods                      │")
+    print("  │   • Clear warnings for scanned PDFs and extraction issues                     │")
+    print("  │   • Improved error messages with actionable advice                            │")
+    print("  │   • File size and type validation before processing                           │")
+    print("  │   • Processing timeout protection (3 minutes)                                 │")
+    print("  │   • Enhanced progress messages with counts and status                         │")
+    print("  │                                                                                │")
+    print("  │   Deterministic: key · key-consistency · fields · xcheck · dupes · style      │")
+    print("  │   AI (Groq→Gemini): extract · re-parse · fake · verdict                       │")
+    print("  │   APIs: CrossRef · SS · OpenAlex · arXiv (versioned) · DBLP · ACL             │")
+    print("  │          OpenReview · OpenLibrary · GitHub                                    │")
+    print("  └──────────────────────────────────────────────────────────────────────────────┘\n")
+    
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

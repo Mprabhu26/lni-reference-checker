@@ -110,101 +110,71 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
 .err-msg{font-size:13px;color:var(--text2);line-height:1.6}
 .results{display:none;flex-direction:column;min-height:100%}
 .results.show{display:flex}
-.score-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.score-grade{font-size:22px;font-weight:700;width:42px;height:42px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.g-A,.g-B{background:var(--green-bg);color:var(--green)}
-.g-C{background:var(--yellow-bg);color:var(--yellow)}
-.g-D,.g-F{background:var(--red-bg);color:var(--red)}
-.score-info{}
-.score-file{font-size:14px;font-weight:600}
-.score-sub{font-size:11px;color:var(--text3);margin-top:2px}
-.pill{padding:4px 10px;border-radius:99px;font-size:12px;font-weight:500;border:1px solid;display:flex;align-items:center;gap:5px}
-.p-green{border-color:var(--green-border);color:var(--green);background:var(--green-bg)}
-.p-red{border-color:var(--red-border);color:var(--red);background:var(--red-bg)}
-.p-yellow{border-color:var(--yellow-border);color:var(--yellow);background:var(--yellow-bg)}
-.p-blue{border-color:var(--blue-border);color:var(--blue);background:var(--blue-bg)}
-.p-teal{border-color:var(--teal-border);color:var(--teal);background:var(--teal-bg)}
-.pn{font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600}
-.bar-actions{margin-left:auto;display:flex;gap:8px}
-.btn{padding:7px 14px;border-radius:6px;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer;transition:all 0.15s;border:1px solid}
-.btn-ai{background:var(--green-bg);border-color:var(--green-border);color:var(--green)}
-.btn-ai:hover{background:var(--green-border)}
-.btn-exp{background:var(--surface2);border-color:var(--border2);color:var(--text2)}
-.btn-exp:hover{background:var(--border)}
-.btn-new{background:var(--surface2);border-color:var(--border);color:var(--text3);font-size:11px;padding:5px 12px}
-.btn-new:hover{background:var(--border);color:var(--text)}
-.tabs{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;overflow-x:auto}
-.tab{padding:12px 16px;font-size:13px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap;display:flex;align-items:center;gap:6px}
+
+/* NEW: Verdict Banner - Clean & Prominent */
+.verdict-banner{padding:20px 24px;background:var(--surface);border-bottom:2px solid var(--border);margin:0}
+.verdict-header{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:16px}
+.verdict-badge{font-size:28px;font-weight:700;padding:8px 24px;border-radius:12px;display:inline-flex;align-items:center;gap:12px}
+.verdict-badge.pass{background:var(--green-bg);color:var(--green);border:2px solid var(--green-border)}
+.verdict-badge.flag{background:var(--yellow-bg);color:var(--yellow);border:2px solid var(--yellow-border)}
+.verdict-badge.fail{background:var(--red-bg);color:var(--red);border:2px solid var(--red-border)}
+.verdict-score{font-size:15px;color:var(--text2)}
+.verdict-score strong{font-size:28px;font-weight:700;color:var(--text);margin-right:4px}
+.verdict-reason{color:var(--text2);font-size:14px;margin-top:8px;padding:12px 16px;background:var(--bg);border-radius:8px;border-left:3px solid var(--accent)}
+
+/* NEW: Critical Issues Section - What Professor Actually Needs */
+.critical-issues{margin-top:16px}
+.issues-title{font-size:13px;font-weight:600;color:var(--red);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.issues-list{display:flex;flex-direction:column;gap:10px}
+.issue-card{background:var(--red-bg);border:1px solid var(--red-border);border-radius:8px;padding:14px 16px;display:flex;align-items:flex-start;gap:12px}
+.issue-card.warning{background:var(--yellow-bg);border-color:var(--yellow-border)}
+.issue-icon{font-size:20px;flex-shrink:0}
+.issue-content{flex:1}
+.issue-key{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;color:var(--red);background:rgba(192,57,43,0.1);padding:2px 8px;border-radius:4px;display:inline-block;margin-bottom:6px}
+.issue-text{font-size:13px;color:var(--text);line-height:1.5}
+.issue-detail{font-size:12px;color:var(--text3);margin-top:4px}
+
+/* Simplified Tabs */
+.tabs{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;gap:4px}
+.tab{padding:14px 20px;font-size:13px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.tbadge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:99px;font-size:10px;font-weight:600;background:var(--surface2);color:var(--text3)}
-.tbadge.red{background:var(--red-bg);color:var(--red)}
-.tbadge.yellow{background:var(--yellow-bg);color:var(--yellow)}
-.tbadge.purple{background:var(--purple-bg);color:var(--purple)}
+.tab-badge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;font-size:11px;font-weight:600;background:var(--surface2);color:var(--text3);margin-left:8px}
+.tab-badge.critical{background:var(--red-bg);color:var(--red)}
+
 .panels{flex:1;padding:24px;overflow-y:auto}
 .panel{display:none}
 .panel.active{display:block}
-.panel-title{font-size:16px;font-weight:600;margin-bottom:4px}
-.panel-desc{font-size:12px;color:var(--text3);margin-bottom:20px}
-.card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--border2);border-radius:var(--r);padding:14px 16px;margin-bottom:10px;transition:box-shadow 0.15s}
-.card:hover{box-shadow:var(--shadow)}
-.card.ok{border-left-color:var(--green)}.card.warn{border-left-color:var(--yellow)}.card.bad{border-left-color:var(--red)}.card.info{border-left-color:var(--purple)}
-.card-hdr{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;flex-wrap:wrap}
-.kbadge{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;padding:3px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text2);white-space:nowrap;flex-shrink:0}
-.card-title{flex:1;font-size:13px;font-weight:500;font-style:italic;line-height:1.4}
-.type-b{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px;text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;flex-shrink:0;background:var(--surface2);color:var(--text3)}
-.stat-b{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;flex-shrink:0;border:1px solid}
-.card-meta{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--text3);margin-top:4px}
-.issue{font-size:12px;color:var(--yellow);background:var(--yellow-bg);border:1px solid var(--yellow-border);border-radius:4px;padding:5px 10px;margin-top:4px;display:flex;align-items:flex-start;gap:6px}
-.issue::before{content:'⚠';flex-shrink:0}
-.raw{margin-top:8px;font-size:11px;color:var(--text3);background:var(--bg);border-radius:4px;padding:6px 10px;line-height:1.5;font-style:italic;font-family:'IBM Plex Mono',monospace}
-.ver-note{margin-top:8px;font-size:12px;color:var(--purple);background:var(--purple-bg);border:1px solid var(--purple-border);border-radius:4px;padding:6px 10px;display:flex;align-items:flex-start;gap:6px}
-.ver-note::before{content:'ℹ';flex-shrink:0}
-.conf-wrap{margin-top:10px}
-.conf-lbls{font-size:11px;color:var(--text3);display:flex;justify-content:space-between;margin-bottom:4px}
-.conf-track{height:4px;background:var(--surface2);border-radius:99px;overflow:hidden}
-.conf-bar{height:100%;border-radius:99px;transition:width 0.8s ease}
-.ch{background:var(--green)}.cm{background:var(--yellow)}.cl{background:var(--red)}
-.src-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
-.src-tag{font-size:10px;font-weight:500;padding:2px 7px;border-radius:4px;border:1px solid}
-.oa{display:inline-flex;align-items:center;gap:4px;color:var(--teal);font-size:12px;text-decoration:none;margin-top:6px;font-weight:500}
-.oa:hover{text-decoration:underline}
-.xsec{margin-bottom:24px}
-.xhdr{font-size:12px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;padding:8px 12px;border-radius:6px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
-.xhdr.ok{background:var(--green-bg);color:var(--green)}.xhdr.bad{background:var(--red-bg);color:var(--red)}.xhdr.warn{background:var(--yellow-bg);color:var(--yellow)}
-.kpills{display:flex;flex-wrap:wrap;gap:6px}
-.kpill{padding:5px 12px;border-radius:99px;font-size:12px;font-weight:500;border:1px solid;cursor:pointer;font-family:'IBM Plex Mono',monospace;transition:opacity 0.15s}
-.kpill:hover{opacity:0.75}
-.kpill.ok{border-color:var(--green-border);color:var(--green);background:var(--green-bg)}
-.kpill.bad{border-color:var(--red-border);color:var(--red);background:var(--red-bg)}
-.kpill.warn{border-color:var(--yellow-border);color:var(--yellow);background:var(--yellow-bg)}
-.ctx{display:none;margin-top:6px;padding:8px 12px;background:var(--surface2);border-radius:6px;font-size:12px;color:var(--text2);font-style:italic;line-height:1.6;border-left:3px solid var(--border2)}
-.vsum{display:flex;gap:16px;flex-wrap:wrap;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);margin-bottom:16px;font-size:13px;font-weight:500}
-.arxiv-note{background:var(--purple-bg);border:1px solid var(--purple-border);border-radius:var(--r);padding:12px 16px;margin-bottom:16px}
-.arxiv-note-title{font-size:12px;font-weight:600;color:var(--purple);margin-bottom:8px}
-.arxiv-note-item{font-size:12px;color:var(--text2);padding:4px 0;border-top:1px solid rgba(92,61,143,0.1)}
-.arxiv-note-item:first-of-type{border-top:none}
-.empty-sec{text-align:center;padding:32px 20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);color:var(--text3);font-size:13px}
-.empty-sec-icon{font-size:28px;display:block;margin-bottom:8px}
+
+/* Simplified Card for All References View */
+.ref-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px}
+.ref-card-header{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.ref-key{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;background:var(--surface2);padding:2px 8px;border-radius:4px}
+.ref-status{font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px}
+.ref-status.real{background:var(--green-bg);color:var(--green)}
+.ref-status.suspicious{background:var(--yellow-bg);color:var(--yellow)}
+.ref-status.fake{background:var(--red-bg);color:var(--red)}
+.ref-title{font-size:13px;font-weight:500;color:var(--text);margin-bottom:4px}
+.ref-meta{font-size:11px;color:var(--text3);display:flex;gap:12px;flex-wrap:wrap}
+
+.empty-sec{text-align:center;padding:48px 20px;background:var(--surface);border:1px solid var(--border);border-radius:12px;color:var(--text3)}
+.empty-sec-icon{font-size:40px;display:block;margin-bottom:12px}
+
 .batch-wrap{flex:1;overflow-y:auto;padding:20px 24px}
 .bt{width:100%;border-collapse:collapse;font-size:13px}
 .bt th{text-align:left;padding:10px 14px;border-bottom:2px solid var(--border);color:var(--text3);font-size:11px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;background:var(--surface);position:sticky;top:0}
-.bt td{padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
-.bt tbody tr:hover td{background:var(--surface)}
+.bt td{padding:12px 14px;border-bottom:1px solid var(--border)}
 .gp{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700}
 .gA,.gB{background:var(--green-bg);color:var(--green)}.gC{background:var(--yellow-bg);color:var(--yellow)}.gD,.gF{background:var(--red-bg);color:var(--red)}
-.modal-ov{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;padding:32px;animation:fi 0.15s ease}
-@keyframes fi{from{opacity:0}to{opacity:1}}
-.modal{background:var(--surface);border-radius:12px;max-width:680px;width:100%;max-height:82vh;display:flex;flex-direction:column;box-shadow:var(--shadow-lg);animation:su 0.2s ease}
-@keyframes su{from{transform:translateY(16px);opacity:0}to{transform:none;opacity:1}}
+.btn{padding:7px 14px;border-radius:6px;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer;border:1px solid;background:var(--surface2);border-color:var(--border2);color:var(--text2)}
+.btn:hover{background:var(--border)}
+.modal-ov{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;display:flex;align-items:center;justify-content:center;padding:32px}
+.modal{background:var(--surface);border-radius:12px;max-width:680px;width:100%;max-height:82vh;display:flex;flex-direction:column;box-shadow:var(--shadow-lg)}
 .modal-hdr{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
 .modal-title{font-size:16px;font-weight:600}
-.modal-src{font-size:11px;color:var(--text3);background:var(--surface2);border:1px solid var(--border);padding:2px 8px;border-radius:4px}
-.modal-x{margin-left:auto;width:28px;height:28px;border:none;background:var(--surface2);border-radius:50%;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;color:var(--text3);transition:all 0.15s}
-.modal-x:hover{background:var(--border)}
-.modal-sub{padding:8px 22px;background:var(--bg);border-bottom:1px solid var(--border);font-size:12px;color:var(--text3)}
-.modal-body{padding:22px;overflow-y:auto;font-size:13px;line-height:1.9;color:var(--text);white-space:pre-wrap}
-::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}::-webkit-scrollbar-thumb:hover{background:var(--text3)}
+.modal-x{margin-left:auto;width:28px;height:28px;border:none;background:var(--surface2);border-radius:50%;cursor:pointer;font-size:16px}
+.modal-body{padding:22px;overflow-y:auto;font-size:13px;line-height:1.9;white-space:pre-wrap}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 </style>
 </head>
 <body>
@@ -214,7 +184,7 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
   <div class="header-sub">GI Lecture Notes in Informatics — Citation Validator</div>
   <div class="header-right">
     <span id="cacheStatus">⚡ Cache warm</span>
-    <span class="badge">v6</span><span class="badge">PDF</span><span class="badge">DOCX</span><span class="badge">LaTeX</span>
+    <span class="badge">v6</span>
   </div>
 </header>
 <main>
@@ -255,7 +225,6 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
           <input type="file" id="batchInput" accept=".pdf,.docx,.tex,.latex" multiple/>
           <div class="up-icon" style="background:var(--blue-bg);border-color:var(--blue-border)">📂</div>
           <div class="up-text" style="color:var(--blue)">Select multiple files</div>
-          <div class="up-hint">Check all submissions at once</div>
         </div>
         <div class="batch-files" id="batchFileList"></div>
       </div>
@@ -267,7 +236,7 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
     </div>
     <div class="sb-footer">
       <button class="run-btn" id="runBtn" disabled><span>Run Check</span><span>→</span></button>
-      <button class="run-btn" id="batchRunBtn" disabled style="display:none;margin-top:8px;background:var(--blue);box-shadow:none"><span>Run Batch Check</span><span>→</span></button>
+      <button class="run-btn" id="batchRunBtn" disabled style="display:none;margin-top:8px;background:var(--blue)"><span>Run Batch Check</span><span>→</span></button>
     </div>
   </div>
 
@@ -279,8 +248,8 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
         <p class="empty-desc">Upload a student submission to automatically check all references for formatting errors, missing citations, and fake entries.</p>
         <div class="steps">
           <div class="step"><div class="step-n">1</div><div class="step-t">Upload a PDF, Word, or LaTeX file</div></div>
-          <div class="step"><div class="step-n">2</div><div class="step-t">Click Run Check and wait ~30s</div></div>
-          <div class="step"><div class="step-n">3</div><div class="step-t">Review results across 5 tabs</div></div>
+          <div class="step"><div class="step-n">2</div><div class="step-t">Click Run Check</div></div>
+          <div class="step"><div class="step-n">3</div><div class="step-t">Review verdict & critical issues</div></div>
         </div>
       </div>
     </div>
@@ -300,49 +269,41 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
       <div class="error-card"><div class="err-title">Something went wrong</div><div class="err-msg" id="errMsg"></div></div>
     </div>
 
+    <!-- NEW: Simplified Results Panel -->
     <div class="results" id="resultsPanel">
-      <div class="score-bar" id="scoreBar"></div>
+      <!-- Verdict Banner - Shows immediately what professor needs to know -->
+      <div id="verdictBanner" class="verdict-banner"></div>
+      
+      <!-- Simplified Tabs -->
       <div class="tabs">
-        <div class="tab active" data-tab="bib">Bibliography <span class="tbadge" id="badgeBib">0</span></div>
-        <div class="tab" data-tab="xcheck">Cross-Check <span class="tbadge" id="badgeX">0</span></div>
-        <div class="tab" data-tab="verify">Verification <span class="tbadge" id="badgeV">0</span></div>
-        <div class="tab" data-tab="style">Style <span class="tbadge" id="badgeStyle">0</span></div>
-        <div class="tab" data-tab="dupes">Duplicates <span class="tbadge" id="badgeDupes">0</span></div>
+        <div class="tab active" data-tab="summary">📋 Summary</div>
+        <div class="tab" data-tab="references">📚 References</div>
+        <div class="tab" data-tab="problems">⚠ Problems</div>
       </div>
+      
       <div class="panels">
-        <div class="panel active" id="tab-bib">
-          <div class="panel-title">Bibliography</div>
-          <div class="panel-desc">All extracted references — check for missing fields and formatting errors</div>
-          <div id="bibList"></div>
+        <!-- Summary Tab - Professor's main view -->
+        <div class="panel active" id="tab-summary">
+          <div id="summaryContent"></div>
         </div>
-        <div class="panel" id="tab-xcheck">
-          <div class="panel-title">Cross-Check</div>
-          <div class="panel-desc">Compares what's cited in the text against the bibliography list</div>
-          <div id="xcheckContent"></div>
+        
+        <!-- All References Tab -->
+        <div class="panel" id="tab-references">
+          <div id="referencesContent"></div>
         </div>
-        <div class="panel" id="tab-verify">
-          <div class="panel-title">Verification</div>
-          <div class="panel-desc">Checks if each reference actually exists online — flags fake or hallucinated entries</div>
-          <div id="verifyList"></div>
-        </div>
-        <div class="panel" id="tab-style">
-          <div class="panel-title">Style Violations</div>
-          <div class="panel-desc">LNI formatting rules — e.g. use \eg instead of "e.g.", \ie instead of "i.e."</div>
-          <div id="styleList"></div>
-        </div>
-        <div class="panel" id="tab-dupes">
-          <div class="panel-title">Duplicate Entries</div>
-          <div class="panel-desc">Bibliography entries that appear more than once</div>
-          <div id="dupesList"></div>
+        
+        <!-- Problems Tab (All issues grouped) -->
+        <div class="panel" id="tab-problems">
+          <div id="problemsContent"></div>
         </div>
       </div>
     </div>
 
-    <div class="results" id="batchPanel">
+    <div class="results" id="batchPanel" style="display:none">
       <div class="score-bar" id="batchScoreBar"></div>
       <div class="batch-wrap">
         <table class="bt">
-          <thead><tr><th>#</th><th>File</th><th>Score</th><th>Grade</th><th>Refs</th><th>Missing</th><th>Uncited</th><th>Incomplete</th><th>Fake</th></tr></thead>
+          <thead><tr><th>#</th><th>File</th><th>Score</th><th>Grade</th><th>Fake</th><th>Missing</th></tr></thead>
           <tbody id="batchBody"></tbody>
         </table>
       </div>
@@ -364,11 +325,11 @@ $('dropZone').addEventListener('dragleave',()=>$('dropZone').classList.remove('d
 $('dropZone').addEventListener('drop',e=>{e.preventDefault();$('dropZone').classList.remove('drag');if(e.dataTransfer.files[0])setFile(e.dataTransfer.files[0])});
 
 function setFile(f){
-  selFile=f;const ext=f.name.split('.').pop().toLowerCase();
+  selFile=f;
   $('fileChip').classList.add('show');
-  $('chipName').textContent=f.name;$('chipSize').textContent=(f.size/1024).toFixed(1)+' KB';
-  $('chipIcon').textContent={pdf:'📕',docx:'📘',tex:'📗',latex:'📗'}[ext]||'📄';
-  $('bibAttach').classList.toggle('show',ext==='tex'||ext==='latex');
+  $('chipName').textContent=f.name;
+  $('chipSize').textContent=(f.size/1024).toFixed(1)+' KB';
+  $('bibAttach').classList.toggle('show',f.name.match(/\.(tex|latex)$/i));
   $('runBtn').disabled=false;
 }
 function removeFile(){selFile=null;$('fileInput').value='';$('fileChip').classList.remove('show');$('bibAttach').classList.remove('show');$('runBtn').disabled=true}
@@ -384,11 +345,12 @@ $('verifyToggle').onclick=()=>{verifyOn=!verifyOn;$('verifyToggle').classList.to
 document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
-  t.classList.add('active');$('tab-'+t.dataset.tab).classList.add('active');
+  t.classList.add('active');
+  $('tab-'+t.dataset.tab).classList.add('active');
 }));
 
 async function refreshCache(){
-  try{const d=await(await fetch('/status')).json();const n=(d.cache?.llm_response_cache_entries||0)+(d.cache?.arxiv_bibtex_cache_entries||0)+(d.cache?.verification_result_cache_entries||0);const el=$('cacheStatus');if(n>0){el.style.display='';el.textContent=`⚡ ${n} cached`}else el.style.display='none'}catch(e){}
+  try{const d=await(await fetch('/status')).json();const n=(d.cache?.llm_response_cache_entries||0)+(d.cache?.arxiv_bibtex_cache_entries||0);const el=$('cacheStatus');if(n>0){el.style.display='';el.textContent=`⚡ ${n} cached`}else el.style.display='none'}catch(e){}
 }
 refreshCache();
 
@@ -410,169 +372,259 @@ $('runBtn').onclick=()=>{
 
 let pt=0,pd=0;
 function resetProg(){pt=0;pd=0;$('progLog').innerHTML='';$('progWrap').style.display='none';$('progFill').style.width='0';$('ldTitle').textContent='Analysing submission…';$('ldStep').textContent='Starting…'}
-const STEPS={extract:'Reading document…',ai_extract:'Extracting bibliography with AI…',parse:'Parsing references…',check:'Running checks…',verify:'Verifying references online…',ai_verify:'AI hallucination check…',ai_verdict:'Generating verdict…',warning:'Warning'};
 function onSSE(type,p){
   if(type==='progress'){
     $('ldStep').textContent=p.message||'';
     if(p.step==='verify'&&p.total){pt=p.total;pd=p.done||0;$('progWrap').style.display='';const pct=Math.round((pd/pt)*100);$('progFill').style.width=pct+'%';$('progLbl').textContent=`${pd} / ${pt} references checked`;$('ldTitle').textContent='Verifying references…'}
-    else $('ldTitle').textContent=STEPS[p.step]||'Processing…';
-    addLog(p.message||'',p.step==='verify'?'v':'');
   } else if(type==='done'){refreshCache();renderResults(p);showState('results')}
   else if(type==='error'){showError(p.error+(p.trace?'\n\n'+p.trace.split('\n').slice(-3).join('\n'):''))}
 }
-function addLog(msg,cls){const el=$('progLog');const i=document.createElement('div');i.className='log-item'+(cls?' '+cls:'');i.textContent=msg;el.prepend(i);while(el.children.length>12)el.removeChild(el.lastChild)}
+
+// ========== NEW: Simplified Rendering Functions ==========
+
+function renderResults(data){
+  lastData=data;
+  renderVerdictBanner(data);
+  renderSummaryTab(data);
+  renderReferencesTab(data);
+  renderProblemsTab(data);
+}
+
+function renderVerdictBanner(data){
+  const score=data.score||{};
+  const verdict=score.verdict||(score.score>=75?'PASS':score.score>=50?'FLAG':'FAIL');
+  const verdictClass=verdict==='PASS'?'pass':verdict==='FLAG'?'flag':'fail';
+  const verdictText=verdict==='PASS'?'✓ PASS':verdict==='FLAG'?'⚠ FLAG - Review Required':'✗ FAIL - Major Issues';
+  
+  let reasonHtml='';
+  if(score.verdict_reason){
+    reasonHtml=`<div class="verdict-reason">📝 ${esc(score.verdict_reason)}</div>`;
+  }
+  
+  $('verdictBanner').innerHTML=`
+    <div class="verdict-header">
+      <div class="verdict-badge ${verdictClass}">${verdictText}</div>
+      <div class="verdict-score"><strong>${score.score||0}</strong> / 100</div>
+      <div class="verdict-score">Grade: <strong>${score.grade||'?'}</strong></div>
+    </div>
+    ${reasonHtml}
+  `;
+}
+
+function renderSummaryTab(data){
+  const summary=data.summary||{};
+  const verification=data.verification||[];
+  const xcheck=data.cross_check||{};
+  const score=data.score||{};
+  
+  // Identify critical issues
+  const fakeRefs=verification.filter(v=>v.ai_verdict==='FAKE');
+  const missingRefs=xcheck.cited_not_in_bib||[];
+  const suspiciousRefs=verification.filter(v=>v.ai_verdict==='SUSPICIOUS');
+  const incompleteEntries=(data.bibliography||[]).filter(b=>b.completeness_issues&&b.completeness_issues.length);
+  
+  let criticalHtml='';
+  if(fakeRefs.length>0||missingRefs.length>0||suspiciousRefs.length>0){
+    criticalHtml=`<div class="critical-issues"><div class="issues-title">⚠ CRITICAL ISSUES TO REVIEW</div><div class="issues-list">`;
+    
+    // FAKE references - highest priority
+    for(const ref of fakeRefs.slice(0,5)){
+      criticalHtml+=`
+        <div class="issue-card">
+          <div class="issue-icon">🔴</div>
+          <div class="issue-content">
+            <div class="issue-key">[${esc(ref.key)}]</div>
+            <div class="issue-text"><strong>LIKELY FAKE:</strong> ${esc(ref.title||'Untitled')}</div>
+            <div class="issue-detail">${esc(ref.ai_reasoning||'No matching paper found in any academic database')}</div>
+          </div>
+        </div>
+      `;
+    }
+    
+    // Missing citations
+    for(const key of missingRefs.slice(0,3)){
+      criticalHtml+=`
+        <div class="issue-card warning">
+          <div class="issue-icon">📌</div>
+          <div class="issue-content">
+            <div class="issue-key">[${esc(key)}]</div>
+            <div class="issue-text"><strong>Cited in text but NOT in bibliography</strong></div>
+            <div class="issue-detail">Add this reference to your bibliography</div>
+          </div>
+        </div>
+      `;
+    }
+    
+    // Suspicious (for context)
+    for(const ref of suspiciousRefs.slice(0,2)){
+      criticalHtml+=`
+        <div class="issue-card warning">
+          <div class="issue-icon">⚠️</div>
+          <div class="issue-content">
+            <div class="issue-key">[${esc(ref.key)}]</div>
+            <div class="issue-text"><strong>SUSPICIOUS:</strong> ${esc(ref.title||'Untitled')}</div>
+            <div class="issue-detail">${esc(ref.ai_reasoning||'Could not verify this reference')}</div>
+          </div>
+        </div>
+      `;
+    }
+    
+    criticalHtml+=`</div></div>`;
+  } else {
+    criticalHtml=`<div class="critical-issues"><div class="issues-list"><div class="issue-card" style="background:var(--green-bg);border-color:var(--green-border)"><div class="issue-icon">✅</div><div class="issue-content"><div class="issue-text"><strong>No critical issues found</strong></div><div class="issue-detail">All references appear valid. Review the full report for any minor concerns.</div></div></div></div></div>`;
+  }
+  
+  // Stats summary
+  const statsHtml=`
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-top:20px">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center"><div style="font-size:24px;font-weight:700">${summary.bib_entry_count||0}</div><div style="font-size:11px;color:var(--text3)">References</div></div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center"><div style="font-size:24px;font-weight:700">${summary.citation_count||0}</div><div style="font-size:11px;color:var(--text3)">Citations</div></div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center"><div style="font-size:24px;font-weight:700;color:${fakeRefs.length>0?'var(--red)':'var(--green)'}">${fakeRefs.length}</div><div style="font-size:11px;color:var(--text3)">Fake references</div></div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center"><div style="font-size:24px;font-weight:700;color:${missingRefs.length>0?'var(--red)':'var(--green)'}">${missingRefs.length}</div><div style="font-size:11px;color:var(--text3)">Missing citations</div></div>
+    </div>
+  `;
+  
+  $('summaryContent').innerHTML=criticalHtml+statsHtml;
+  
+  // Add professor note if available
+  if(score.professor_note){
+    const noteDiv=document.createElement('div');
+    noteDiv.style.marginTop='16px';
+    noteDiv.style.padding='12px 16px';
+    noteDiv.style.background='var(--purple-bg)';
+    noteDiv.style.borderRadius='8px';
+    noteDiv.style.border=`1px solid var(--purple-border)`;
+    noteDiv.innerHTML=`<strong>📋 Professor Note:</strong><br>${esc(score.professor_note)}`;
+    $('summaryContent').appendChild(noteDiv);
+  }
+}
+
+function renderReferencesTab(data){
+  const verification=data.verification||[];
+  if(!verification.length){
+    $('referencesContent').innerHTML=`<div class="empty-sec"><span class="empty-sec-icon">📚</span>No references found</div>`;
+    return;
+  }
+  
+  $('referencesContent').innerHTML=verification.map(v=>{
+    const statusClass=v.ai_verdict==='REAL'?'real':v.ai_verdict==='FAKE'?'fake':'suspicious';
+    const statusText=v.ai_verdict||(v.status==='verified'?'REAL':'UNKNOWN');
+    return `
+      <div class="ref-card">
+        <div class="ref-card-header">
+          <span class="ref-key">[${esc(v.key)}]</span>
+          <span class="ref-status ${statusClass}">${statusText}</span>
+        </div>
+        <div class="ref-title">${esc(v.title||'No title extracted')}</div>
+        <div class="ref-meta">
+          ${v.doi?`DOI: ${esc(v.doi)}`:''}
+          ${v.sources_checked&&v.sources_checked.length?`Sources: ${v.sources_checked.slice(0,3).join(', ')}`:''}
+        </div>
+        ${v.ai_reasoning?`<div style="font-size:11px;color:var(--text3);margin-top:6px">🤖 ${esc(v.ai_reasoning)}</div>`:''}
+      </div>
+    `;
+  }).join('');
+}
+
+function renderProblemsTab(data){
+  const verification=data.verification||[];
+  const xcheck=data.cross_check||{};
+  const style=data.style_suggestions||[];
+  const duplicates=data.duplicates||[];
+  const bibliography=data.bibliography||[];
+  
+  const fakeRefs=verification.filter(v=>v.ai_verdict==='FAKE');
+  const suspiciousRefs=verification.filter(v=>v.ai_verdict==='SUSPICIOUS');
+  const missingRefs=(xcheck.cited_not_in_bib||[]).map(k=>({key:k,type:'missing'}));
+  const orphanedRefs=(xcheck.in_bib_not_cited||[]).map(k=>({key:k,type:'orphaned'}));
+  const incompleteEntries=bibliography.filter(b=>b.completeness_issues&&b.completeness_issues.length);
+  
+  let html='';
+  
+  if(fakeRefs.length){
+    html+=`<div style="margin-bottom:24px"><h3 style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:10px">🔴 FAKE REFERENCES (${fakeRefs.length})</h3>`;
+    for(const ref of fakeRefs){
+      html+=`<div class="ref-card" style="border-left-color:var(--red)"><div class="ref-card-header"><span class="ref-key">[${esc(ref.key)}]</span><span class="ref-status fake">FAKE</span></div><div class="ref-title">${esc(ref.title||'Untitled')}</div><div class="ref-meta">${esc(ref.ai_reasoning||'')}</div></div>`;
+    }
+    html+=`</div>`;
+  }
+  
+  if(missingRefs.length){
+    html+=`<div style="margin-bottom:24px"><h3 style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:10px">📌 MISSING FROM BIBLIOGRAPHY (${missingRefs.length})</h3>`;
+    for(const ref of missingRefs){
+      html+=`<div class="ref-card" style="border-left-color:var(--red)"><div class="ref-card-header"><span class="ref-key">[${esc(ref.key)}]</span><span class="ref-status fake">CITED NOT IN BIB</span></div><div class="ref-title">Citation key appears in text but not in bibliography</div></div>`;
+    }
+    html+=`</div>`;
+  }
+  
+  if(suspiciousRefs.length){
+    html+=`<div style="margin-bottom:24px"><h3 style="font-size:14px;font-weight:600;color:var(--yellow);margin-bottom:10px">⚠ SUSPICIOUS REFERENCES (${suspiciousRefs.length})</h3>`;
+    for(const ref of suspiciousRefs.slice(0,10)){
+      html+=`<div class="ref-card" style="border-left-color:var(--yellow)"><div class="ref-card-header"><span class="ref-key">[${esc(ref.key)}]</span><span class="ref-status suspicious">SUSPICIOUS</span></div><div class="ref-title">${esc(ref.title||'Untitled')}</div><div class="ref-meta">${esc(ref.ai_reasoning||'Could not verify')}</div></div>`;
+    }
+    html+=`</div>`;
+  }
+  
+  if(orphanedRefs.length){
+    html+=`<div style="margin-bottom:24px"><h3 style="font-size:14px;font-weight:600;color:var(--yellow);margin-bottom:10px">📖 NEVER CITED (${orphanedRefs.length})</h3>`;
+    for(const ref of orphanedRefs){
+      html+=`<div class="ref-card" style="border-left-color:var(--yellow)"><div class="ref-card-header"><span class="ref-key">[${esc(ref.key)}]</span><span class="ref-status suspicious">IN BIB NOT CITED</span></div><div class="ref-title">Entry exists in bibliography but never referenced in text</div></div>`;
+    }
+    html+=`</div>`;
+  }
+  
+  if(incompleteEntries.length){
+    html+=`<div style="margin-bottom:24px"><h3 style="font-size:14px;font-weight:600;color:var(--text3);margin-bottom:10px">📝 INCOMPLETE ENTRIES (${incompleteEntries.length})</h3>`;
+    for(const entry of incompleteEntries.slice(0,10)){
+      const issues=entry.completeness_issues.slice(0,3).join(', ');
+      html+=`<div class="ref-card"><div class="ref-card-header"><span class="ref-key">[${esc(entry.key)}]</span></div><div class="ref-title">${esc(entry.title||'Untitled')}</div><div class="ref-meta" style="color:var(--yellow)">Missing: ${esc(issues)}</div></div>`;
+    }
+    html+=`</div>`;
+  }
+  
+  if(!fakeRefs.length&&!suspiciousRefs.length&&!missingRefs.length&&!orphanedRefs.length){
+    html=`<div class="empty-sec"><span class="empty-sec-icon">✅</span><div>No problems detected!</div><div style="font-size:12px;color:var(--text3);margin-top:8px">All references are verified and citations match.</div></div>`;
+  }
+  
+  $('problemsContent').innerHTML=html;
+}
 
 $('batchRunBtn').onclick=async()=>{
   if(!selBatch.length)return;showState('loading');resetProg();$('ldStep').textContent=`Checking ${selBatch.length} file(s)…`;
   try{const form=new FormData();selBatch.forEach(f=>form.append('files',f));form.append('verify',verifyOn?'true':'false');const data=await(await fetch('/batch',{method:'POST',body:form})).json();if(data.error){showError(data.error);return}refreshCache();renderBatch(data);showState('batch')}catch(e){showError(e.message)}
 };
+
 function renderBatch(data){
-  const files=data.files||[];const avg=files.length?Math.round(files.reduce((s,f)=>s+(f.score?.score||0),0)/files.length):0;
-  const gc=avg>=75?'p-green':avg>=60?'p-yellow':'p-red';
-  $('batchScoreBar').innerHTML=`<span class="score-file">Batch Results</span><span class="pill p-blue"><span class="pn">${files.length}</span> files</span><span class="pill ${gc}"><span class="pn">${avg}</span>/100 avg</span><span class="pill p-green"><span class="pn">${files.filter(f=>f.score?.grade==='A').length}</span> A grade</span><span class="pill p-red"><span class="pn">${files.filter(f=>f.score?.grade==='F').length}</span> F grade</span><div class="bar-actions"><button class="btn btn-new" onclick="clearResults()">↺ New Check</button></div>`;
+  const files=data.files||[];
+  const fakeTotal=files.reduce((s,f)=>s+(f.summary?.fake_candidates||0),0);
+  $('batchScoreBar').innerHTML=`
+    <span class="score-file">Batch Results · ${files.length} files</span>
+    <span class="pill ${fakeTotal>0?'p-red':'p-green'}"><span class="pn">${fakeTotal}</span> fake references</span>
+    <button class="btn btn-new" onclick="clearResults()">↺ New Check</button>
+  `;
   $('batchBody').innerHTML=files.map((f,i)=>{
-    if(f.error)return`<tr><td style="color:var(--text3)">${i+1}</td><td>${esc(f.filename)}</td><td colspan="7" style="color:var(--red)">Error: ${esc(f.error)}</td></tr>`;
-    const sc=f.score||{},sm=f.summary||{},g=sc.grade||'—';
-    const cell=(v,c)=>v>0?`<td style="font-weight:600;color:var(--${c})">${v}</td>`:`<td style="color:var(--text3)">0</td>`;
-    return`<tr><td style="color:var(--text3)">${i+1}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">${esc(f.filename)}</td><td><strong>${sc.score??'—'}</strong></td><td><span class="gp g${g}">${g}</span></td><td>${sm.bib_entry_count??'—'}</td>${cell(sm.missing_from_bib||0,'red')}${cell(sm.uncited_entries||0,'yellow')}${cell(sm.incomplete_entries||0,'yellow')}${cell(sm.fake_candidates||0,'red')}</tr>`;
+    if(f.error)return`<tr><td>${i+1}</td><td>${esc(f.filename)}</td><td colspan="4" style="color:var(--red)">Error</td></tr>`;
+    const sc=f.score||{},sm=f.summary||{};
+    const g=sc.grade||'?';
+    return`<tr><td>${i+1}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.filename)}</td><td><strong>${sc.score??'—'}</strong></td><td><span class="gp g${g}">${g}</span></td><td style="color:${(sm.fake_candidates||0)>0?'var(--red)':'var(--text3)'}">${sm.fake_candidates||0}</td><td style="color:${(sm.missing_from_bib||0)>0?'var(--red)':'var(--text3)'}">${sm.missing_from_bib||0}</td></tr>`;
   }).join('');
-}
-
-function renderResults(data){
-  lastData=data;renderScoreBar(data);renderBib(data.bibliography||[]);renderXCheck(data.cross_check||{},data.citation_contexts||{},data.self_citations||[]);renderVerify(data.verification||[],data.arxiv_version_notes||[]);renderStyle(data.style_suggestions||[]);renderDupes(data.duplicates||[]);
-  const xi=(data.cross_check?.cited_not_in_bib?.length||0)+(data.cross_check?.in_bib_not_cited?.length||0);
-  const vi=(data.verification||[]).filter(v=>v.status==='not_found').length;
-  const vn=(data.arxiv_version_notes||[]).length,sc2=(data.style_suggestions||[]).length,dc=(data.duplicates||[]).length;
-  $('badgeBib').textContent=(data.bibliography||[]).length;
-  $('badgeX').textContent=xi;$('badgeX').className='tbadge'+(xi>0?' red':'');
-  $('badgeV').textContent=(data.verification||[]).length;$('badgeV').className='tbadge'+(vi>0?' red':vn>0?' purple':'');
-  $('badgeStyle').textContent=sc2;$('badgeStyle').className='tbadge'+(sc2>0?' yellow':'');
-  $('badgeDupes').textContent=dc;$('badgeDupes').className='tbadge'+(dc>0?' red':'');
-  if(xi>0)switchTab('xcheck');else if(vi>0)switchTab('verify');
-}
-function switchTab(n){document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===n));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+n))}
-
-function renderScoreBar(data){
-  const s=data.summary||{},sc=data.score||{};
-  const tot=(s.missing_from_bib||0)+(s.uncited_entries||0)+(s.incomplete_entries||0)+(s.fake_candidates||0)+(s.duplicates||0);
-  const g=sc.grade||'?';
-  const aiWarn=sc.professor_note&&sc.professor_note.toLowerCase().includes('unavailable')?`<span class="pill p-yellow" style="font-size:11px">⚠ AI unavailable — review manually</span>`:'';
-  $('scoreBar').innerHTML=`
-    <span class="score-grade g-${g}">${g}</span>
-    <div class="score-info"><div class="score-file">${esc(data.filename||'')}</div><div class="score-sub">${sc.score??'—'}/100 · ${esc(data.format||'')}</div></div>
-    ${tot===0?`<span class="pill p-green">✓ All checks passed</span>`:`<span class="pill p-red"><span class="pn">${tot}</span> issue${tot!==1?'s':''}</span>`}
-    <span class="pill p-blue"><span class="pn">${s.bib_entry_count||0}</span> references</span>
-    ${s.incomplete_entries>0?`<span class="pill p-yellow"><span class="pn">${s.incomplete_entries}</span> incomplete</span>`:''}
-    ${(s.fake_candidates||0)>0?`<span class="pill p-red"><span class="pn">${s.fake_candidates}</span> fake</span>`:''}
-    ${s.open_access>0?`<span class="pill p-teal"><span class="pn">${s.open_access}</span> open access</span>`:''}
-    ${aiWarn}
-    <div class="bar-actions">
-      <button class="btn btn-ai" id="aiBtn" onclick="runAI()">🤖 AI Verdict</button>
-      <button class="btn btn-exp" onclick="exportReport()">⬇ Export</button>
-      <button class="btn btn-new" onclick="clearResults()">↺ New Check</button>
-    </div>`;
-}
-
-function renderBib(bib){
-  const el=$('bibList');
-  if(!bib.length){el.innerHTML=`<div class="empty-sec"><span class="empty-sec-icon">📚</span>No bibliography found. Make sure the document has a "Literaturverzeichnis" or "References" section.</div>`;return}
-  el.innerHTML=bib.map(e=>{
-    const hi=e.completeness_issues?.length>0,ke=e.key_consistent===false;
-    const cls=ke?'bad':hi?'warn':'ok';
-    const meta=[e.authors?`<span>👤 ${esc(e.authors)}</span>`:'',e.year?`<span>📅 ${esc(e.year)}</span>`:'',e.journal?`<span>📰 ${esc(e.journal)}</span>`:'',e.publisher?`<span>🏢 ${esc(e.publisher)}</span>`:'',e.doi?`<span>🔑 <a href="https://doi.org/${esc(e.doi)}" target="_blank" class="oa">${esc(e.doi)}</a></span>`:''].filter(Boolean).join('');
-    const issues=(e.completeness_issues||[]).map(i=>`<div class="issue">${esc(i)}</div>`).join('');
-    return`<div class="card ${cls}"><div class="card-hdr"><span class="kbadge">${esc(e.key)}</span><span class="card-title">${esc(e.title||'(title not parsed)')}</span><span class="type-b">${esc(e.type||'unknown')}</span>${e.ai_reparsed?`<span class="type-b" style="background:var(--green-bg);color:var(--green)">AI-parsed</span>`:''}</div>${meta?`<div class="card-meta">${meta}</div>`:''}${issues}<div class="raw">${esc(e.raw||'')}</div></div>`;
-  }).join('');
-}
-
-function renderXCheck(x,ctx,sc){
-  const el=$('xcheckContent');
-  const ok=x.correctly_used||[],miss=x.cited_not_in_bib||[],unc=x.in_bib_not_cited||[];
-  const ctxHtml=k=>{const s=(ctx||{})[k];if(!s?.length)return'';return`<div class="ctx" id="ctx-${esc(k)}">${s.slice(0,2).map(t=>`"…${esc(t)}…"`).join('<br>')}</div>`};
-  let h=`
-    <div class="xsec"><div class="xhdr bad">✘ Cited in text but MISSING from bibliography (${miss.length})</div>
-      ${miss.length?`<div class="kpills">${miss.map(k=>`<span class="kpill bad">${esc(k)}</span>${ctxHtml(k)}`).join('')}</div>`:`<div class="empty-sec" style="padding:16px;text-align:left;color:var(--green)">✓ All citations have bibliography entries.</div>`}</div>
-    <div class="xsec"><div class="xhdr warn">⚠ In bibliography but NEVER cited in text (${unc.length})</div>
-      ${unc.length?`<div class="kpills">${unc.map(k=>`<span class="kpill warn">${esc(k)}</span>`).join('')}</div>`:`<div class="empty-sec" style="padding:16px;text-align:left;color:var(--green)">✓ All bibliography entries are cited in the text.</div>`}</div>
-    <div class="xsec"><div class="xhdr ok">✓ Correctly cited (${ok.length})</div>
-      ${ok.length?`<div class="kpills">${ok.map(k=>`<span class="kpill ok" onclick="const e=document.getElementById('ctx-${esc(k)}');if(e)e.style.display=e.style.display==='block'?'none':'block'">${esc(k)}</span>${ctxHtml(k)}`).join('')}</div>`:`<div class="empty-sec" style="padding:16px;text-align:left">No correctly paired citations.</div>`}</div>`;
-  if(sc?.length){h+=`<div class="xsec" style="margin-top:24px"><div class="xhdr warn">🔄 Possible self-citations (${sc.length})</div><p style="font-size:12px;color:var(--text3);margin-bottom:10px">These entries share an author name with the paper itself.</p>${sc.map(c=>`<div class="card warn"><div class="card-hdr"><span class="kbadge">${esc(c.key)}</span><span class="card-title">${esc(c.title)}</span><span class="type-b" style="background:var(--yellow-bg);color:var(--yellow)">Self-cite?</span></div><div class="card-meta">Matched: <strong>${esc(c.matched_author)}</strong></div></div>`).join('')}</div>`}
-  el.innerHTML=h;
-}
-
-const SRCC={'CrossRef':'var(--blue)','CrossRef (DOI)':'var(--blue)','Semantic Scholar':'var(--teal)','OpenAlex':'var(--green)','arXiv BibTeX (versioned)':'var(--teal)','arXiv':'var(--teal)','DBLP':'var(--blue)','ACL Anthology':'var(--green)','OpenReview':'var(--accent)','Open Library':'var(--blue)','Google Scholar':'var(--yellow)','Web (DDG)':'var(--text3)'};
-
-function renderVerify(verif,vn){
-  const el=$('verifyList');
-  if(!verif.length){el.innerHTML=`<div class="empty-sec"><span class="empty-sec-icon">🔍</span>Verification skipped or no entries to verify.</div>`;return}
-  const nR=verif.filter(v=>v.ai_verdict==='REAL').length,nS=verif.filter(v=>v.ai_verdict==='SUSPICIOUS').length,nF=verif.filter(v=>v.ai_verdict==='FAKE').length;
-  let banner='';
-  if(vn?.length)banner=`<div class="arxiv-note"><div class="arxiv-note-title">ℹ arXiv version notes — papers are REAL but student cited older versions</div>${vn.map(v=>`<div class="arxiv-note-item"><strong>[${esc(v.key)}]</strong> ${esc(v.note)}</div>`).join('')}</div>`;
-  el.innerHTML=`<div class="vsum"><span style="color:var(--green)">✔ ${nR} Real</span><span style="color:var(--yellow)">? ${nS} Suspicious</span><span style="color:var(--red)">✘ ${nF} Fake / Not found</span><span style="margin-left:auto;color:var(--text3);font-size:11px">CrossRef · S2 · OpenAlex · DBLP · arXiv · ACL · Web</span></div>${banner}`+verif.map(v=>{
-    const vd=v.ai_verdict||'SUSPICIOUS';
-    const vc=vd==='REAL'?'var(--green)':vd==='FAKE'?'var(--red)':'var(--yellow)';
-    const vbg=vd==='REAL'?'var(--green-bg)':vd==='FAKE'?'var(--red-bg)':'var(--yellow-bg)';
-    const vbd=vd==='REAL'?'var(--green-border)':vd==='FAKE'?'var(--red-border)':'var(--yellow-border)';
-    const pct=Math.round(v.confidence*100),cc=v.confidence>=0.75?'ch':v.confidence>=0.4?'cm':'cl';
-    const cls=vd==='REAL'?'ok':vd==='FAKE'?'bad':'warn';
-    const srcs=(v.sources_checked||[]).map(s=>{const c=SRCC[s]||'var(--text3)';return`<span class="src-tag" style="border-color:${c};color:${c}">${esc(s)}</span>`}).join('');
-    const risks=(v.ai_risk_factors||[]).map(r=>`<div class="issue">${esc(r)}</div>`).join('');
-    return`<div class="card ${cls}${v.version_note?' info':''}"><div class="card-hdr"><span class="kbadge">${esc(v.key)}</span><span class="card-title">${esc(v.title||'—')}</span><span class="stat-b" style="background:${vbg};color:${vc};border-color:${vbd}">${vd}</span></div>${v.ai_reasoning?`<div class="card-meta" style="color:var(--text3)">🤖 ${esc(v.ai_reasoning)}</div>`:''}${risks}${v.version_note?`<div class="ver-note">${esc(v.version_note)}</div>`:''}${v.matched_title&&v.matched_title!==v.title?`<div class="card-meta" style="color:var(--text3)">API matched: <em>${esc(v.matched_title)}</em></div>`:''}${v.doi?`<div class="card-meta">DOI: <a href="https://doi.org/${esc(v.doi)}" target="_blank" class="oa">${esc(v.doi)}</a></div>`:''}${v.web_evidence?`<div class="raw">Web evidence: "${esc(v.web_evidence.substring(0,140))}"</div>`:''}${v.open_access_url?`<a class="oa" href="${esc(v.open_access_url)}" target="_blank">📖 Open access PDF</a>`:''}${srcs?`<div class="src-tags">${srcs}</div>`:''}<div class="conf-wrap"><div class="conf-lbls"><span>Confidence score</span><span>${pct}%</span></div><div class="conf-track"><div class="conf-bar ${cc}" style="width:${pct}%"></div></div></div></div>`;
-  }).join('');
-}
-
-function renderStyle(s){
-  const el=$('styleList');
-  if(!s.length){el.innerHTML=`<div class="empty-sec"><span class="empty-sec-icon">✅</span>No style issues — LNI macros are used correctly.</div>`;return}
-  el.innerHTML=`<p style="font-size:13px;color:var(--text2);margin-bottom:16px">LNI requires specific LaTeX macros instead of plain text abbreviations.</p>`+s.map(x=>`<div class="card warn"><div class="card-hdr"><span class="type-b" style="background:var(--yellow-bg);color:var(--yellow)">${esc(x.type||'Style')}</span><span class="card-title">${esc(x.message)}</span>${x.count>1?`<span class="tbadge yellow">${x.count}×</span>`:''}</div></div>`).join('');
-}
-
-function renderDupes(d){
-  const el=$('dupesList');
-  if(!d.length){el.innerHTML=`<div class="empty-sec"><span class="empty-sec-icon">✅</span>No duplicate bibliography entries detected.</div>`;return}
-  el.innerHTML=d.map(x=>{
-    const pct=Math.round(x.similarity*100),cls=x.type==='exact'?'bad':'warn',lbl=x.type==='exact'?'Exact duplicate':'Near-duplicate';
-    const vc=cls==='bad'?'var(--red)':'var(--yellow)',vbg=cls==='bad'?'var(--red-bg)':'var(--yellow-bg)',vbd=cls==='bad'?'var(--red-border)':'var(--yellow-border)';
-    return`<div class="card ${cls}"><div class="card-hdr"><span class="kbadge">${esc(x.key_a)}</span><span style="color:var(--text3);font-size:12px">vs</span><span class="kbadge">${esc(x.key_b)}</span><span class="stat-b" style="margin-left:auto;background:${vbg};color:${vc};border-color:${vbd}">${lbl}</span></div><div style="display:flex;flex-direction:column;gap:4px;margin-top:8px"><div style="font-size:12px;color:var(--text2);padding:6px 10px;background:var(--bg);border-radius:4px">A: <em>${esc(x.title_a)}</em></div><div style="font-size:12px;color:var(--text2);padding:6px 10px;background:var(--bg);border-radius:4px">B: <em>${esc(x.title_b)}</em></div></div><div class="conf-wrap"><div class="conf-lbls"><span>Similarity</span><span>${pct}%</span></div><div class="conf-track"><div class="conf-bar ${pct>=97?'ch':'cm'}" style="width:${pct}%"></div></div></div></div>`;
-  }).join('');
-}
-
-async function runAI(){
-  const btn=$('aiBtn');if(!lastData||!btn)return;
-  btn.textContent='⏳ Analysing…';btn.disabled=true;
-  try{
-    const flagged=(lastData.verification||[]).filter(v=>['not_found','partial_match','error'].includes(v.status));
-    if(!flagged.length&&!(lastData.duplicates||[]).length){showModal('AI Verdict','','No flagged references. All entries verified.','PASS');return}
-    const data=await(await fetch('/ai-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(lastData)})).json();
-    if(data.error){showModal('AI Verdict — Setup Required','',data.error+'\n\n'+(data.hint||''),'SETUP');return}
-    showModal('AI Verdict',data.ai_source||'',data.verdict,null,data.flagged_count);
-  }catch(e){showModal('AI Verdict','Error',e.message,'ERROR')}
-  finally{btn.textContent='🤖 AI Verdict';btn.disabled=false}
-}
-function showModal(title,src,text,ov,fc){
-  const m=text.match(/OVERALL:\s*(PASS|FLAG|FAIL)/i);const v=ov||(m?m[1].toUpperCase():null);
-  const vc=v==='PASS'?'var(--green)':v==='FLAG'?'var(--yellow)':v==='FAIL'?'var(--red)':'var(--text3)';
-  const vbg=v==='PASS'?'var(--green-bg)':v==='FLAG'?'var(--yellow-bg)':v==='FAIL'?'var(--red-bg)':'var(--surface2)';
-  const vbd=v==='PASS'?'var(--green-border)':v==='FLAG'?'var(--yellow-border)':v==='FAIL'?'var(--red-border)':'var(--border)';
-  const fmt=esc(text).replace(/\bREAL\b/g,'<strong style="color:var(--green)">REAL</strong>').replace(/\bSUSPICIOUS\b/g,'<strong style="color:var(--yellow)">SUSPICIOUS</strong>').replace(/\bFAKE\b/g,'<strong style="color:var(--red)">FAKE</strong>').replace(/\bPASS\b/g,'<strong style="color:var(--green)">PASS</strong>').replace(/\bFLAG\b/g,'<strong style="color:var(--yellow)">FLAG</strong>').replace(/\bFAIL\b/g,'<strong style="color:var(--red)">FAIL</strong>');
-  const o=document.createElement('div');o.className='modal-ov';
-  o.innerHTML=`<div class="modal"><div class="modal-hdr"><div class="modal-title">${title}</div>${src?`<span class="modal-src">${esc(src)}</span>`:''} ${v?`<span class="stat-b" style="background:${vbg};color:${vc};border-color:${vbd}">${v}</span>`:''}<button class="modal-x" onclick="this.closest('.modal-ov').remove()">✕</button></div>${fc!==undefined?`<div class="modal-sub">${fc} flagged reference${fc!==1?'s':''} analysed</div>`:''}<div class="modal-body">${fmt}</div></div>`;
-  document.body.appendChild(o);o.addEventListener('click',e=>{if(e.target===o)o.remove()});
-}
-
-async function exportReport(){
-  if(!lastData)return;
-  try{const resp=await fetch('/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(lastData)});const blob=await resp.blob();const fname=(lastData.filename||'report').replace(/\.[^.]+$/,'')+'_lni_report.txt';const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fname;a.click();URL.revokeObjectURL(url)}catch(e){alert('Export failed: '+e.message)}
 }
 
 function clearResults(){
   selFile=null;selBib=null;selBatch=[];$('fileInput').value='';$('fileChip').classList.remove('show');$('bibAttach').classList.remove('show');$('bibNm').textContent='';$('runBtn').disabled=true;
-  $('bibList').innerHTML='';$('xcheckContent').innerHTML='';$('verifyList').innerHTML='';$('styleList').innerHTML='';$('dupesList').innerHTML='';
+  $('verdictBanner').innerHTML='';$('summaryContent').innerHTML='';$('referencesContent').innerHTML='';$('problemsContent').innerHTML='';
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',i===0));
   document.querySelectorAll('.panel').forEach((p,i)=>p.classList.toggle('active',i===0));
   showState('empty');
 }
-function showState(s){$('emptyState').style.display=s==='empty'?'flex':'none';$('loadingState').classList.toggle('show',s==='loading');$('errorState').classList.toggle('show',s==='error');$('resultsPanel').style.display=s==='results'?'flex':'none';$('batchPanel').style.display=s==='batch'?'flex':'none'}
+
+function showState(s){
+  $('emptyState').style.display=s==='empty'?'flex':'none';
+  $('loadingState').classList.toggle('show',s==='loading');
+  $('errorState').classList.toggle('show',s==='error');
+  $('resultsPanel').style.display=s==='results'?'flex':'none';
+  $('batchPanel').style.display=s==='batch'?'flex':'none';
+}
 function showError(msg){$('errMsg').textContent=msg;showState('error')}
 function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 </script>

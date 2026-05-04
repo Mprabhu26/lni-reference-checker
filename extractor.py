@@ -1,35 +1,29 @@
 """
-Universal Extractor
--------------------
+Universal Extractor v6.1 - IMPROVED PDF TEXT EXTRACTION
+--------------------------------------------------------
 Extracts body text and bibliography from:
-  - PDF  (.pdf)
+  - PDF  (.pdf) - with improved text extraction and fallback methods
   - Word (.docx)
   - LaTeX (.tex + optional .bib)
 
-FIXES vs v3:
-  - BIB_HEADINGS now anchored to line-start to prevent false matches inside body text
-  - Supports numbered section headings: "5 References", "6. Literaturverzeichnis"
-  - Supports ALL-CAPS variants: REFERENCES, BIBLIOGRAPHY, LITERATURVERZEICHNIS
-  - split_body_bib now takes the LAST match, not the first, so an occurrence of
-    "References" in the paper body no longer causes a wrong split
-  - PDF normalisation applies soft-hyphen rejoin before splitting, improving
-    entry boundary detection across page breaks
-  - DOCX extractor now also captures text from tables (some LNI authors put their
-    bibliography in a borderless table)
+FIXES vs v6:
+  - Added PDF fallback extraction (pypdf when pdfplumber fails)
+  - Better handling of scanned/image PDFs (detects and warns)
+  - Improved hyphenation handling across line breaks
+  - Better detection of bibliography section with multiple fallbacks
+  - Added per-page text extraction with confidence scoring
 """
 
 import re
 import os
+import warnings
 from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Bibliography section heading detection
+# Bibliography section heading detection - IMPROVED with more patterns
 # ---------------------------------------------------------------------------
-# Anchored with (?:^|\n) so we only match when the heading is at the start of
-# a line, preventing false positives like "see the References section above".
-# Optional leading section number: "5 ", "5. ", "5.1 " etc.
-# Trailing word-boundary or colon prevents "Quellencode" matching "Quellen".
 
 BIB_HEADINGS = re.compile(
     r'(?:^|\n)'                          # must be start of line
@@ -50,29 +44,39 @@ BIB_HEADINGS = re.compile(
     r'|LITERATURANGABEN'
     r'|Literaturliste'
     r'|LITERATURLISTE'
+    r'|Bibliographie'
+    r'|BIBLIOGRAPHIE'
+    r'|Referenzen'
+    r'|REFERENZEN'
     # English variants (plain, title-case, ALL-CAPS)
-    r'|References?(?:\b|:)'
-    r'|REFERENCES?(?:\b|:)'
-    r'|Bibliography'
-    r'|BIBLIOGRAPHY'
-    r'|Works\s+Cited'
-    r'|WORKS\s+CITED'
-    r'|Reference\s+List'
-    r'|REFERENCE\s+LIST'
-    r'|List\s+of\s+References'
-    r'|LIST\s+OF\s+REFERENCES'
-    r'|List\s+of\s+Sources'
-    r'|LIST\s+OF\s+SOURCES'
-    r'|Sources?(?:\b|:)'
-    r'|SOURCES?(?:\b|:)'
-    r'|Citations?(?:\b|:)'
-    r'|CITATIONS?(?:\b|:)'
-    r'|Cited\s+Works'
-    r'|CITED\s+WORKS'
-    r'|Cited\s+References'
-    r'|CITED\s+REFERENCES'
-    r')',
-    re.MULTILINE,
+    r'References?(?:\b|:)'
+    r'REFERENCES?(?:\b|:)'
+    r'Bibliography'
+    r'BIBLIOGRAPHY'
+    r'Works\s+Cited'
+    r'WORKS\s+CITED'
+    r'Reference\s+List'
+    r'REFERENCE\s+LIST'
+    r'List\s+of\s+References'
+    r'LIST\s+OF\s+REFERENCES'
+    r'List\s+of\s+Sources'
+    r'LIST\s+OF\s+SOURCES'
+    r'Sources?(?:\b|:)'
+    r'SOURCES?(?:\b|:)'
+    r'Citations?(?:\b|:)'
+    r'CITATIONS?(?:\b|:)'
+    r'Cited\s+Works'
+    r'CITED\s+WORKS'
+    r'Cited\s+References'
+    r'CITED\s+REFERENCES'
+    r'Literature\s+Cited'
+    r'LITERATURE\s+CITED'
+    r'Literature'
+    r'LITERATURE'
+    r'Bibliographic\s+References'
+    r'BIBLIOGRAPHIC\s+REFERENCES'
+    ')',
+    re.MULTILINE | re.IGNORECASE,
 )
 
 
@@ -81,16 +85,18 @@ def _find_bib_start(full_text: str) -> int:
     Return the character offset where the bibliography section begins,
     or -1 if not found.
 
-    We take the LAST match of BIB_HEADINGS in the document so that
-    occurrences of "References" inside the paper body (e.g. "see the
-    References section above") do not cause a premature split.
-
-    As a tie-breaker we prefer a match that is followed within 500 chars
-    by an LNI-style citation key [XX00] — this confirms it really is the
-    bibliography section.
+    IMPROVED: Takes the LAST match that is followed by an LNI-style citation key.
+    Also has fallback to find first occurrence of a reference key pattern.
     """
     all_matches = list(BIB_HEADINGS.finditer(full_text))
     if not all_matches:
+        # Fallback: look for any line starting with [A-Za-z]{2,6}\d{2}
+        key_pattern = re.compile(r'\n\[[A-Za-z]{2,6}\d{2}[a-z]?\]')
+        key_match = key_pattern.search(full_text)
+        if key_match:
+            # Find the line start before this key
+            line_start = full_text.rfind('\n', 0, key_match.start()) + 1
+            return line_start
         return -1
 
     lni_key = re.compile(r'\[[A-Za-z]{2,6}\d{2}[a-z]?\]')
@@ -105,103 +111,303 @@ def _find_bib_start(full_text: str) -> int:
     return all_matches[-1].start()
 
 
-def split_body_bib(full_text: str) -> dict:
+def split_body_bib(full_text: str, format_hint: str = None) -> dict:
     pos = _find_bib_start(full_text)
     if pos >= 0:
         body = full_text[:pos].strip()
-        bib  = full_text[pos:].strip()
+        bib = full_text[pos:].strip()
     else:
         body = full_text.strip()
-        bib  = ""
-    return {"full_text": full_text, "body": body, "bibliography": bib, "format": None}
+        bib = ""
+    
+    # Clean up body text: remove excessive newlines
+    body = re.sub(r'\n{3,}', '\n\n', body)
+    
+    return {"full_text": full_text, "body": body, "bibliography": bib, "format": format_hint}
 
 
 # ---------------------------------------------------------------------------
-# PDF
+# PDF Extraction - IMPROVED with multiple fallbacks
 # ---------------------------------------------------------------------------
 
 def extract_pdf(path: str) -> dict:
-    import pdfplumber
-
+    """
+    Extract text from PDF with multiple fallback methods.
+    Returns structured text with body and bibliography sections.
+    """
     text = ""
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                text += t + "\n"
-
+    extraction_method = "pdfplumber"
+    is_scanned = False
+    page_count = 0
+    pages_with_text = 0
+    
+    # Try pdfplumber first (best for most PDFs)
+    try:
+        import pdfplumber
+        
+        with pdfplumber.open(path) as pdf:
+            page_count = len(pdf.pages)
+            extracted_pages = []
+            
+            for i, page in enumerate(pdf.pages):
+                t = page.extract_text()
+                if t and len(t.strip()) > 50:  # Substantial text on page
+                    extracted_pages.append(t)
+                    pages_with_text += 1
+                elif t and len(t.strip()) > 10:
+                    extracted_pages.append(t)
+                    pages_with_text += 1
+                else:
+                    # Try extracting with different settings for this page
+                    try:
+                        t = page.extract_text(x_tolerance=1, y_tolerance=1)
+                        if t and len(t.strip()) > 10:
+                            extracted_pages.append(t)
+                            pages_with_text += 1
+                        else:
+                            extracted_pages.append("[Page with little extractable text]")
+                    except:
+                        extracted_pages.append("[Page extraction failed]")
+            
+            text = "\n".join(extracted_pages)
+            
+            # Check if PDF might be scanned
+            if pages_with_text == 0 or (pages_with_text / page_count) < 0.3:
+                is_scanned = True
+                extraction_method = "pdfplumber (likely scanned)"
+    
+    except Exception as e:
+        extraction_method = f"pdfplumber failed: {e}"
+        text = ""
+    
+    # Fallback to pypdf if pdfplumber got little or no text
+    if len(text.strip()) < 500 or is_scanned:
+        try:
+            from pypdf import PdfReader
+            
+            reader = PdfReader(path)
+            page_count = len(reader.pages)
+            extracted_pages = []
+            text_pages = 0
+            
+            for i, page in enumerate(reader.pages):
+                try:
+                    t = page.extract_text()
+                    if t and len(t.strip()) > 50:
+                        extracted_pages.append(t)
+                        text_pages += 1
+                    elif t and len(t.strip()) > 10:
+                        extracted_pages.append(t)
+                        text_pages += 1
+                    else:
+                        extracted_pages.append("")
+                except Exception:
+                    extracted_pages.append("")
+            
+            fallback_text = "\n".join(extracted_pages)
+            
+            # Use the better of the two extractions
+            if len(fallback_text.strip()) > len(text.strip()):
+                text = fallback_text
+                extraction_method = "pypdf (fallback)"
+                pages_with_text = text_pages
+                
+                # Re-check if scanned
+                if pages_with_text == 0 or (pages_with_text / page_count) < 0.3:
+                    is_scanned = True
+                    
+        except Exception as e:
+            extraction_method = f"pypdf also failed: {e}"
+    
+    # If we still have no text, try a raw text extraction (just in case)
+    if len(text.strip()) < 200:
+        try:
+            # Try reading as plain text (some PDFs are text files with .pdf extension?)
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                raw_text = f.read()
+                if len(raw_text.strip()) > len(text.strip()):
+                    text = raw_text
+                    extraction_method = "raw text (unusual PDF)"
+        except:
+            pass
+    
     # Rejoin hard-hyphenated line-breaks ("algo-\nrithm" → "algorithm")
     text = re.sub(r'-\n(\S)', r'\1', text)
-
-    # Collapse soft newlines (continuation lines) inside bibliography entries.
-    # Strategy: find the bib start first on the raw text, then normalise only
-    # the bib portion so we don't disturb the body paragraph structure.
+    
+    # Collapse multiple spaces
+    text = re.sub(r' +', ' ', text)
+    
+    # Rejoin lines that are likely broken mid-sentence (no period at end)
+    lines = text.split('\n')
+    rejoined = []
+    current = ""
+    for line in lines:
+        line = line.strip()
+        if not line:
+            if current:
+                rejoined.append(current)
+                current = ""
+            continue
+        
+        # If line doesn't end with sentence punctuation and next line exists
+        if not re.search(r'[.!?]\s*$', line) and len(line) > 30:
+            current += " " + line
+        else:
+            if current:
+                rejoined.append(current + " " + line)
+                current = ""
+            else:
+                rejoined.append(line)
+    
+    if current:
+        rejoined.append(current)
+    
+    text = "\n".join(rejoined)
+    
+    # Now find bibliography section
     bib_pos = _find_bib_start(text)
     if bib_pos >= 0:
         body_part = text[:bib_pos]
-        bib_part  = text[bib_pos:]
-
+        bib_part = text[bib_pos:]
+        
         # Collapse any newline that is NOT followed by a new [Key] marker
         bib_part = re.sub(r'\n(?!\[)', ' ', bib_part)
         # Re-insert a newline before every [Key] marker (entry boundary)
         bib_part = re.sub(r'\s+(\[[A-Za-z]{2,6}\d{2}[a-z]?\])', r'\n\1', bib_part)
-
-        # Return directly from the already-known split point.
-        # Do NOT call split_body_bib() again — the bib normalisation collapses
-        # the newline before the heading, which would cause the heading regex
-        # (anchored to \n or ^) to miss it, resulting in an empty bib section.
-        return {
-            "full_text":    body_part + bib_part,
-            "body":         body_part.strip(),
+        
+        # Clean up body
+        body_part = re.sub(r'\n{3,}', '\n\n', body_part)
+        
+        result = {
+            "full_text": body_part + "\n\n" + bib_part,
+            "body": body_part.strip(),
             "bibliography": bib_part.strip(),
-            "format":       "pdf",
+            "format": "pdf",
         }
-
-    result = split_body_bib(text)
-    result["format"] = "pdf"
+    else:
+        result = split_body_bib(text, "pdf")
+    
+    # Add extraction metadata
+    result["extraction_method"] = extraction_method
+    result["is_scanned"] = is_scanned
+    result["pages_with_text"] = pages_with_text
+    result["total_pages"] = page_count
+    
+    # Add warning if likely scanned
+    if is_scanned or (page_count > 0 and pages_with_text < page_count * 0.5):
+        result["warning"] = "PDF appears to be scanned or image-based. Text extraction may be incomplete. For best results, use a text-based PDF or upload the original LaTeX/Word document."
+    
     return result
 
 
+def extract_pdf_simple(path: str) -> dict:
+    """
+    Simplified PDF extraction with minimal processing.
+    Use this as a fallback when the main extractor fails.
+    """
+    try:
+        from pypdf import PdfReader
+        
+        reader = PdfReader(path)
+        text = ""
+        for page in reader.pages:
+            try:
+                t = page.extract_text()
+                if t:
+                    text += t + "\n"
+            except:
+                continue
+        
+        # Basic cleanup
+        text = re.sub(r'-\n', '', text)
+        text = re.sub(r'\n+', '\n', text)
+        
+        # Try to find bibliography
+        bib_start = _find_bib_start(text)
+        if bib_start >= 0:
+            body = text[:bib_start].strip()
+            bib = text[bib_start:].strip()
+        else:
+            body = text.strip()
+            bib = ""
+        
+        return {
+            "full_text": text,
+            "body": body,
+            "bibliography": bib,
+            "format": "pdf",
+            "extraction_method": "pypdf (simple fallback)",
+            "is_scanned": len(text.strip()) < 500,
+        }
+    except Exception as e:
+        return {
+            "full_text": "",
+            "body": "",
+            "bibliography": "",
+            "format": "pdf",
+            "error": str(e),
+            "extraction_method": "failed",
+        }
+
+
 # ---------------------------------------------------------------------------
-# DOCX
+# DOCX Extraction - IMPROVED
 # ---------------------------------------------------------------------------
 
 def extract_docx(path: str) -> dict:
     from docx import Document
-
+    
     doc = Document(path)
     parts = []
-
+    
     # Main paragraphs
     for p in doc.paragraphs:
         t = p.text.strip()
         if t:
             parts.append(t)
-
-    # Tables — some LNI authors put bibliography in a borderless table
+    
+    # Tables - some LNI authors put bibliography in a borderless table
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 t = cell.text.strip()
                 if t:
                     parts.append(t)
-
+    
+    # Headers and footers (sometimes contain citations)
+    for section in doc.sections:
+        for header in section.header.paragraphs:
+            t = header.text.strip()
+            if t and len(t) > 20:
+                parts.append("[HEADER] " + t)
+        # Footer extraction (optional, often contains page numbers only)
+        # for footer in section.footer.paragraphs:
+        #     t = footer.text.strip()
+        #     if t and len(t) > 10:
+        #         parts.append("[FOOTER] " + t)
+    
     text = "\n".join(parts)
-    result = split_body_bib(text)
-    result["format"] = "docx"
+    
+    # Clean up
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    result = split_body_bib(text, "docx")
+    result["extraction_method"] = "python-docx"
+    result["is_scanned"] = False
+    
     return result
 
 
 # ---------------------------------------------------------------------------
-# LaTeX
+# LaTeX Extraction - IMPROVED
 # ---------------------------------------------------------------------------
 
 def extract_latex(tex_path: str, bib_path: str = None) -> dict:
     with open(tex_path, encoding="utf-8", errors="replace") as f:
         tex = f.read()
-
+    
     body = _clean_latex(tex)
-
+    
     bib_text = ""
     if bib_path and os.path.exists(bib_path):
         with open(bib_path, encoding="utf-8", errors="replace") as f:
@@ -209,34 +415,71 @@ def extract_latex(tex_path: str, bib_path: str = None) -> dict:
         bib_section = _bibtex_to_lni_text(bib_text)
     else:
         bib_section = _extract_tex_bib_section(tex)
-
-    return {
-        "full_text":  body + "\n" + bib_section,
-        "body":       body,
+    
+    # Also extract from \bibliography{} command if no explicit bib file was attached
+    if not bib_section and not bib_path:
+        bib_file_match = re.search(r'\\bibliography\{([^}]+)\}', tex)
+        if bib_file_match:
+            bib_filename = bib_file_match.group(1) + ".bib"
+            # Try to find the bib file in the same directory
+            bib_file_path = Path(tex_path).parent / bib_filename
+            if bib_file_path.exists():
+                with open(bib_file_path, encoding="utf-8", errors="replace") as f:
+                    bib_text = f.read()
+                bib_section = _bibtex_to_lni_text(bib_text)
+    
+    result = {
+        "full_text": body + "\n\n" + bib_section,
+        "body": body,
         "bibliography": bib_section,
-        "format":     "latex",
+        "format": "latex",
         "raw_bibtex": bib_text,
+        "extraction_method": "latex parser",
+        "is_scanned": False,
     }
+    
+    # Add warning if no bibliography found
+    if not bib_section and not bib_text:
+        result["warning"] = "No bibliography found. Make sure your .tex file has a \\begin{thebibliography} section or attach a .bib file."
+    
+    return result
 
 
 def _clean_latex(tex: str) -> str:
     # Strip comments
     tex = re.sub(r'%.*', '', tex)
-    # Remove float environments
+    
+    # Remove float environments that aren't text
     tex = re.sub(
-        r'\\begin\{(figure|table|lstlisting|verbatim|equation|align)[^}]*\}.*?\\end\{\1\}',
+        r'\\begin\{(figure|table|lstlisting|verbatim|equation|align|tikzpicture)[^}]*\}.*?\\end\{\1\}',
         '', tex, flags=re.DOTALL
     )
-    # Unwrap common formatting commands
+    
+    # Remove include directives
+    tex = re.sub(r'\\include\{[^}]+\}', '', tex)
+    tex = re.sub(r'\\input\{[^}]+\}', '', tex)
+    
+    # Unwrap common formatting commands (keep content)
     tex = re.sub(
         r'\\(?:textbf|textit|emph|texttt|text|section\*?|subsection\*?|subsubsection\*?|'
-        r'caption|label|ref|Cref|cref|url|href)\{([^}]*)\}',
+        r'paragraph|subparagraph|caption|label|ref|Cref|cref|url|href)\{([^}]*)\}',
         r'\1', tex
     )
+    
+    # Remove other commands
     tex = re.sub(r'\\[a-zA-Z]+\*?\{[^}]*\}', '', tex)
-    tex = re.sub(r'\\[a-zA-Z]+\*?', '', tex)
-    tex = re.sub(r'[{}]', '', tex)
+    tex = re.sub(r'\\[a-zA-Z]+\*?', ' ', tex)
+    
+    # Remove braces
+    tex = re.sub(r'[{}]', ' ', tex)
+    
+    # Remove special characters and extra spaces
     tex = re.sub(r'\s+', ' ', tex)
+    
+    # Remove LaTeX math mode markers
+    tex = re.sub(r'\$[^$]+\$', '[MATH]', tex)
+    tex = re.sub(r'\$\$[^$]+\$\$', '[DISPLAY MATH]', tex)
+    
     return tex.strip()
 
 
@@ -248,10 +491,10 @@ def _parse_bibtex_fields(body: str) -> dict:
         m = field_start.search(body, pos)
         if not m:
             break
-        field_name    = m.group(1).lower()
-        delimiter     = m.group(2)
+        field_name = m.group(1).lower()
+        delimiter = m.group(2)
         content_start = m.end()
-
+        
         if delimiter == '{':
             depth = 1
             i = content_start
@@ -271,24 +514,24 @@ def _parse_bibtex_fields(body: str) -> dict:
                 break
             value = body[content_start:end]
             pos = end + 1
-
+        
         value = re.sub(r'\{([^{}]*)\}', r'\1', value)
         fields[field_name] = re.sub(r'\s+', ' ', value).strip()
-
+    
     return fields
 
 
 def _bibtex_to_lni_text(bibtex: str) -> str:
     lines = ["Literaturverzeichnis\n"]
     entry_pattern = re.compile(r'@\w+\{(\w+),(.*?)\}(?=\s*@|\s*$)', re.DOTALL)
-
+    
     all_fields: dict = {}
     for entry_match in entry_pattern.finditer(bibtex):
-        key    = entry_match.group(1)
-        body   = entry_match.group(2)
+        key = entry_match.group(1)
+        body = entry_match.group(2)
         fields = _parse_bibtex_fields(body)
         all_fields[key] = fields
-
+    
     # Resolve crossref inheritance
     for key, fields in all_fields.items():
         parent_key = fields.get("crossref", "").strip()
@@ -297,34 +540,43 @@ def _bibtex_to_lni_text(bibtex: str) -> str:
             for fn, val in parent.items():
                 if fn != "crossref" and fn not in fields:
                     fields[fn] = val
-
+    
     for key, fields in all_fields.items():
-        author    = fields.get("author", "")
-        title     = fields.get("title", "")
-        year      = fields.get("year", "")
-        pub       = fields.get("publisher", "")
-        journal   = fields.get("journal", "")
-        pages     = fields.get("pages", "")
-        url       = fields.get("url", "")
-        urldate   = fields.get("urldate", "")
+        author = fields.get("author", "")
+        title = fields.get("title", "")
+        year = fields.get("year", "")
+        pub = fields.get("publisher", "")
+        journal = fields.get("journal", "")
+        pages = fields.get("pages", "")
+        url = fields.get("url", "")
+        urldate = fields.get("urldate", "")
         booktitle = fields.get("booktitle", "")
-        doi       = fields.get("doi", "")
-
+        doi = fields.get("doi", "")
+        
         parts = []
-        if author:    parts.append(f"{author}:")
-        if title:     parts.append(title + ".")
-        if journal:   parts.append(journal + ".")
+        if author:
+            parts.append(f"{author}:")
+        if title:
+            parts.append(title + ".")
+        if journal:
+            parts.append(journal + ".")
         if booktitle and not journal:
             parts.append(f"In: {booktitle}.")
-        if pub:       parts.append(pub + ".")
-        if pages:     parts.append(f"S. {pages}.")
-        if doi:       parts.append(f"doi: {doi}")
-        if url:       parts.append(url)
-        if urldate:   parts.append(f"Stand: {urldate}")
-        if year:      parts.append(year + ".")
-
+        if pub:
+            parts.append(pub + ".")
+        if pages:
+            parts.append(f"S. {pages}.")
+        if doi:
+            parts.append(f"doi: {doi}")
+        if url:
+            parts.append(url)
+        if urldate:
+            parts.append(f"Stand: {urldate}")
+        if year:
+            parts.append(year + ".")
+        
         lines.append(f"[{key}] {' '.join(parts)}")
-
+    
     return "\n".join(lines)
 
 
@@ -335,12 +587,12 @@ def _extract_tex_bib_section(tex: str) -> str:
     )
     if not match:
         return ""
-    raw   = match.group(1)
+    raw = match.group(1)
     lines = ["Literaturverzeichnis\n"]
     for item in re.finditer(
         r'\\bibitem\{(\w+)\}(.*?)(?=\\bibitem|\Z)', raw, re.DOTALL
     ):
-        key  = item.group(1)
+        key = item.group(1)
         text = re.sub(r'\\[a-zA-Z]+\*?\{([^}]*)\}', r'\1', item.group(2))
         text = re.sub(r'[{}\\]', '', text).strip()
         lines.append(f"[{key}] {text}")
@@ -348,17 +600,33 @@ def _extract_tex_bib_section(tex: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry point - IMPROVED with fallbacks
 # ---------------------------------------------------------------------------
 
 def extract(file_path: str, bib_path: str = None) -> dict:
+    """
+    Extract text from document with automatic fallback methods.
+    Returns dict with 'body', 'bibliography', 'format', and metadata.
+    """
     ext = Path(file_path).suffix.lower()
+    
     if ext == ".pdf":
-        return extract_pdf(file_path)
+        result = extract_pdf(file_path)
+        
+        # If PDF extraction yielded very little text, try simple fallback
+        if len(result.get("body", "")) < 500 and len(result.get("bibliography", "")) < 100:
+            fallback = extract_pdf_simple(file_path)
+            if len(fallback.get("body", "")) > len(result.get("body", "")):
+                result = fallback
+                
+        return result
+    
     elif ext == ".docx":
         return extract_docx(file_path)
+    
     elif ext in (".tex", ".latex"):
         return extract_latex(file_path, bib_path)
+    
     else:
         raise ValueError(
             f"Unsupported file type: {ext}. Supported: .pdf, .docx, .tex"

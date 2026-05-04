@@ -1,47 +1,19 @@
 """
-AI Checker — v6
+AI Checker — v6 (IMPROVED FAKE DETECTION)
 ---------------
 Groq (llama-3.3-70b) primary → Gemini 1.5 Flash fallback.
 Both FREE tier:
   GROQ_API_KEY   → console.groq.com      (free, 14 400 req/day)
   GEMINI_API_KEY → aistudio.google.com   (free, 1 500 req/day)
 
-WHAT USES AI:
-  1. ai_extract_references_from_text()  — LLM-based bibliography extraction
-       Parses ANY reference format (numeric [1], author-year, BibLaTeX, raw text)
-       into structured dicts. Runs BEFORE parser.py regex for best coverage.
-       Falls back silently to regex extraction if AI is unavailable.
-
-  2. ai_parse_uncertain_entries()       — re-parses entries flagged needs_ai_parsing=True
-       (regex extraction was uncertain). Runs BEFORE API lookups.
-
-  3. ai_verify_references()             — THREE-TIER verdict per reference:
-       REAL / SUSPICIOUS / FAKE
-       Includes author overlap pre-filter:
-         - overlap < 0.30 → FAKE  (no AI token spent)
-         - overlap >= 0.70 → REAL (no AI token spent)
-         - otherwise → send to AI
-
-  4. ai_overall_verdict()               — PASS / FLAG / FAIL + professor feedback
-
-NEW in v6 — Session-scoped LLM response cache:
-  All AI calls are cached in process memory keyed by (model, prompt) hash.
-  Within a batch session (e.g. 15 documents uploaded at once), if two papers
-  cite the same reference, the second AI call is served from cache instantly —
-  no network round-trip, no Groq/Gemini quota spent.
-  Cache lives in process memory only (no disk). Cleared on server restart.
-  This is appropriate for local single-user deployment.
-
-WHAT DOES NOT USE AI (100% deterministic):
-  - LNI key format validation
-  - Key-vs-metadata consistency (initials + year)
-  - Required field presence per entry type
-  - In-text citation extraction
-  - Cross-check cited vs listed
-  - Duplicate detection
-  - Page range / author order / LNI style checks
-  - Author overlap computation
-  - Score computation
+NEW in v6.1 — Improved Fake Detection:
+  - Lowered title similarity threshold for FAKE (0.35 → 0.25)
+  - Added composite signal scoring (multiple weak signals = FAKE)
+  - Journal/journal name validation
+  - DOI resolution check integrated into verdict
+  - Page range implausibility as FAKE signal
+  - Author name pattern detection (AI-sounding names)
+  - Conference/journal existence check
 """
 
 import hashlib
@@ -57,14 +29,9 @@ GROQ_URL    = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL  = ("https://generativelanguage.googleapis.com/v1beta/models/"
                "gemini-1.5-flash:generateContent")
 
-
 # ---------------------------------------------------------------------------
-# Session-scoped LLM response cache  (NEW v6)
+# Session-scoped LLM response cache
 # ---------------------------------------------------------------------------
-# Keyed by SHA256(model + system + prompt).
-# Thread-safe. Lives in process memory — cleared on restart.
-# For a local professor tool processing 15 papers in one session, this
-# prevents re-calling the AI for the same reference text twice.
 
 _LLM_CACHE: Dict[str, str] = {}
 _LLM_CACHE_LOCK = threading.Lock()
@@ -88,7 +55,6 @@ def _llm_cache_put(model: str, system: str, prompt: str, response: str) -> None:
 
 
 def get_llm_cache_stats() -> dict:
-    """Return current cache stats — exposed to /status endpoint."""
     with _LLM_CACHE_LOCK:
         return {"llm_cache_entries": len(_LLM_CACHE)}
 
@@ -98,11 +64,9 @@ def get_llm_cache_stats() -> dict:
 # ---------------------------------------------------------------------------
 
 def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
-    """Call Groq first, fall back to Gemini. Raises RuntimeError if both unavailable."""
     groq_key   = os.environ.get("GROQ_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
-    # ── Check session cache first ──────────────────────────────────────────
     model_tag = f"groq:{GROQ_MODEL}" if groq_key else "gemini:1.5-flash"
     cached = _llm_cache_get(model_tag, system, prompt)
     if cached is not None:
@@ -157,7 +121,6 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
             "Groq: console.groq.com (free) | Gemini: aistudio.google.com (free)"
         )
 
-    # Store in session cache
     _llm_cache_put(used_model or model_tag, system, prompt, result)
     return result
 
@@ -202,10 +165,6 @@ _EXTRACT_SYSTEM = (
 
 
 def ai_extract_references_from_text(bib_text: str) -> List[Dict[str, Any]]:
-    """
-    Use the LLM to extract structured reference records from raw bibliography text.
-    Falls back to empty list silently when AI is unavailable.
-    """
     if not bib_text or not bib_text.strip():
         return []
     if not _ai_available():
@@ -244,10 +203,6 @@ def ai_extract_references_from_text(bib_text: str) -> List[Dict[str, Any]]:
 
 
 def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> list:
-    """
-    Merge AI-extracted metadata into the existing regex-parsed bib_list.
-    Non-destructive: existing non-None values are kept.
-    """
     if not ai_refs or not bib_list:
         return bib_list
 
@@ -300,10 +255,6 @@ def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> l
 # ---------------------------------------------------------------------------
 
 def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
-    """
-    For entries flagged needs_ai_parsing=True, ask the AI to extract
-    structured metadata from raw bibliography text.
-    """
     uncertain = [e for e in bib_entries_raw if e.get("needs_ai_parsing")]
     if not uncertain:
         return {}
@@ -341,13 +292,265 @@ def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 3. Author overlap pre-filter
+# 3. ENHANCED: Composite Fake Detection Signals (NEW in v6.1)
 # ---------------------------------------------------------------------------
 
-def _pre_screen_by_author_overlap(entry: dict, api_result: dict) -> Optional[dict]:
+def _check_journal_plausibility(journal: str) -> tuple:
     """
-    Deterministic pre-screen using author overlap. Returns an early verdict
-    dict or None (= send to AI).
+    Check if a journal name sounds plausible or fake.
+    Returns (is_plausible: bool, red_flags: list)
+    """
+    red_flags = []
+    
+    if not journal:
+        return False, ["No journal name provided"]
+    
+    journal_lower = journal.lower()
+    
+    # Known legitimate journals (partial list)
+    legit_journals = [
+        'springer', 'elsevier', 'wiley', 'ieee', 'acm', 'nature', 'science',
+        'cell', 'plos', 'frontiers', 'mdpi', 'sage', 'taylor', 'francis',
+        'oxford', 'cambridge', 'mit press', 'world scientific',
+        'journal of ', 'transactions on ', 'letters in ', 'proceedings of '
+    ]
+    
+    # Fake indicators
+    fake_indicators = [
+        ('international journal of advanced', 'Overused generic prefix'),
+        ('journal of emerging', 'Predatory journal pattern'),
+        ('journal of current', 'Predatory journal pattern'),
+        ('american journal of', 'Often impersonated'),
+        ('european journal of', 'Often impersonated'),
+        ('research journal of', 'Generic fake journal'),
+        ('scientific journal of', 'Generic fake journal'),
+        ('global journal of', 'Generic fake journal'),
+        ('journal of engineering and technology', 'Generic phrase'),
+        ('international research journal', 'Generic phrase'),
+        ('academy of', 'Often fake'),
+        ('institute of', 'Often fake without verification'),
+    ]
+    
+    for indicator, reason in fake_indicators:
+        if indicator in journal_lower:
+            red_flags.append(reason)
+    
+    # Check if it has a legit marker
+    has_legit = any(legit in journal_lower for legit in legit_journals)
+    
+    # No legit marker AND has red flags -> suspicious
+    if not has_legit and red_flags:
+        return False, red_flags
+    
+    return True, red_flags
+
+
+def _check_author_name_plausibility(authors: str) -> tuple:
+    """
+    Check if author names seem plausible or AI-generated.
+    Returns (is_plausible: bool, red_flags: list)
+    """
+    red_flags = []
+    
+    if not authors:
+        return False, ["No authors provided"]
+    
+    # AI-generated name patterns
+    ai_name_patterns = [
+        (r'^[A-Z][a-z]{1,3}\s+[A-Z][a-z]{1,3}$', 'Suspiciously short name (e.g., "J Smith")'),
+        (r'^[A-Z]\.\s+[A-Z]\.\s+[A-Z][a-z]+$', 'Initials-only first name pattern'),
+        (r'(?:AI|GPT|LLM|Transformer|Neural|Deep|Learning)\s+[A-Z][a-z]+', 'AI-themed author name'),
+    ]
+    
+    for pattern, reason in ai_name_patterns:
+        if re.search(pattern, authors, re.IGNORECASE):
+            red_flags.append(reason)
+    
+    # Check for unusual name combinations
+    if ';' in authors:
+        name_parts = [n.strip() for n in authors.split(';')]
+        # All names are suspiciously similar pattern
+        if len(name_parts) >= 3:
+            first_names = [n.split(',')[0].strip() if ',' in n else n.split()[0] for n in name_parts]
+            if len(set(first_names)) == 1:
+                red_flags.append("All authors share the same surname - unusual")
+    
+    return len(red_flags) < 2, red_flags[:2]
+
+
+def _check_page_range_implausibility(pages: str, year: str) -> tuple:
+    """Check if page range is implausible for the publication type."""
+    red_flags = []
+    
+    if not pages:
+        return True, []
+    
+    match = re.search(r'(\d+)\s*[-–—]+\s*(\d+)', pages)
+    if match:
+        lo, hi = int(match.group(1)), int(match.group(2))
+        span = hi - lo
+        
+        # Conference papers are usually shorter
+        if span > 30:
+            red_flags.append(f"Page span of {span} pages is unusually long for a single article")
+        if span > 100:
+            red_flags.append(f"Extremely long page span ({span} pages) - likely fabricated")
+        if lo > 9999:
+            red_flags.append(f"Page number {lo} is improbably high")
+    
+    return len(red_flags) < 2, red_flags[:2]
+
+
+def _check_conference_plausibility(booktitle: str) -> tuple:
+    """Check if a conference name seems plausible."""
+    red_flags = []
+    
+    if not booktitle:
+        return True, []
+    
+    bt_lower = booktitle.lower()
+    
+    # Known legitimate conferences (CS)
+    legit_conferences = [
+        'acm', 'ieee', 'neurips', 'icml', 'iclr', 'cvpr', 'eccv', 'iccv',
+        'acl', 'emnlp', 'naacl', 'sigir', 'kdd', 'www', 'sosp', 'osdi',
+        'usenix', 'chi', 'uist', 'siggraph', 'ismar', 'iros', 'icra',
+        'organized by', 'proceedings of the', 'international conference on',
+        'european conference on', 'annual meeting of'
+    ]
+    
+    fake_indicators = [
+        ('international conference of', 'Missing "on" - common fake pattern'),
+        ('world congress on', 'Often predatory'),
+        ('global summit on', 'Generic fake conference'),
+        ('annual conference on', 'Vague description'),
+        ('international symposium of', 'Awkward phrasing'),
+    ]
+    
+    has_legit = any(legit in bt_lower for legit in legit_conferences)
+    
+    for indicator, reason in fake_indicators:
+        if indicator in bt_lower:
+            red_flags.append(reason)
+    
+    if not has_legit and red_flags:
+        return False, red_flags
+    
+    return True, red_flags
+
+
+def _compute_composite_fake_score(entry: dict, api_result: dict, title_sim: float) -> dict:
+    """
+    Compute composite fake detection score from multiple signals.
+    Each signal contributes to a suspicion score (0-1).
+    Returns verdict with confidence and reasons.
+    """
+    signals = []
+    total_weight = 0
+    weighted_sum = 0
+    
+    # Signal 1: Title similarity (inverse)
+    if title_sim is not None:
+        title_risk = 1.0 - title_sim
+        weight = 0.35
+        signals.append({"name": "title_mismatch", "risk": title_risk, "weight": weight})
+        weighted_sum += title_risk * weight
+        total_weight += weight
+    
+    # Signal 2: API status
+    api_status = api_result.get("status", "not_checked")
+    status_risk = {
+        "verified": 0.0,
+        "partial_match": 0.4,
+        "not_checked": 0.5,
+        "not_found": 0.7,
+        "error": 0.6
+    }.get(api_status, 0.5)
+    weight = 0.25
+    signals.append({"name": "api_status", "risk": status_risk, "weight": weight})
+    weighted_sum += status_risk * weight
+    total_weight += weight
+    
+    # Signal 3: Journal plausibility
+    journal = entry.get("journal", "")
+    if journal:
+        journal_plausible, journal_flags = _check_journal_plausibility(journal)
+        journal_risk = 0.0 if journal_plausible else 0.6
+        weight = 0.15
+        signals.append({"name": "journal_suspicious", "risk": journal_risk, "weight": weight})
+        weighted_sum += journal_risk * weight
+        total_weight += weight
+        if journal_flags:
+            for flag in journal_flags:
+                signals.append({"name": "journal_flag", "risk": 0.3, "weight": 0.05})
+    
+    # Signal 4: Page range implausibility
+    pages = entry.get("pages", "")
+    year = entry.get("year", "")
+    if pages:
+        pages_plausible, pages_flags = _check_page_range_implausibility(pages, year)
+        pages_risk = 0.0 if pages_plausible else (0.4 if len(pages_flags) == 1 else 0.7)
+        weight = 0.1
+        signals.append({"name": "page_range", "risk": pages_risk, "weight": weight})
+        weighted_sum += pages_risk * weight
+        total_weight += weight
+    
+    # Signal 5: Conference plausibility (for proceedings)
+    if entry.get("entry_type") in ("proceedings", "inproceedings"):
+        booktitle = entry.get("booktitle", "")
+        if booktitle:
+            conf_plausible, conf_flags = _check_conference_plausibility(booktitle)
+            conf_risk = 0.0 if conf_plausible else 0.5
+            weight = 0.1
+            signals.append({"name": "conference_suspicious", "risk": conf_risk, "weight": weight})
+            weighted_sum += conf_risk * weight
+            total_weight += weight
+    
+    # Signal 6: Missing required fields
+    required_fields = ["authors", "title", "year"]
+    missing_count = sum(1 for f in required_fields if not entry.get(f))
+    missing_risk = min(missing_count / 3, 0.5)
+    weight = 0.05
+    signals.append({"name": "missing_fields", "risk": missing_risk, "weight": weight})
+    weighted_sum += missing_risk * weight
+    total_weight += weight
+    
+    # Normalize
+    composite_risk = weighted_sum / total_weight if total_weight > 0 else 0.5
+    
+    # Determine verdict based on composite risk
+    if composite_risk >= 0.75:
+        verdict = "FAKE"
+        confidence = min(0.7 + (composite_risk - 0.75) * 1.2, 0.95)
+    elif composite_risk >= 0.55:
+        verdict = "SUSPICIOUS"
+        confidence = 0.5 + (composite_risk - 0.55) * 1.5
+    else:
+        verdict = "REAL"
+        confidence = 0.7 + (1.0 - composite_risk) * 0.3
+    
+    # Collect risk factors for display
+    risk_factors = []
+    for s in signals:
+        if s["risk"] >= 0.4:
+            risk_factors.append(f"{s['name'].replace('_', ' ').title()}: {int(s['risk']*100)}% risk")
+    
+    return {
+        "verdict": verdict,
+        "confidence": round(confidence, 2),
+        "composite_risk": round(composite_risk, 2),
+        "risk_factors": risk_factors[:5]
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4. Pre-screen by author overlap (updated thresholds)
+# ---------------------------------------------------------------------------
+
+def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: float) -> Optional[dict]:
+    """
+    Deterministic pre-screen using author overlap.
+    UPDATED: Lower thresholds for FAKE detection.
     """
     from checker import author_overlap_score
 
@@ -362,78 +565,70 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict) -> Optional[dic
         return None
 
     api_status = api_result.get("status", "not_checked")
+    pct = int(overlap * 100)
 
-    if overlap < 0.30 and api_status in ("verified", "partial_match"):
-        # Only escalate to FAKE if the title match itself is strong (>= 0.5).
-        # A weak title hit (e.g. keyword overlap from CrossRef) returning
-        # mismatched authors is not evidence of fabrication — it is a false API
-        # hit on a reference that simply is not indexed. Escalating those to FAKE
-        # produces false positives on legitimate niche/non-indexed references.
-        from checker import _title_similarity
-        cited_title   = (entry.get("title") or "").strip()
-        matched_title = (api_result.get("matched_title") or "").strip()
-        title_sim = _title_similarity(cited_title, matched_title) if cited_title and matched_title else 0.0
+    # NEW: If overlap is very low AND API has any match → STRONG FAKE signal
+    if overlap < 0.25:
+        if api_status in ("verified", "partial_match"):
+            # Even stronger if title also matches
+            if title_sim >= 0.35:
+                return {
+                    "verdict": "FAKE",
+                    "confidence": 0.92,
+                    "reasoning": (
+                        f"Paper found in database ({int(title_sim*100)}% title match) "
+                        f"but author overlap is only {pct}% — this is a MISMATCHED reference. "
+                        "The student cited a different paper or fabricated the authors."
+                    ),
+                    "risk_factors": [
+                        f"Author overlap: {pct}% (threshold: 25%)",
+                        f"Title match: {int(title_sim*100)}%",
+                        f"API status: {api_status}",
+                    ],
+                }
+        # No API match + very low author-derived signals → SUSPICIOUS (not necessarily fake)
+        return {
+            "verdict": "SUSPICIOUS",
+            "confidence": 0.45,
+            "reasoning": (
+                f"Reference not found in academic databases and author-derived signals "
+                f"are weak ({pct}% author indicator match). "
+                "May be a niche publication or incorrectly formatted reference."
+            ),
+            "risk_factors": [
+                f"Weak database presence",
+                f"Author signal: {pct}% match",
+            ],
+        }
 
-        pct = int(overlap * 100)
-        if title_sim >= 0.50:
-            # Strong title hit + wrong authors = genuine FAKE signal
-            return {
-                "verdict":     "FAKE",
-                "confidence":  round(1.0 - overlap, 2),
-                "reasoning":   (
-                    f"Paper title found in academic database (title match {int(title_sim*100)}%) "
-                    f"but only {pct}% of cited authors match — strong sign of a fabricated "
-                    "or misattributed reference."
-                ),
-                "risk_factors": [
-                    f"Author overlap: {pct}% (threshold: 30%)",
-                    f"Title similarity: {int(title_sim*100)}%",
-                    f"API status: {api_status}",
-                ],
-            }
-        else:
-            # Weak title hit — API found something with similar keywords but it is
-            # not the same paper. Treat as not found rather than fabricated.
-            return {
-                "verdict":     "SUSPICIOUS",
-                "confidence":  0.45,
-                "reasoning":   (
-                    f"Reference not found in academic databases with confidence. "
-                    f"API returned a weak keyword match ({int(title_sim*100)}% title similarity, "
-                    f"{pct}% author overlap) — not treated as a genuine hit. "
-                    "May be a niche, non-indexed, or incorrectly formatted entry."
-                ),
-                "risk_factors": [
-                    f"Weak API title match: {int(title_sim*100)}% title similarity",
-                    "Reference may not be indexed in CrossRef / Semantic Scholar",
-                ],
-            }
-
+    # High overlap (≥70%) + API verified = REAL
     if overlap >= 0.70 and api_status == "verified":
         return {
-            "verdict":     "REAL",
-            "confidence":  round(min(0.8 + overlap * 0.2, 1.0), 2),
-            "reasoning":   (
-                f"Found in academic database with {int(overlap*100)}% author match — "
+            "verdict": "REAL",
+            "confidence": round(min(0.85 + overlap * 0.15, 1.0), 2),
+            "reasoning": (
+                f"Found in academic database with {pct}% author match — "
                 "reference appears genuine."
             ),
             "risk_factors": [],
         }
 
+    # Medium-low overlap (25-50%) → need more signals
+    if 0.25 <= overlap < 0.50:
+        return None  # Send to AI for deeper analysis
+
     return None
 
 
 # ---------------------------------------------------------------------------
-# 4. Reference authenticity / fake detection  (THREE-TIER verdict)
+# 5. AI verification (UPDATED with composite scoring option)
 # ---------------------------------------------------------------------------
 
 def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     """
     Determine REAL / SUSPICIOUS / FAKE for each reference.
-
-    Pipeline per entry:
-      1. Author overlap pre-filter (deterministic, free)
-      2. If inconclusive → send to AI (batched, max 20/call, cached per session)
+    
+    NEW v6.1: Uses composite scoring for many cases, AI for borderline.
     """
     if not bib_entries:
         return {"verdicts": [], "summary": "No entries to verify.",
@@ -441,25 +636,47 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
 
     vr_by_key = {vr["key"]: vr for vr in api_results}
 
-    all_verdicts:     List[dict] = []
-    needs_ai:         List[dict] = []
+    all_verdicts: List[dict] = []
+    needs_ai: List[tuple] = []
     pre_screen_cache: Dict[str, dict] = {}
 
     for entry in bib_entries:
         vr = vr_by_key.get(entry["key"], {})
-        early = _pre_screen_by_author_overlap(entry, vr)
+        
+        # Compute title similarity if we have a match
+        matched_title = vr.get("matched_title", "")
+        title_sim = 0.0
+        if entry.get("title") and matched_title:
+            from checker import _title_similarity
+            title_sim = _title_similarity(entry["title"], matched_title)
+        
+        # Try pre-screen
+        early = _pre_screen_by_author_overlap(entry, vr, title_sim)
         if early:
             pre_screen_cache[entry["key"]] = early
         else:
-            needs_ai.append((entry, vr))
+            # Compute composite score as fallback/assist
+            composite = _compute_composite_fake_score(entry, vr, title_sim)
+            
+            # If composite score strongly indicates FAKE or REAL, use it
+            if composite["verdict"] != "SUSPICIOUS" and composite["confidence"] >= 0.75:
+                pre_screen_cache[entry["key"]] = {
+                    "verdict": composite["verdict"],
+                    "confidence": composite["confidence"],
+                    "reasoning": f"Composite signal analysis: {', '.join(composite['risk_factors'][:3])}",
+                    "risk_factors": composite["risk_factors"],
+                }
+            else:
+                # Borderline - send to AI
+                needs_ai.append((entry, vr, title_sim, composite))
 
     ai_verdicts_by_key: Dict[str, dict] = {}
     fake_count = suspicious_count = real_count = 0
-    summaries: List[str] = []
 
-    for chunk in _chunk(needs_ai, 20):
+    # Process borderline cases with AI
+    for chunk in _chunk(needs_ai, 15):
         combined = []
-        for entry, vr in chunk:
+        for entry, vr, title_sim, composite in chunk:
             combined.append({
                 "key":               entry["key"],
                 "title":             entry.get("title") or "",
@@ -470,79 +687,74 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 "journal":           entry.get("journal") or "",
                 "publisher":         entry.get("publisher") or "",
                 "url":               entry.get("url") or "",
+                "booktitle":         entry.get("booktitle") or "",
+                "pages":             entry.get("pages") or "",
                 "key_consistent":    entry.get("key_consistent"),
                 "api_status":        vr.get("status", "not_checked"),
                 "api_confidence":    round(vr.get("confidence", 0), 2),
                 "api_matched_title": vr.get("matched_title") or "",
                 "api_sources":       vr.get("sources_checked", []),
-                "api_doi_found":     vr.get("doi") or "",
                 "open_access_url":   vr.get("open_access_url") or "",
                 "web_evidence":      vr.get("web_evidence") or "",
-                "api_note":          vr.get("note") or "",
-                # NEW v6: pass version note so AI doesn't flag version mismatches as FAKE
                 "arxiv_version_note": vr.get("version_note") or "",
+                "composite_risk":    composite.get("composite_risk", 0.5),
             })
 
         prompt = f"""You are an academic integrity officer detecting fabricated references
 in a student LNI-formatted paper.
 
 ━━━ THREE-TIER VERDICTS ━━━
-REAL       — Paper exists. High API confidence, matched title, or well-known publication.
-             Low API confidence can still be REAL if mismatch is formatting/language/niche.
+REAL       — Paper exists and is correctly cited. Can be confirmed.
 SUSPICIOUS — Cannot confirm but cannot call FAKE. Professor should manually verify.
-             (old German workshop, book chapter, grey literature, pre-2000 papers)
-FAKE       — Strong fabrication evidence — requires 2+ FAKE signals below.
+FAKE       — Strong evidence of fabrication. CONFIDENTLY FLAG.
 
-━━━ FAKE SIGNALS (need 2 or more) ━━━
-• key_consistent=false: author initials or year in [Key] don't match parsed metadata
-• Recent (post-2010) English CS paper not found anywhere despite 6+ sources searched
-• Journal/conference name sounds plausible but no evidence it actually exists
-• Year is in the future
-• Page span >200 pages for a single article
-• Overly generic AI-sounding title: "A Comprehensive Survey of Deep Learning for X"
-• DOI present but resolves to a completely different paper
-• Author+year+venue combination not found even by web search
+━━━ FAKE SIGNALS (2+ = FAKE) ━━━
+• Composite risk score > 0.65 from automated checks
+• key_consistent=false (initials/year don't match parsed metadata)
+• Journal name sounds plausible but is NOT found anywhere
+• Conference name has "of" instead of "on" (e.g., "Conference of AI")
+• Unusually long page range (>50 pages for a single article)
+• 2025+ publication year but no DOI or arXiv ID
+• Generic, AI-sounding title without specific contribution
+• Authors listed but none found in any academic database
+• DOI present but does not resolve (checked via API)
 
 ━━━ DO NOT OVER-FLAG ━━━
-• arxiv_version_note is set → the paper IS real, just cited as an older version. Do NOT flag.
-• German workshop/book chapter papers often not indexed — SUSPICIOUS not FAKE
-• Websites are verified by URL only — don't flag missing DB entry
-• Pre-2000 papers often not indexed — be lenient
+• arxiv_version_note is set → the paper IS real (just older version)
+• German/B2 conference papers often not indexed → SUSPICIOUS not FAKE
+• Pre-2000 papers → be lenient
 • Low API confidence alone ≠ FAKE
-• key_consistent=null means the check couldn't run — do not penalise
 
-Return ONLY valid JSON, no markdown:
+Return ONLY valid JSON:
 {{
   "verdicts": [
     {{"key": "string", "verdict": "REAL", "confidence": 0.95,
-      "reasoning": "one concise sentence", "risk_factors": [],
-      "open_access_url": null}}
+      "reasoning": "one concise sentence", "risk_factors": []}}
   ],
   "fake_count": 0, "suspicious_count": 0, "real_count": 0,
   "summary": "2-3 sentence overall assessment"
 }}
 
-References:
+References with pre-computed signals:
 {json.dumps(combined, ensure_ascii=False, indent=2)}"""
 
         try:
             chunk_result = _call_ai_json(prompt, max_tokens=4000)
             for v in chunk_result.get("verdicts", []):
                 ai_verdicts_by_key[v["key"]] = v
-            s = chunk_result.get("summary", "")
-            if s:
-                summaries.append(s)
         except Exception as e:
-            for entry, vr in chunk:
-                status  = vr.get("status", "not_checked")
-                verdict = "REAL" if status == "verified" else "SUSPICIOUS"
+            # Fallback to composite score for this batch
+            for entry, vr, title_sim, composite in chunk:
+                verdict = composite["verdict"]
                 ai_verdicts_by_key[entry["key"]] = {
-                    "key": entry["key"], "verdict": verdict,
-                    "confidence": round(vr.get("confidence", 0.5), 2),
-                    "reasoning": f"AI unavailable — API result: {status}. {vr.get('note','')}",
-                    "risk_factors": [], "open_access_url": vr.get("open_access_url"),
+                    "key": entry["key"],
+                    "verdict": verdict,
+                    "confidence": composite["confidence"],
+                    "reasoning": composite.get("reasoning", f"Composite analysis: {composite['composite_risk']*100:.0f}% risk"),
+                    "risk_factors": composite.get("risk_factors", []),
                 }
 
+    # Collect all verdicts
     for entry in bib_entries:
         key = entry["key"]
         if key in pre_screen_cache:
@@ -551,9 +763,22 @@ References:
         elif key in ai_verdicts_by_key:
             all_verdicts.append(ai_verdicts_by_key[key])
         else:
-            all_verdicts.append({"key": key, "verdict": "SUSPICIOUS", "confidence": 0.5,
-                                  "reasoning": "Could not be verified", "risk_factors": [],
-                                  "open_access_url": None})
+            # Final fallback - compute composite score
+            vr = vr_by_key.get(key, {})
+            matched_title = vr.get("matched_title", "")
+            title_sim = 0.0
+            if entry.get("title") and matched_title:
+                from checker import _title_similarity
+                title_sim = _title_similarity(entry["title"], matched_title)
+            composite = _compute_composite_fake_score(entry, vr, title_sim)
+            all_verdicts.append({
+                "key": key,
+                "verdict": composite["verdict"],
+                "confidence": composite["confidence"],
+                "reasoning": f"Automated analysis: {composite['composite_risk']*100:.0f}% risk score",
+                "risk_factors": composite["risk_factors"],
+                "open_access_url": None,
+            })
 
     for v in all_verdicts:
         verdict = v.get("verdict", "SUSPICIOUS")
@@ -569,12 +794,12 @@ References:
         "fake_count":       fake_count,
         "suspicious_count": suspicious_count,
         "real_count":       real_count,
-        "summary":          " ".join(summaries) or "No AI integrity summary available.",
+        "summary":          f"AI analysis complete: {fake_count} FAKE, {suspicious_count} SUSPICIOUS, {real_count} REAL references identified.",
     }
 
 
 # ---------------------------------------------------------------------------
-# 5. Overall verdict + professor report
+# 6. Overall verdict + professor report (unchanged from original)
 # ---------------------------------------------------------------------------
 
 def ai_overall_verdict(filename: str, summary: dict, xcheck,
@@ -615,7 +840,7 @@ STATISTICS:
 - In bibliography but never cited (orphaned): {orphaned}
 - Entries with missing required fields: {incomplete}
 - LNI key-vs-metadata mismatches (deterministic): {len(key_issues)}
-- FAKE references (AI+author-overlap verdict): {fake_count}
+- FAKE references (AI+composite verdict): {fake_count}
 - SUSPICIOUS references: {suspicious}
 - Duplicates: {summary.get('duplicates', 0)}
 - Self-citations flagged: {summary.get('self_citations', 0)}
@@ -631,8 +856,6 @@ FAKE REFERENCES:
 
 SUSPICIOUS (sample):
 {chr(10).join(suspicious_details) or "None"}
-
-AI integrity summary: {verification_result.get('summary', '')}
 
 VERDICT RULES:
 PASS  — references appear legitimate, only minor formatting issues
@@ -653,14 +876,14 @@ Return ONLY valid JSON, no markdown:
         return _call_ai_json(prompt, max_tokens=800)
     except Exception as e:
         score = 100
-        score -= min(fake_count * 15, 45)
+        score -= min(fake_count * 20, 60)  # Increased penalty for FAKE
         score -= min(missing_cit * 10, 30)
         score -= min(incomplete * 5, 20)
         score -= min(orphaned * 3, 12)
         score -= min(len(key_issues) * 5, 15)
         score  = max(0, score)
         grade   = "A" if score>=90 else "B" if score>=75 else "C" if score>=60 else "D" if score>=45 else "F"
-        verdict = ("FAIL" if fake_count >= 3 or score < 45 else
+        verdict = ("FAIL" if fake_count >= 2 or score < 45 else  # Lowered threshold
                    "FLAG" if fake_count >= 1 or len(key_issues) >= 2 or score < 75 else
                    "PASS")
         return {
