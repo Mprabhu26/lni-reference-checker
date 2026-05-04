@@ -1215,12 +1215,16 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         result.note = (result.note or "") + " [cache]"
         return result
 
-    source_fns = [
+    # Tier 1: fast, reliable APIs — run first, return early if verified
+    fast_fns = [
         _query_crossref,
         _query_semantic_scholar,
         _query_openalex,
-        _query_arxiv,          # now routes through versioned checker first
         _query_dblp,
+    ]
+    # Tier 2: slower — only run if tier 1 did not verify
+    slow_fns = [
+        _query_arxiv,
         _query_acl_anthology,
         _query_openreview,
         _query_open_library,
@@ -1229,15 +1233,30 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     ]
 
     results: List[VerificationResult] = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fn, entry): fn.__name__ for fn in source_fns}
-        for future in as_completed(futures, timeout=20):
+
+    # Run tier 1 in parallel with a short deadline
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(fn, entry): fn.__name__ for fn in fast_fns}
+        for future in as_completed(futures, timeout=8):
             try:
                 r = future.result()
                 if r is not None:
                     results.append(r)
             except Exception:
                 pass
+
+    # If tier 1 already verified the entry, skip tier 2 entirely
+    best_so_far = max(results, key=lambda r: r.confidence, default=None)
+    if not best_so_far or best_so_far.status != "verified":
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {executor.submit(fn, entry): fn.__name__ for fn in slow_fns}
+            for future in as_completed(futures, timeout=15):
+                try:
+                    r = future.result()
+                    if r is not None:
+                        results.append(r)
+                except Exception:
+                    pass
 
     if not results:
         return VerificationResult(key=entry.key, title=entry.title or "",
