@@ -99,9 +99,9 @@ _JOURNAL_NAME_HINTS = re.compile(
 def parse_bibliography(bib_text: str) -> list:
     entries = []
     entry_pattern = re.compile(
-        r'\[([A-Za-z]{2,6}\d{2}[a-z]?)\]\s+(.*?)(?=\n\[|\Z)',
-        re.DOTALL,
-    )
+    r'\[([A-Za-z]{2,6}\d{2}[a-z]?|\d+)\]\s+(.*?)(?=\n\[|\Z)',
+    re.DOTALL,
+)
     for match in entry_pattern.finditer(bib_text):
         key = match.group(1)
         raw = re.sub(r'\s+', ' ', match.group(2).strip().replace('\n', ' '))
@@ -312,6 +312,11 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
 def validate_lni_key(key: str) -> list:
     """Return a list of format-error strings (empty = valid)."""
     errors = []
+    
+    # Skip validation for numeric keys
+    if key.isdigit():
+        return errors
+    
     match = re.match(r'^([A-Za-z]+)(\d{2})([a-z])?$', key)
     if not match:
         errors.append(
@@ -342,6 +347,9 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     This gives the AI a deterministic, high-confidence signal that something
     is wrong with a reference even when API lookups return no results.
     """
+    if entry.key.isdigit():
+        entry.key_consistent = True
+        return
     match = re.match(r'^([A-Za-z]+)(\d{2})([a-z])?$', entry.key)
     if not match:
         entry.key_consistent = None

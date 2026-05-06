@@ -1032,8 +1032,9 @@ def extract_citations_from_body(body_text: str) -> set:
 
 def extract_citation_contexts(body_text: str) -> dict:
     contexts = {}
+    # Match BOTH LNI and numeric citations
     for m in re.finditer(
-        r'([^.]{0,80})\[([A-Za-z]{2,6}\d{2}[a-z]?(?:,\s*[A-Za-z]{2,6}\d{2}[a-z]?)*)\]([^.]{0,80})',
+        r'([^.]{0,80})\[([A-Za-z]{2,6}\d{2}[a-z]?(?:,\s*[A-Za-z]{2,6}\d{2}[a-z]?)*|\d+(?:,\s*\d+)*)\]([^.]{0,80})',
         body_text,
     ):
         snippet = (m.group(1) + '[' + m.group(2) + ']' + m.group(3)).strip()
