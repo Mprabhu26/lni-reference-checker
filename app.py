@@ -258,7 +258,14 @@ def _assemble_result(
         for e in bib_list
     ]
 
-    real_cited = {k for k in cited_keys if not k.startswith('__')}
+    real_cited = set()
+    for k in cited_keys:
+        k_str = str(k)
+    if not k_str.startswith('__'):
+        real_cited.add(k_str)
+    elif k_str.startswith('__NUM_'):
+        num = k_str.replace('__NUM_', '').replace('__', '')
+        real_cited.add(num)
     version_notes = [
         {"key": v["key"], "note": v["version_note"]}
         for v in verification_output if v.get("version_note")

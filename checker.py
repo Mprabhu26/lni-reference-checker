@@ -1076,10 +1076,21 @@ class CrossCheckResult:
 
 
 def cross_check(bib_entries: dict, cited_keys: set) -> CrossCheckResult:
-    # Filter out our special markers
-    real_cited = {k for k in cited_keys 
-                  if not k.startswith('__')}
-    bib_keys = set(bib_entries.keys())
+    # Convert ALL keys to strings for comparison
+    bib_keys = set(str(k) for k in bib_entries.keys())
+    
+    # Extract real cited keys (remove special markers like __numeric_citations__)
+    real_cited = set()
+    for k in cited_keys:
+        k_str = str(k)
+        if not k_str.startswith('__'):
+            real_cited.add(k_str)
+    
+    # Also handle numeric citations: if we have __NUM_1__, add '1' to real_cited
+    for k in cited_keys:
+        if str(k).startswith('__NUM_'):
+            num = str(k).replace('__NUM_', '').replace('__', '')
+            real_cited.add(num)
     
     r = CrossCheckResult()
     r.cited_not_in_bib = sorted(real_cited - bib_keys)
