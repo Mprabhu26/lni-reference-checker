@@ -128,11 +128,28 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
 
 def _call_ai_json(prompt: str, max_tokens: int = 2000, system: str = "") -> dict:
     text = _call_ai(prompt, max_tokens, system).strip()
+    # Strip markdown code fences
     if text.startswith("```"):
         text = "\n".join(text.split("\n")[1:])
     if text.endswith("```"):
         text = "\n".join(text.split("\n")[:-1])
-    return json.loads(text.strip())
+    text = text.strip()
+    # Remove leading/trailing label like "json" after fence strip
+    if text.lower().startswith("json"):
+        text = text[4:].strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Try to extract first JSON object or array from the text
+        for start_char, end_char in [('{', '}'), ('[', ']')]:
+            start = text.find(start_char)
+            end = text.rfind(end_char)
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(text[start:end + 1])
+                except json.JSONDecodeError:
+                    pass
+        raise
 
 
 def _chunk(lst: list, size: int) -> list:

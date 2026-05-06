@@ -53,17 +53,23 @@ def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
         query += f" {first_author}"
     
     results = []
-    try:
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=5):
-                results.append({
-                    "title": r.get("title", ""),
-                    "url": r.get("href", ""),
-                    "body": r.get("body", "")[:500]
-                })
-    except Exception as e:
-        print(f"Web search error: {e}")
-    
+    last_exc = None
+    for attempt in range(3):  # up to 3 retries on transient failures
+        try:
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=5):
+                    results.append({
+                        "title": r.get("title", ""),
+                        "url": r.get("href", ""),
+                        "body": r.get("body", "")[:500]
+                    })
+            break  # success
+        except Exception as e:
+            last_exc = e
+            import time as _time
+            _time.sleep(1.5 * (attempt + 1))  # back-off: 1.5s, 3s, 4.5s
+    if not results and last_exc:
+        print(f"Web search error after 3 attempts: {last_exc}")
     return results
 
 

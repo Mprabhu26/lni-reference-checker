@@ -237,8 +237,17 @@ def extract_pdf(path: str) -> dict:
     # Collapse multiple spaces
     text = re.sub(r' +', ' ', text)
     
-    # Rejoin lines that are likely broken mid-sentence (no period at end)
-    lines = text.split('\n')
+    # Find bibliography FIRST so line-rejoining never corrupts bib entries
+    bib_pos = _find_bib_start(text)
+    if bib_pos >= 0:
+        body_raw = text[:bib_pos]
+        bib_raw  = text[bib_pos:]
+    else:
+        body_raw = text
+        bib_raw  = ""
+
+    # Rejoin soft-wrapped lines in BODY only (never touch bibliography lines)
+    lines = body_raw.split('\n')
     rejoined = []
     current = ""
     for line in lines:
@@ -248,8 +257,6 @@ def extract_pdf(path: str) -> dict:
                 rejoined.append(current)
                 current = ""
             continue
-        
-        # If line doesn't end with sentence punctuation and next line exists
         if not re.search(r'[.!?]\s*$', line) and len(line) > 30:
             current += " " + line
         else:
@@ -258,23 +265,17 @@ def extract_pdf(path: str) -> dict:
                 current = ""
             else:
                 rejoined.append(line)
-    
     if current:
         rejoined.append(current)
-    
-    text = "\n".join(rejoined)
-    
-    # Now find bibliography section
-    bib_pos = _find_bib_start(text)
+    body_raw = "\n".join(rejoined)
+
     if bib_pos >= 0:
-        body_part = text[:bib_pos]
-        bib_part = text[bib_pos:]
-        
+        body_part = body_raw
+        bib_part  = bib_raw
         # Collapse any newline that is NOT followed by a new [Key] marker
         bib_part = re.sub(r'\n(?!\[)', ' ', bib_part)
         # Re-insert a newline before every [Key] marker (entry boundary)
         bib_part = re.sub(r'\s+(\[[A-Za-z]{2,6}\d{2}[a-z]?\])', r'\n\1', bib_part)
-        
         # Clean up body
         body_part = re.sub(r'\n{3,}', '\n\n', body_part)
         

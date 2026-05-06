@@ -84,6 +84,11 @@ def save_to_cache(title: str, authors: str, year: str, doi: str, url: str, sourc
     """Save a verified paper to cache"""
     if not title:
         return
+    if not CACHE_DB.exists():
+        try:
+            init_cache_db()
+        except Exception:
+            return
     
     conn = sqlite3.connect(str(CACHE_DB))
     cursor = conn.cursor()
@@ -113,11 +118,13 @@ def save_to_cache(title: str, authors: str, year: str, doi: str, url: str, sourc
 
 def search_cache(title: str, authors: str = "") -> Optional[CachedPaper]:
     """Search local cache for a paper"""
-    if not CACHE_DB.exists():
-        return None
-    
     if not title:
         return None
+    if not CACHE_DB.exists():
+        try:
+            init_cache_db()
+        except Exception:
+            return None
     
     conn = sqlite3.connect(str(CACHE_DB))
     conn.row_factory = sqlite3.Row

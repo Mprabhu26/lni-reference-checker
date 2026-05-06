@@ -896,7 +896,7 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
                     title=entry.title or "",
                     authors=entry.authors or "",
                     year=entry.year or "",
-                    doi=web_result.get("matched_title", ""),
+                    doi=web_result.get("doi", ""),
                     url=web_result.get("open_access_url", ""),
                     source="web_search",
                     confidence=web_result.get("confidence", 0.8)
