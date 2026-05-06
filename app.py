@@ -832,6 +832,45 @@ def batch_check():
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+@app.route("/api/review", methods=["POST"])
+def submit_review():
+    """Professor submits a manual review decision"""
+    from review_queue import add_review_decision, add_false_positive
+    
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    
+    key = data.get("key")
+    decision = data.get("decision")  # 'verified' or 'rejected'
+    title = data.get("title", "")
+    url = data.get("url", "")
+    note = data.get("note", "")
+    
+    # In real implementation, you'd look up the full paper details
+    success = add_review_decision(
+        title=title or f"Paper_{key}",
+        authors="",
+        decision=decision,
+        note=note,
+        verified_url=url
+    )
+    
+    if decision == "verified":
+        add_false_positive(title, "", "AI_flagged", f"Professor marked as real: {note}")
+    
+    return jsonify({"success": success})
+
+
+@app.route("/api/review/stats", methods=["GET"])
+def review_stats():
+    from review_queue import get_review_stats, get_pending_reviews
+    
+    return jsonify({
+        "stats": get_review_stats(),
+        "pending": get_pending_reviews(10)
+    })
+
 
 @app.route("/export", methods=["POST"])
 def export_report():

@@ -23,6 +23,7 @@ import json
 import threading
 import requests  # ADDED: missing import
 from typing import List, Dict, Any, Optional
+from review_queue import is_venue_whitelisted
 
 GROQ_MODEL  = "llama-3.3-70b-versatile"
 GROQ_URL    = "https://api.groq.com/openai/v1/chat/completions"
@@ -628,8 +629,12 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     """
     Determine REAL / SUSPICIOUS / FAKE for each reference.
     
-    NEW v6.1: Uses composite scoring for many cases, AI for borderline.
+    NEW v6.1:
+      Uses composite scoring for many cases, AI for borderline.
+      Also checks whitelisted venues (German conferences) to reduce false flags.
     """
+    from review_queue import is_venue_whitelisted
+    
     if not bib_entries:
         return {"verdicts": [], "summary": "No entries to verify.",
                 "fake_count": 0, "suspicious_count": 0, "real_count": 0}
@@ -661,6 +666,10 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         if entry.get("title") and matched_title:
             title_sim = _local_title_similarity(entry["title"], matched_title)
         
+        # Check whitelisted venues (German conferences)
+        venue = entry.get("journal") or entry.get("booktitle") or ""
+        whitelist_check = is_venue_whitelisted(venue)
+        
         # Try pre-screen
         early = _pre_screen_by_author_overlap(entry, vr, title_sim)
         if early:
@@ -668,6 +677,12 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         else:
             # Compute composite score as fallback/assist
             composite = _compute_composite_fake_score(entry, vr, title_sim)
+            
+            # If venue is whitelisted, downgrade FAKE to SUSPICIOUS
+            if whitelist_check.get("whitelisted") and composite["verdict"] == "FAKE":
+                composite["verdict"] = "SUSPICIOUS"
+                composite["confidence"] = 0.6
+                composite["reasoning"] = f"Venue is whitelisted ({whitelist_check.get('venue')}), marking as suspicious rather than fake. Manual review recommended."
             
             # If composite score strongly indicates FAKE or REAL, use it
             if composite["verdict"] != "SUSPICIOUS" and composite["confidence"] >= 0.75:
@@ -781,6 +796,14 @@ References with pre-computed signals:
             if entry.get("title") and matched_title:
                 title_sim = _local_title_similarity(entry["title"], matched_title)
             composite = _compute_composite_fake_score(entry, vr, title_sim)
+            
+            # Check whitelist for final fallback too
+            venue = entry.get("journal") or entry.get("booktitle") or ""
+            whitelist_check = is_venue_whitelisted(venue)
+            if whitelist_check.get("whitelisted") and composite["verdict"] == "FAKE":
+                composite["verdict"] = "SUSPICIOUS"
+                composite["confidence"] = 0.6
+            
             all_verdicts.append({
                 "key": key,
                 "verdict": composite["verdict"],

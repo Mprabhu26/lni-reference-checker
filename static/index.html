@@ -110,6 +110,35 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
 .err-msg{font-size:13px;color:var(--text2);line-height:1.6}
 .results{display:none;flex-direction:column;min-height:100%}
 .results.show{display:flex}
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+.btn-verify {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+.btn-verify:hover {
+  background: var(--green);
+  border-color: var(--green);
+  color: white;
+}
+
+.btn-reject {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red);
+}
+
+.btn-reject:hover {
+  background: var(--red);
+  border-color: var(--red);
+  color: white;
+}
 
 /* NEW: Verdict Banner - Clean & Prominent */
 .verdict-banner{padding:20px 24px;background:var(--surface);border-bottom:2px solid var(--border);margin:0}
@@ -521,6 +550,10 @@ function renderReferencesTab(data){
           ${v.sources_checked&&v.sources_checked.length?`Sources: ${v.sources_checked.slice(0,3).join(', ')}`:''}
         </div>
         ${v.ai_reasoning?`<div style="font-size:11px;color:var(--text3);margin-top:6px">🤖 ${esc(v.ai_reasoning)}</div>`:''}
+        <div style="margin-top: 12px; display: flex; gap: 8px;">
+          <button class="btn btn-sm btn-verify" onclick="markAsVerified('${v.key}', '${esc(v.title).replace(/'/g, "\\'")}')">✓ Professor Verify</button>
+          <button class="btn btn-sm btn-reject" onclick="markAsRejected('${v.key}', '${esc(v.title).replace(/'/g, "\\'")}')">✗ Mark as Fake</button>
+        </div>
       </div>
     `;
   }).join('');
@@ -594,6 +627,68 @@ $('batchRunBtn').onclick=async()=>{
   try{const form=new FormData();selBatch.forEach(f=>form.append('files',f));form.append('verify',verifyOn?'true':'false');const data=await(await fetch('/batch',{method:'POST',body:form})).json();if(data.error){showError(data.error);return}refreshCache();renderBatch(data);showState('batch')}catch(e){showError(e.message)}
 };
 
+async function markAsVerified(key, title) {
+  const url = prompt("Enter the correct URL (or leave blank):");
+  const note = prompt("Add a note for the student (optional):");
+  
+  try {
+    const response = await fetch('/api/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key: key,
+        title: title,
+        decision: 'verified',
+        url: url || '',
+        note: note || 'Professor manually verified this reference'
+      })
+    });
+    
+    if (response.ok) {
+      alert(`✅ Reference [${key}] marked as VERIFIED. It will show as verified in future checks.`);
+      // Refresh the current view
+      if (lastData) {
+        renderResults(lastData);
+      }
+    } else {
+      const error = await response.json();
+      alert(`Failed: ${error.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  }
+}
+
+async function markAsRejected(key, title) {
+  const reason = prompt("Why is this reference fake? (This will be shown to the student)");
+  if (!reason) return;
+  
+  try {
+    const response = await fetch('/api/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key: key,
+        title: title,
+        decision: 'rejected',
+        note: reason
+      })
+    });
+    
+    if (response.ok) {
+      alert(`❌ Reference [${key}] marked as FAKE/REJECTED.`);
+      if (lastData) {
+        renderResults(lastData);
+      }
+    } else {
+      const error = await response.json();
+      alert(`Failed: ${error.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  }
+}
+
 function renderBatch(data){
   const files=data.files||[];
   const fakeTotal=files.reduce((s,f)=>s+(f.summary?.fake_candidates||0),0);
@@ -617,6 +712,8 @@ function clearResults(){
   document.querySelectorAll('.panel').forEach((p,i)=>p.classList.toggle('active',i===0));
   showState('empty');
 }
+
+
 
 function showState(s){
   $('emptyState').style.display=s==='empty'?'flex':'none';

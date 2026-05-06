@@ -45,6 +45,11 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from parser import BibEntry
 
+from local_db import search_cache, save_to_cache, get_cache_stats, init_cache_db
+
+# Import web search verifier (new in v6.3)
+from web_search_verifier import verify_with_web_search
+from review_queue import is_venue_whitelisted, get_review_decision
 
 # ---------------------------------------------------------------------------
 # Persistent disk cache
@@ -771,6 +776,56 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         result = copy.copy(cached)
         result.note = (result.note or "") + " [cached]"
         return result
+    cached_paper = search_cache(entry.title or "", entry.authors or "")
+    if cached_paper:
+        sim = _title_similarity(entry.title or "", cached_paper.title)
+        if sim >= 0.7:
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="verified",
+                confidence=cached_paper.confidence,
+                matched_title=cached_paper.title,
+                doi=cached_paper.doi,
+                open_access_url=cached_paper.url,
+                note=f"Found in local cache (from {cached_paper.source})",
+                sources_checked=["local_cache"],
+                correct_authors=cached_paper.authors,
+            )
+        
+        # Check professor review decisions (manual override)
+    review = get_review_decision(entry.title or "", entry.authors or "")
+    if review:
+        if review.get("decision") == "verified":
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="verified",
+                confidence=0.99,
+                matched_title=entry.title,
+                doi=review.get("verified_doi"),
+                open_access_url=review.get("verified_url"),
+                note=f"Professor verified: {review.get('professor_note', 'Manually approved')}",
+                sources_checked=["professor_review"],
+                correct_authors=entry.authors,
+            )
+        elif review.get("decision") == "rejected":
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="not_found",
+                confidence=0.0,
+                note=f"Professor marked as rejected: {review.get('professor_note', '')}",
+                sources_checked=["professor_review"],
+            )
+    
+    # Check if venue is whitelisted (German conference = don't penalize)
+    venue = entry.journal or entry.booktitle or entry.publisher or ""
+    whitelist_check = is_venue_whitelisted(venue)
+    if whitelist_check.get("whitelisted"):
+        # Still verify, but don't mark as FAKE
+        pass  # This just flags to AI that venue is trusted
+        
     
     all_results: List[VerificationResult] = []
     
@@ -824,16 +879,57 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
                 except Exception:
                     pass
     
-    # If no results at all
+    # =========================================================
+    # NEW: If no results from APIs, try web search + LLM verification
+    # This mimics RefChecker's Stage 2 + Stage 3
+    # =========================================================
     if not all_results:
-        return VerificationResult(
-            key=entry.key,
-            title=entry.title or "",
-            status="not_found",
-            confidence=0.0,
-            note="No results found in any academic database",
-            sources_checked=[],
-        )
+        try:
+            web_result = verify_with_web_search(
+                {"title": entry.title, "authors": entry.authors, "year": entry.year},
+                "not_found"
+            )
+            
+            if web_result.get("status") == "verified":
+                # Save to local cache BEFORE returning
+                save_to_cache(
+                    title=entry.title or "",
+                    authors=entry.authors or "",
+                    year=entry.year or "",
+                    doi=web_result.get("matched_title", ""),
+                    url=web_result.get("open_access_url", ""),
+                    source="web_search",
+                    confidence=web_result.get("confidence", 0.8)
+                )
+                return VerificationResult(
+                    key=entry.key,
+                    title=entry.title or "",
+                    status="verified",
+                    confidence=web_result.get("confidence", 0.8),
+                    matched_title=web_result.get("matched_title"),
+                    open_access_url=web_result.get("open_access_url"),
+                    note=web_result.get("note", "Verified via web search"),
+                    sources_checked=["web_search", "llm_verification"]
+                )
+            else:
+                return VerificationResult(
+                    key=entry.key,
+                    title=entry.title or "",
+                    status="not_found",
+                    confidence=web_result.get("confidence", 0.0),
+                    note=web_result.get("note", "No results found in any academic database or web search"),
+                    sources_checked=["api_phases_1_2_3", "web_search_attempted"]
+                )
+        except Exception as e:
+            # Fallback to original behavior if web search fails
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="not_found",
+                confidence=0.0,
+                note=f"No results found in any academic database (web search error: {str(e)[:50]})",
+                sources_checked=[],
+            )
     
     # Aggregate results - find the best one
     priority = {"verified": 3, "partial_match": 2, "not_found": 1, "error": 0}
@@ -860,10 +956,23 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             best.open_access_url = r.open_access_url
     
     # Boost confidence if multiple sources agree
+       
     verified_count = sum(1 for r in all_results if r.status == "verified")
     if verified_count >= 2 and best.status == "verified":
         best.confidence = min(best.confidence + 0.08, 0.98)
         best.note = f"Confirmed by {verified_count} independent sources. {best.note}"
+    
+    # Save to local cache if verified
+    if best.status == "verified":
+        save_to_cache(
+            title=entry.title or "",
+            authors=entry.authors or "",
+            year=entry.year or "",
+            doi=best.doi or "",
+            url=best.open_access_url or "",
+            source="api",
+            confidence=best.confidence
+        )
     
     # Cache the result
     _put_cache(entry, best)

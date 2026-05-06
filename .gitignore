@@ -11,3 +11,5 @@ build/
 .DS_Store
 *.swp
 *.swo
+.env
+.env
