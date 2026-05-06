@@ -1006,15 +1006,27 @@ def verify_all_references(bib_entries: dict) -> list:
 
 def extract_citations_from_body(body_text: str) -> set:
     keys = set()
-    for match in re.findall(
-        r'\[([A-Za-z]{2,6}\d{2}[a-z]?(?:,\s*[A-Za-z]{2,6}\d{2}[a-z]?)*)\]', body_text
-    ):
+    
+    # 1. LNI format: [ABC01], [Vas17], [Dev19], etc.
+    lni_matches = re.findall(
+        r'\[([A-Za-z]{2,6}\d{2}[a-z]?(?:,\s*[A-Za-z]{2,6}\d{2}[a-z]?)*)\]', 
+        body_text
+    )
+    for match in lni_matches:
         for key in re.split(r',\s*', match):
             key = key.strip()
             if re.match(r'^[A-Za-z]{2,6}\d{2}[a-z]?$', key):
                 keys.add(key)
-    if re.findall(r'\[(\d{1,3})\]', body_text):
+    
+    # 2. Numeric format: [1], [2], [3], etc.
+    numeric_matches = re.findall(r'\[(\d{1,3})\]', body_text)
+    if numeric_matches:
+        # Add a special marker so we know numeric citations exist
         keys.add('__numeric_citations__')
+        # Also add each number as a string for potential matching
+        for num in numeric_matches:
+            keys.add(f'__NUM_{num}__')
+    
     return keys
 
 
@@ -1063,12 +1075,16 @@ class CrossCheckResult:
 
 
 def cross_check(bib_entries: dict, cited_keys: set) -> CrossCheckResult:
-    real_cited = {k for k in cited_keys if not k.startswith('__')}
+    # Filter out our special markers
+    real_cited = {k for k in cited_keys 
+                  if not k.startswith('__')}
     bib_keys = set(bib_entries.keys())
+    
     r = CrossCheckResult()
     r.cited_not_in_bib = sorted(real_cited - bib_keys)
     r.in_bib_not_cited = sorted(bib_keys - real_cited)
     r.correctly_used = sorted(real_cited & bib_keys)
+    
     return r
 
 
