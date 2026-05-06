@@ -85,29 +85,28 @@ def _find_bib_start(full_text: str) -> int:
     Return the character offset where the bibliography section begins,
     or -1 if not found.
 
-    IMPROVED: Takes the LAST match that is followed by an LNI-style citation key.
-    Also has fallback to find first occurrence of a reference key pattern.
+    Handles both LNI author-year keys [ABC01] and numeric keys [1], [2], ...
     """
+    # Pattern matching either LNI key [ABC01] or numeric key [1]..[999]
+    any_bib_key = re.compile(r'\[(?:[A-Za-z]{2,6}\d{2}[a-z]?|\d{1,3})\]')
+
     all_matches = list(BIB_HEADINGS.finditer(full_text))
     if not all_matches:
-        # Fallback: look for any line starting with [A-Za-z]{2,6}\d{2}
-        key_pattern = re.compile(r'\n\[[A-Za-z]{2,6}\d{2}[a-z]?\]')
+        # Fallback: look for any line starting with a bib key
+        key_pattern = re.compile(r'\n\[(?:[A-Za-z]{2,6}\d{2}[a-z]?|\d{1,3})\]')
         key_match = key_pattern.search(full_text)
         if key_match:
-            # Find the line start before this key
             line_start = full_text.rfind('\n', 0, key_match.start()) + 1
             return line_start
         return -1
 
-    lni_key = re.compile(r'\[[A-Za-z]{2,6}\d{2}[a-z]?\]')
-
-    # Prefer the last match that is followed by an LNI key
+    # Prefer the last heading match that is followed by a bib entry key
     for m in reversed(all_matches):
         window = full_text[m.start(): m.start() + 500]
-        if lni_key.search(window):
+        if any_bib_key.search(window):
             return m.start()
 
-    # Fallback: just take the last match
+    # Fallback: just take the last heading match
     return all_matches[-1].start()
 
 
@@ -274,8 +273,8 @@ def extract_pdf(path: str) -> dict:
         bib_part  = bib_raw
         # Collapse any newline that is NOT followed by a new [Key] marker
         bib_part = re.sub(r'\n(?!\[)', ' ', bib_part)
-        # Re-insert a newline before every [Key] marker (entry boundary)
-        bib_part = re.sub(r'\s+(\[[A-Za-z]{2,6}\d{2}[a-z]?\])', r'\n\1', bib_part)
+        # Re-insert a newline before every [Key] marker (LNI or numeric)
+        bib_part = re.sub(r'\s+(\[(?:[A-Za-z]{2,6}\d{2}[a-z]?|\d{1,3})\])', r'\n\1', bib_part)
         # Clean up body
         body_part = re.sub(r'\n{3,}', '\n\n', body_part)
         
