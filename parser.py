@@ -99,9 +99,9 @@ _JOURNAL_NAME_HINTS = re.compile(
 def parse_bibliography(bib_text: str) -> list:
     entries = []
     entry_pattern = re.compile(
-    r'\[([A-Za-z]{2,6}\d{2}[a-z]?|\d+)\]\s+(.*?)(?=\n\[|\Z)',
-    re.DOTALL,
-)
+        r'\[(\d+|[A-Za-z]{2,6}\d{2}[a-z]?)\]\s+(.*?)(?=\n?\[|$)',
+        re.DOTALL | re.MULTILINE,
+    )
     for match in entry_pattern.finditer(bib_text):
         key = match.group(1)
         raw = re.sub(r'\s+', ' ', match.group(2).strip().replace('\n', ' '))
@@ -110,6 +110,21 @@ def parse_bibliography(bib_text: str) -> list:
         _check_completeness(entry)
         _validate_key_vs_metadata(entry)
         entries.append(entry)
+    
+    # FALLBACK: If no entries found, try splitting by newlines
+    if not entries and bib_text.strip():
+        lines = bib_text.strip().split('\n')
+        for line in lines:
+            match = re.match(r'\[(\d+|[A-Za-z]{2,6}\d{2}[a-z]?)\]\s+(.+)', line.strip())
+            if match:
+                key = match.group(1)
+                raw = match.group(2).strip()
+                entry = BibEntry(key=key, raw_text=raw)
+                _classify_and_parse(entry, raw)
+                _check_completeness(entry)
+                _validate_key_vs_metadata(entry)
+                entries.append(entry)
+    
     return entries
 
 
