@@ -49,7 +49,7 @@ from local_db import search_cache, save_to_cache, get_cache_stats, init_cache_db
 
 # Import web search verifier (new in v6.3)
 from web_search_verifier import verify_with_web_search
-from review_queue import is_venue_whitelisted, get_review_decision
+from review_queue import is_venue_whitelisted, get_review_decision, get_false_positive
 
 # ---------------------------------------------------------------------------
 # Persistent disk cache
@@ -223,43 +223,130 @@ class VerificationResult:
     correct_authors: Optional[str] = None
     version_note: Optional[str] = None
     aggregated_sources: list = field(default_factory=list)
+    is_retracted: bool = False
+    retraction_doi: Optional[str] = None
+    retraction_note: Optional[str] = None
+    # Corrected metadata from databases (for BibTeX export)
+    corrected_title: Optional[str] = None
+    corrected_authors: Optional[str] = None
+    corrected_year: Optional[str] = None
+    corrected_publisher: Optional[str] = None
+    corrected_journal: Optional[str] = None
+    corrected_volume: Optional[str] = None
+    corrected_pages: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
 # PHASE 1: Fast Lookups by Identifier
 # ---------------------------------------------------------------------------
 
+def _check_retraction(doi: str) -> tuple:
+    """Check CrossRef for retraction notice on a DOI.
+
+    CrossRef marks retracted papers with update-to[type=retraction].
+    Returns (is_retracted: bool, retraction_doi: str, note: str).
+    """
+    if not doi:
+        return False, None, None
+    try:
+        mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
+        ua = f"LNI-Checker/6.3 (mailto:{mailto})" if mailto else "LNI-Checker/6.3"
+        resp = requests.get(
+            f"https://api.crossref.org/works/{doi}",
+            timeout=5,
+            headers={"User-Agent": ua},
+        )
+        if resp.status_code != 200:
+            return False, None, None
+        work = resp.json().get("message", {})
+        updates = work.get("update-to", [])
+        for u in updates:
+            if u.get("type", "").lower() == "retraction":
+                ret_doi = u.get("DOI", "")
+                ret_date = u.get("updated", {}).get("date-parts", [[""]])[0]
+                date_str = "-".join(str(p) for p in ret_date if p) if ret_date else "unknown date"
+                return True, ret_doi, f"Retracted {date_str}. Retraction notice DOI: {ret_doi}"
+    except Exception:
+        pass
+    return False, None, None
+
+
+def _extract_corrected_metadata(work: dict) -> dict:
+    """Pull clean corrected metadata from a CrossRef work record."""
+    authors = work.get("author", [])
+    author_str = "; ".join(
+        f"{a.get('family', '')}, {a.get('given', '')}" for a in authors[:5]
+    ) if authors else None
+
+    issued = work.get("issued", {}).get("date-parts", [[None]])[0]
+    year = str(issued[0]) if issued and issued[0] else None
+
+    container = (work.get("container-title") or [""])[0]
+    volume = work.get("volume", "")
+    pages = work.get("page", "")
+    publisher = work.get("publisher", "")
+
+    return {
+        "corrected_authors": author_str,
+        "corrected_year": year,
+        "corrected_journal": container or None,
+        "corrected_publisher": publisher or None,
+        "corrected_volume": str(volume) if volume else None,
+        "corrected_pages": str(pages) if pages else None,
+    }
+
+
 def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
-    """Direct DOI lookup via CrossRef."""
+    """Direct DOI lookup via CrossRef — also checks for retraction."""
     if not entry.doi:
         return None
-    
+
     _rate_limit("crossref.org", 0.2)
     try:
+        mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
+        ua = f"LNI-Checker/6.3 (mailto:{mailto})" if mailto else "LNI-Checker/6.3"
         resp = requests.get(
             f"https://api.crossref.org/works/{entry.doi}",
             timeout=5,
-            headers={"User-Agent": "LNI-Checker/6.2 (mailto:lni@checker.de)"}
+            headers={"User-Agent": ua},
         )
         if resp.status_code == 200:
             work = resp.json().get("message", {})
             title = (work.get("title") or [""])[0]
             sim = _title_similarity(entry.title or "", title)
-            
-            authors = work.get("author", [])
-            author_str = "; ".join([f"{a.get('family', '')}, {a.get('given', '')}" for a in authors[:5]]) if authors else None
-            
+            meta = _extract_corrected_metadata(work)
+
+            # Retraction check
+            is_retracted, ret_doi, ret_note = _check_retraction(entry.doi)
+
+            status = "verified" if not is_retracted else "retracted"
+            confidence = 0.95 if sim > 0.7 else 0.7
+            note_str = f"DOI verified via CrossRef (match: {int(sim*100)}%)"
+            if is_retracted:
+                note_str = f"⚠ RETRACTED. {ret_note}"
+                confidence = 1.0   # 100% confident it's retracted
+
             return VerificationResult(
                 key=entry.key,
                 title=entry.title or "",
-                status="verified",
-                confidence=0.95 if sim > 0.7 else 0.7,
+                status=status,
+                confidence=confidence,
                 matched_title=title,
                 doi=entry.doi,
                 open_access_url=_check_unpaywall(entry.doi),
-                note=f"DOI verified via CrossRef (match: {int(sim*100)}%)",
+                note=note_str,
                 sources_checked=["CrossRef (DOI)"],
-                correct_authors=author_str,
+                correct_authors=meta["corrected_authors"],
+                is_retracted=is_retracted,
+                retraction_doi=ret_doi,
+                retraction_note=ret_note,
+                corrected_title=title if title else None,
+                corrected_authors=meta["corrected_authors"],
+                corrected_year=meta["corrected_year"],
+                corrected_journal=meta["corrected_journal"],
+                corrected_publisher=meta["corrected_publisher"],
+                corrected_volume=meta["corrected_volume"],
+                corrected_pages=meta["corrected_pages"],
             )
     except Exception:
         pass
@@ -370,11 +457,13 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
             first_author = entry.authors.split(';')[0].split(',')[0].strip()
             params["query.author"] = first_author
         
+        mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
+        ua = f"LNI-Checker/6.2 (mailto:{mailto})" if mailto else "LNI-Checker/6.2"
         resp = requests.get(
             "https://api.crossref.org/works",
             params=params,
             timeout=6,
-            headers={"User-Agent": "LNI-Checker/6.2"}
+            headers={"User-Agent": ua}
         )
         if resp.status_code == 200:
             items = resp.json().get("message", {}).get("items", [])
@@ -386,17 +475,30 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                     authors = item.get("author", [])
                     author_str = "; ".join([f"{a.get('family', '')}, {a.get('given', '')}" for a in authors[:3]]) if authors else None
                     
+                    meta = _extract_corrected_metadata(item)
+                    is_ret, ret_doi, ret_note = _check_retraction(doi) if doi else (False, None, None)
+                    ret_note_full = f"⚠ RETRACTED. {ret_note}" if is_ret else f"Found on CrossRef (match: {int(sim*100)}%)"
                     return VerificationResult(
                         key=entry.key,
                         title=entry.title,
-                        status="verified" if sim >= 0.75 else "partial_match",
-                        confidence=sim,
+                        status="retracted" if is_ret else ("verified" if sim >= 0.75 else "partial_match"),
+                        confidence=1.0 if is_ret else sim,
                         matched_title=title,
                         doi=doi,
                         open_access_url=_check_unpaywall(doi) if doi else None,
-                        note=f"Found on CrossRef (match: {int(sim*100)}%)",
+                        note=ret_note_full,
                         sources_checked=["CrossRef"],
                         correct_authors=author_str,
+                        is_retracted=is_ret,
+                        retraction_doi=ret_doi,
+                        retraction_note=ret_note,
+                        corrected_title=title if title else None,
+                        corrected_authors=meta["corrected_authors"],
+                        corrected_year=meta["corrected_year"],
+                        corrected_journal=meta["corrected_journal"],
+                        corrected_publisher=meta["corrected_publisher"],
+                        corrected_volume=meta["corrected_volume"],
+                        corrected_pages=meta["corrected_pages"],
                     )
     except Exception:
         pass
@@ -610,6 +712,57 @@ def _search_arxiv_fallback(entry: BibEntry) -> Optional[VerificationResult]:
     return None
 
 
+
+def _search_openreview(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search OpenReview for ML/AI conference papers (NeurIPS, ICLR, ICML, etc.)."""
+    if not entry.title:
+        return None
+
+    _rate_limit("openreview.net", 0.5)
+    try:
+        resp = requests.get(
+            "https://api2.openreview.net/notes/search",
+            params={"term": entry.title, "limit": 5, "offset": 0},
+            timeout=7,
+            headers={"User-Agent": "LNI-Checker/6.3"},
+        )
+        if resp.status_code != 200:
+            return None
+        notes = resp.json().get("notes", [])
+        for note in notes[:5]:
+            content = note.get("content", {})
+            # content values may be dicts with a "value" key (OpenReview v2 schema)
+            def _val(field):
+                v = content.get(field, "")
+                return v.get("value", "") if isinstance(v, dict) else (v or "")
+
+            found_title = _val("title")
+            if not found_title:
+                continue
+            sim = _title_similarity(entry.title, found_title)
+            if sim >= 0.6:
+                authors_list = _val("authors")
+                if isinstance(authors_list, list):
+                    author_str = "; ".join(str(a) for a in authors_list[:4])
+                else:
+                    author_str = str(authors_list)
+                forum_id = note.get("forum", note.get("id", ""))
+                oa_url = f"https://openreview.net/forum?id={forum_id}" if forum_id else None
+                return VerificationResult(
+                    key=entry.key,
+                    title=entry.title,
+                    status="verified" if sim >= 0.78 else "partial_match",
+                    confidence=sim,
+                    matched_title=found_title,
+                    open_access_url=oa_url,
+                    note=f"Found on OpenReview (match: {int(sim * 100)}%)",
+                    sources_checked=["OpenReview"],
+                    correct_authors=author_str,
+                )
+    except Exception:
+        pass
+    return None
+
 def _search_google_scholar(entry: BibEntry) -> Optional[VerificationResult]:
     """Google Scholar scrape fallback."""
     if not entry.title:
@@ -742,8 +895,17 @@ def _verify_website(entry: BibEntry) -> VerificationResult:
 # ---------------------------------------------------------------------------
 
 def _check_unpaywall(doi: str) -> Optional[str]:
-    """Check Unpaywall for open access version."""
-    email = os.environ.get("UNPAYWALL_EMAIL", "lni-checker@uni-project.de")
+    """Check Unpaywall for open access version.
+
+    Requires UNPAYWALL_EMAIL environment variable to be set to a real
+    institutional or personal email address, as required by Unpaywall's
+    polite pool policy (https://unpaywall.org/products/api).
+    Returns None silently if the variable is not set — no fake email fallback.
+    """
+    email = os.environ.get("UNPAYWALL_EMAIL", "").strip()
+    if not email or email == "lni-checker@uni-project.de":
+        # No valid email configured — skip rather than violating Unpaywall ToS
+        return None
     try:
         resp = requests.get(f"https://api.unpaywall.org/v2/{doi}?email={email}", timeout=5)
         if resp.status_code == 200:
@@ -819,6 +981,20 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
                 sources_checked=["professor_review"],
             )
     
+    # Check professor false-positive corrections (paper was flagged but professor said REAL)
+    fp_record = get_false_positive(entry.title or "", entry.authors or "")
+    if fp_record:
+        return VerificationResult(
+            key=entry.key,
+            title=entry.title or "",
+            status="verified",
+            confidence=0.95,
+            matched_title=entry.title,
+            note=f"Professor previously corrected this as REAL: {fp_record.get('notes', '')}",
+            sources_checked=["professor_false_positive_correction"],
+            correct_authors=entry.authors,
+        )
+
     # Check if venue is whitelisted (German conference = don't penalize)
     venue = entry.journal or entry.booktitle or entry.publisher or ""
     whitelist_check = is_venue_whitelisted(venue)
@@ -865,13 +1041,14 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     # PHASE 3: Deep search (only if no good match found yet)
     best_so_far = max(all_results, key=lambda r: r.confidence, default=None) if all_results else None
     if not best_so_far or best_so_far.confidence < 0.6:
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             futures = []
             futures.append(executor.submit(_search_arxiv_fallback, entry))
+            futures.append(executor.submit(_search_openreview, entry))   # NeurIPS/ICLR/ICML
             futures.append(executor.submit(_search_google_scholar, entry))
             futures.append(executor.submit(_search_duckduckgo, entry))
-            
-            for future in as_completed(futures, timeout=10):
+
+            for future in as_completed(futures, timeout=12):
                 try:
                     r = future.result()
                     if r:
@@ -880,14 +1057,22 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
                     pass
     
     # =========================================================
-    # NEW: If no results from APIs, try web search + LLM verification
-    # This mimics RefChecker's Stage 2 + Stage 3
+    # Web search + LLM fallback — only fires when composite signals
+    # suggest genuinely ambiguous / SUSPICIOUS entries, not every miss.
+    # This avoids burning Groq/Gemini quota on clearly-absent papers.
     # =========================================================
-    if not all_results:
+    best_after_apis = max(all_results, key=lambda r: r.confidence, default=None) if all_results else None
+    _run_web_search = not all_results  # definitely run if all APIs returned nothing
+
+    if not _run_web_search and best_after_apis and best_after_apis.confidence < 0.5:
+        # APIs found something but low-confidence — worth a web cross-check
+        _run_web_search = True
+
+    if _run_web_search:
         try:
             web_result = verify_with_web_search(
                 {"title": entry.title, "authors": entry.authors, "year": entry.year},
-                "not_found"
+                best_after_apis.status if best_after_apis else "not_found"
             )
             
             if web_result.get("status") == "verified":
@@ -954,6 +1139,27 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             best.doi = r.doi
         if not best.open_access_url and r.open_access_url:
             best.open_access_url = r.open_access_url
+        # Propagate retraction flag from any source
+        if r.is_retracted:
+            best.is_retracted = True
+            best.retraction_doi = best.retraction_doi or r.retraction_doi
+            best.retraction_note = best.retraction_note or r.retraction_note
+            best.status = "retracted"
+        # Propagate corrected metadata (prefer CrossRef over others)
+        if not best.corrected_title and r.corrected_title:
+            best.corrected_title = r.corrected_title
+        if not best.corrected_authors and r.corrected_authors:
+            best.corrected_authors = r.corrected_authors
+        if not best.corrected_year and r.corrected_year:
+            best.corrected_year = r.corrected_year
+        if not best.corrected_journal and r.corrected_journal:
+            best.corrected_journal = r.corrected_journal
+        if not best.corrected_publisher and r.corrected_publisher:
+            best.corrected_publisher = r.corrected_publisher
+        if not best.corrected_volume and r.corrected_volume:
+            best.corrected_volume = r.corrected_volume
+        if not best.corrected_pages and r.corrected_pages:
+            best.corrected_pages = r.corrected_pages
     
     # Boost confidence if multiple sources agree
        
@@ -1076,27 +1282,64 @@ class CrossCheckResult:
 
 
 def cross_check(bib_entries: dict, cited_keys: set) -> CrossCheckResult:
-    # Convert ALL keys to strings for comparison
+    """Cross-check in-text citations against bibliography entries.
+
+    Handles two citation styles independently:
+      - LNI author-year keys  [ABC01]  — exact string match
+      - Numeric keys          [1],[2]  — count-based match only
+        (numeric keys from the body text will NOT be compared as strings against
+        author-year bib keys, which would cause false "cited but missing" alarms)
+    """
     bib_keys = set(str(k) for k in bib_entries.keys())
-    
-    # Extract real cited keys (remove special markers like __numeric_citations__)
-    real_cited = set()
+
+    # Separate LNI keys from numeric markers
+    lni_cited: set = set()
+    numeric_cited_numbers: set = set()
+    has_numeric = False
+
     for k in cited_keys:
         k_str = str(k)
-        if not k_str.startswith('__'):
-            real_cited.add(k_str)
-    
-    # Also handle numeric citations: if we have __NUM_1__, add '1' to real_cited
-    for k in cited_keys:
-        if str(k).startswith('__NUM_'):
-            num = str(k).replace('__NUM_', '').replace('__', '')
-            real_cited.add(num)
-    
+        if k_str == '__numeric_citations__':
+            has_numeric = True
+        elif k_str.startswith('__NUM_'):
+            num = k_str.replace('__NUM_', '').replace('__', '')
+            numeric_cited_numbers.add(num)
+        else:
+            lni_cited.add(k_str)
+
+    # Determine if bib keys are numeric style too
+    bib_numeric_keys = {k for k in bib_keys if re.match(r'^[0-9]+$', k)}
+    bib_lni_keys = bib_keys - bib_numeric_keys
+
     r = CrossCheckResult()
-    r.cited_not_in_bib = sorted(real_cited - bib_keys)
-    r.in_bib_not_cited = sorted(bib_keys - real_cited)
-    r.correctly_used = sorted(real_cited & bib_keys)
-    
+
+    if has_numeric and bib_numeric_keys:
+        # Both sides are numeric — do exact numeric matching
+        r.cited_not_in_bib = sorted(numeric_cited_numbers - bib_numeric_keys)
+        r.in_bib_not_cited = sorted(bib_numeric_keys - numeric_cited_numbers)
+        r.correctly_used = sorted(numeric_cited_numbers & bib_numeric_keys)
+
+    elif has_numeric and not bib_numeric_keys:
+        # Body uses numeric [1][2] but bib uses LNI keys — count-only validation.
+        # We cannot do per-key matching, so we only flag count mismatches.
+        n_cited = len(numeric_cited_numbers)
+        n_bib = len(bib_lni_keys)
+        r.cited_not_in_bib = []   # cannot determine which specific key is missing
+        r.in_bib_not_cited = []
+        r.correctly_used = list(bib_lni_keys)  # treat all bib entries as matched
+        if n_cited > n_bib:
+            # More citations than bib entries — surface as a single synthetic warning
+            r.cited_not_in_bib = [f"__NUMERIC_OVERFLOW__ ({n_cited} citations > {n_bib} bib entries)"]
+        elif n_bib > n_cited + 2:
+            # Noticeably more bib entries than citations
+            r.in_bib_not_cited = [f"__NUMERIC_UNDERREF__ ({n_bib} bib entries, only {n_cited} numeric citations)"]
+
+    else:
+        # Standard LNI author-year matching
+        r.cited_not_in_bib = sorted(lni_cited - bib_lni_keys)
+        r.in_bib_not_cited = sorted(bib_lni_keys - lni_cited)
+        r.correctly_used = sorted(lni_cited & bib_lni_keys)
+
     return r
 
 

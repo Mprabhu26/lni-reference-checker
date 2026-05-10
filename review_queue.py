@@ -72,19 +72,119 @@ def init_review_db():
 def _init_default_whitelist():
     """Add known German academic venues to whitelist"""
     german_venues = [
+        # === GI / LNI series (high trust) ===
         ("Lecture Notes in Informatics (LNI)", "series", "Germany", "high"),
+        ("LNI", "series", "Germany", "high"),
         ("GI Jahrestagung", "conference", "Germany", "high"),
         ("INFORMATIK", "conference", "Germany", "high"),
-        ("BTW (Datenbanksysteme für Business, Technologie und Web)", "conference", "Germany", "high"),
-        ("SKILL (Studierendenkonferenz Informatik)", "conference", "Germany", "high"),
+        ("Gesellschaft fur Informatik", "organization", "Germany", "high"),
+        ("Gesellschaft für Informatik", "organization", "Germany", "high"),
+
+        # === German DB / IS conferences ===
+        ("BTW", "conference", "Germany", "high"),
+        ("Datenbanksysteme fur Business Technologie und Web", "conference", "Germany", "high"),
+        ("Datenbanksysteme für Business, Technologie und Web", "conference", "Germany", "high"),
+        ("MKWI", "conference", "Germany", "high"),
+        ("Multikonferenz Wirtschaftsinformatik", "conference", "Germany", "high"),
+        ("WI", "conference", "Germany", "high"),
+        ("Wirtschaftsinformatik", "conference", "Germany", "high"),
+        ("EMISA", "conference", "Germany", "medium"),
+        ("Modellierung", "conference", "Germany", "medium"),
+
+        # === German SE / SWE conferences ===
+        ("Software Engineering", "conference", "Germany", "high"),
         ("Software Engineering & Management", "conference", "Germany", "high"),
-        ("Datenbanksysteme für Business", "conference", "Germany", "medium"),
-        ("Technologie und Web (BTW)", "conference", "Germany", "medium"),
-        ("Ausgezeichnete Informatikdissertationen", "series", "Germany", "high"),
+        ("SE&M", "conference", "Germany", "high"),
+        ("SKILL", "conference", "Germany", "high"),
+        ("Studierendenkonferenz Informatik", "conference", "Germany", "high"),
+        ("SANER", "conference", "Germany", "medium"),
+        ("ICSME", "conference", "Germany", "medium"),
+
+        # === German AI / ML / KI conferences ===
+        ("KI", "conference", "Germany", "high"),
+        ("Kunstliche Intelligenz", "conference", "Germany", "high"),
+        ("Künstliche Intelligenz", "conference", "Germany", "high"),
+        ("LWDA", "conference", "Germany", "high"),
+        ("Lernen Wissen Daten Analysen", "conference", "Germany", "high"),
+        ("KDML", "conference", "Germany", "medium"),
+        ("FGWM", "conference", "Germany", "medium"),
+
+        # === German HCI / usability conferences ===
+        ("Mensch und Computer", "conference", "Germany", "high"),
+        ("MuC", "conference", "Germany", "high"),
+        ("GI Mensch", "conference", "Germany", "high"),
+        ("UP", "conference", "Germany", "medium"),
+        ("Usability Professionals", "conference", "Germany", "medium"),
+
+        # === German e-learning / education ===
+        ("DeLFI", "conference", "Germany", "high"),
+        ("DELFI", "conference", "Germany", "high"),
+        ("GMW", "conference", "Germany", "medium"),
+        ("Gesellschaft fur Medien in der Wissenschaft", "conference", "Germany", "medium"),
+        ("Gesellschaft für Medien in der Wissenschaft", "conference", "Germany", "medium"),
+        ("INFOS", "conference", "Germany", "medium"),
+
+        # === German security / biometrics ===
+        ("BIOSIG", "conference", "Germany", "high"),
+        ("Sicherheit", "conference", "Germany", "high"),
+        ("GI Sicherheit", "conference", "Germany", "high"),
+        ("TRUST", "conference", "Germany", "medium"),
+        ("D-A-CH Security", "conference", "Germany", "medium"),
+
+        # === German health informatics ===
+        ("MIK", "conference", "Germany", "high"),
+        ("Medizinische Informatik", "conference", "Germany", "high"),
+        ("GMDS", "conference", "Germany", "high"),
+        ("eHealth", "conference", "Germany", "medium"),
+        ("GI Health", "conference", "Germany", "medium"),
+
+        # === German networking / distributed systems ===
+        ("KuVS", "conference", "Germany", "medium"),
+        ("KIVS", "conference", "Germany", "medium"),
+        ("Kommunikation in Verteilten Systemen", "conference", "Germany", "medium"),
+        ("GI Betriebssysteme", "conference", "Germany", "medium"),
+
+        # === German geographic / spatial information ===
+        ("AGIT", "conference", "Germany", "medium"),
+        ("GeoInformatik", "conference", "Germany", "medium"),
+        ("GeNeMe", "conference", "Germany", "medium"),
+
+        # === German journals (GI-published or closely affiliated) ===
         ("Informatik Spektrum", "journal", "Germany", "high"),
-        ("it - Information Technology", "journal", "Germany", "medium"),
-        ("Praxis der Informationsverarbeitung und Kommunikation", "journal", "Germany", "medium"),
-        ("Zeitschrift für Informatik", "journal", "Germany", "medium"),
+        ("it - Information Technology", "journal", "Germany", "high"),
+        ("it Information Technology", "journal", "Germany", "high"),
+        ("Praxis der Informationsverarbeitung und Kommunikation", "journal", "Germany", "high"),
+        ("PIK", "journal", "Germany", "high"),
+        ("Datenbank-Spektrum", "journal", "Germany", "high"),
+        ("Datenbank Spektrum", "journal", "Germany", "high"),
+        ("WIRTSCHAFTSINFORMATIK", "journal", "Germany", "high"),
+        ("Business and Information Systems Engineering", "journal", "Germany", "high"),
+        ("BISE", "journal", "Germany", "high"),
+        ("Electronic Markets", "journal", "Germany", "high"),
+        ("Journal of Business Economics", "journal", "Germany", "medium"),
+        ("Zeitschrift fur Betriebswirtschaft", "journal", "Germany", "medium"),
+        ("Softwaretechnik-Trends", "journal", "Germany", "medium"),
+
+        # === Ausgezeichnete Dissertationen series ===
+        ("Ausgezeichnete Informatikdissertationen", "series", "Germany", "high"),
+        ("Dissertationspreis", "series", "Germany", "high"),
+
+        # === Austrian / Swiss German-language venues (also commonly in LNI) ===
+        ("OCG", "conference", "Austria", "medium"),
+        ("Österreichische Computer Gesellschaft", "organization", "Austria", "medium"),
+        ("Osterreichische Computer Gesellschaft", "organization", "Austria", "medium"),
+        ("Informatiktage", "conference", "Germany", "medium"),
+        ("INFOS Informatik", "conference", "Germany", "medium"),
+
+        # === Generic LNI workshop series keywords ===
+        ("Workshop", "conference", "Germany", "low"),    # low trust — many non-GI workshops
+        ("GI Workshop", "conference", "Germany", "medium"),
+        ("GI-Workshop", "conference", "Germany", "medium"),
+        ("Fachtagung", "conference", "Germany", "medium"),
+        ("Fachgesprach", "conference", "Germany", "medium"),
+        ("Fachgespräch", "conference", "Germany", "medium"),
+        ("Dagstuhl", "conference", "Germany", "high"),
+        ("Schloss Dagstuhl", "conference", "Germany", "high"),
     ]
     
     conn = sqlite3.connect(str(REVIEW_DB))
@@ -100,20 +200,38 @@ def _init_default_whitelist():
     conn.close()
 
 
-def add_review_decision(title: str, authors: str, decision: str, note: str = "", 
-                        verified_url: str = "", verified_doi: str = "") -> bool:
-    """Add or update a professor's review decision"""
+def add_review_decision(title: str, authors: str, decision: str, note: str = "",
+                        verified_url: str = "", verified_doi: str = "",
+                        ai_had_said: str = "") -> bool:
+    """Add or update a professor's review decision.
+
+    If decision='verified' and ai_had_said='FAKE' (or SUSPICIOUS), also write a
+    false_positives record so future checks don't re-flag the paper.
+    """
+    if not REVIEW_DB.exists():
+        init_review_db()
+
     try:
         conn = sqlite3.connect(str(REVIEW_DB))
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            INSERT OR REPLACE INTO review_decisions 
+            INSERT OR REPLACE INTO review_decisions
             (paper_title, paper_authors, decision, professor_note, verified_url, verified_doi, decision_date)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (title[:500], authors[:300] if authors else "", decision, note[:1000], 
+        """, (title[:500], authors[:300] if authors else "", decision, note[:1000],
               verified_url, verified_doi, datetime.now().isoformat()))
-        
+
+        # If the professor is verifying something the AI called FAKE/SUSPICIOUS,
+        # record it as a false positive so it won't be flagged again.
+        if decision == "verified" and ai_had_said in ("FAKE", "SUSPICIOUS", "fake", "suspicious"):
+            cursor.execute("""
+                INSERT INTO false_positives
+                (paper_title, paper_authors, ai_verdict, professor_correction, correction_date, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (title[:500], authors[:300] if authors else "", ai_had_said.upper(),
+                  "REAL", datetime.now().isoformat(), note[:500]))
+
         conn.commit()
         conn.close()
         return True
@@ -205,6 +323,43 @@ def get_pending_reviews(limit: int = 20) -> List[Dict]:
     conn.close()
     
     return [dict(r) for r in results]
+
+
+
+def get_false_positive(title: str, authors: str = "") -> Optional[Dict]:
+    """Check if this paper was previously corrected as a false positive.
+
+    Returns the record if a professor marked it as REAL after the AI flagged it,
+    so subsequent checks skip re-flagging it.
+    """
+    if not title or not REVIEW_DB.exists():
+        return None
+
+    try:
+        conn = sqlite3.connect(str(REVIEW_DB))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        if authors:
+            cursor.execute(
+                """SELECT * FROM false_positives
+                   WHERE paper_title = ? AND paper_authors = ?
+                   ORDER BY correction_date DESC LIMIT 1""",
+                (title, authors),
+            )
+        else:
+            cursor.execute(
+                """SELECT * FROM false_positives
+                   WHERE paper_title = ?
+                   ORDER BY correction_date DESC LIMIT 1""",
+                (title,),
+            )
+
+        result = cursor.fetchone()
+        conn.close()
+        return dict(result) if result else None
+    except Exception:
+        return None
 
 
 def get_review_stats() -> Dict:

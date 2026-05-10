@@ -153,7 +153,18 @@ def _vr_to_dicts(api_results_raw: list) -> list:
          "open_access_url": vr.open_access_url, "note": vr.note,
          "sources_checked": vr.sources_checked, "web_evidence": vr.web_evidence,
          "correct_authors": vr.correct_authors,
-         "version_note": vr.version_note}
+         "version_note": vr.version_note,
+         "is_retracted": getattr(vr, "is_retracted", False),
+         "retraction_doi": getattr(vr, "retraction_doi", None),
+         "retraction_note": getattr(vr, "retraction_note", None),
+         "corrected_title": getattr(vr, "corrected_title", None),
+         "corrected_authors": getattr(vr, "corrected_authors", None),
+         "corrected_year": getattr(vr, "corrected_year", None),
+         "corrected_journal": getattr(vr, "corrected_journal", None),
+         "corrected_publisher": getattr(vr, "corrected_publisher", None),
+         "corrected_volume": getattr(vr, "corrected_volume", None),
+         "corrected_pages": getattr(vr, "corrected_pages", None),
+         }
         for vr in api_results_raw
     ]
 
@@ -206,6 +217,16 @@ def _assemble_result(
             "ai_reasoning": ai.get("reasoning", ""),
             "ai_risk_factors": ai.get("risk_factors", []),
             "version_note": vr.version_note,
+            "is_retracted": getattr(vr, "is_retracted", False),
+            "retraction_doi": getattr(vr, "retraction_doi", None),
+            "retraction_note": getattr(vr, "retraction_note", None),
+            "corrected_title": getattr(vr, "corrected_title", None),
+            "corrected_authors": getattr(vr, "corrected_authors", None),
+            "corrected_year": getattr(vr, "corrected_year", None),
+            "corrected_journal": getattr(vr, "corrected_journal", None),
+            "corrected_publisher": getattr(vr, "corrected_publisher", None),
+            "corrected_volume": getattr(vr, "corrected_volume", None),
+            "corrected_pages": getattr(vr, "corrected_pages", None),
         })
 
     api_keys = {vr.key for vr in api_results_raw}
@@ -292,6 +313,7 @@ def _assemble_result(
         "verification": verification_output,
         "verification_ai_summary": verification_result.get("summary", ""),
         "arxiv_version_notes": version_notes,
+        "is_scanned": bool(sections.get("is_scanned")),
         "summary": {
             "missing_from_bib": len(xcheck.cited_not_in_bib),
             "uncited_entries": len(xcheck.in_bib_not_cited),
@@ -300,6 +322,7 @@ def _assemble_result(
             "fake_candidates": verification_result.get("fake_count", 0),
             "suspicious": verification_result.get("suspicious_count", 0),
             "verified": sum(1 for v in verification_output if v["status"] == "verified"),
+            "retracted": sum(1 for v in verification_output if v.get("is_retracted")),
             "style_issues": len(style_suggestions),
             "open_access": sum(1 for v in verification_output if v.get("open_access_url")),
             "duplicates": len(duplicates),
@@ -791,6 +814,77 @@ Return JSON with verdict and reasoning."""
     return jsonify({"verdict": ai_text, "ai_source": ai_source, "flagged_count": len(flagged)})
 
 
+
+@app.route("/api/export-bibtex", methods=["POST"])
+def export_bibtex():
+    """Generate corrected BibTeX for references that have database-corrected metadata."""
+    data = request.get_json()
+    verification = data.get("verification", [])
+    bibliography = data.get("bibliography", [])
+
+    bib_by_key = {b["key"]: b for b in bibliography}
+    lines = [
+        "% LNI Reference Checker — Corrected BibTeX Export",
+        "% Generated for references where database metadata was found.",
+        "% Review each entry — some fields may need manual adjustment.",
+        "",
+    ]
+
+    exported = 0
+    for v in verification:
+        key = v.get("key", "")
+        orig = bib_by_key.get(key, {})
+        entry_type = orig.get("type") or orig.get("entry_type") or "misc"
+        entry_type = entry_type.lower().replace("@", "")
+
+        # Only export if we have corrected data or a retraction
+        has_correction = any(v.get(f) for f in (
+            "corrected_title", "corrected_authors", "corrected_year",
+            "corrected_journal", "corrected_publisher", "corrected_volume", "corrected_pages"
+        ))
+        is_retracted = v.get("is_retracted", False)
+
+        if not has_correction and not is_retracted:
+            continue
+
+        if is_retracted:
+            lines.append(f"% ⚠ RETRACTED: {v.get('retraction_note', 'See CrossRef for retraction notice')}")
+
+        title  = v.get("corrected_title")  or orig.get("title", "")
+        authors= v.get("corrected_authors")or orig.get("authors", "")
+        year   = v.get("corrected_year")   or orig.get("year", "")
+        journal= v.get("corrected_journal")or orig.get("journal", "")
+        publisher = v.get("corrected_publisher") or orig.get("publisher", "")
+        volume = v.get("corrected_volume") or orig.get("volume", "")
+        pages  = v.get("corrected_pages")  or orig.get("pages", "")
+        doi    = v.get("doi") or orig.get("doi", "")
+        url    = v.get("open_access_url") or orig.get("url", "")
+
+        lines.append(f"@{entry_type}{{{key},")
+        if title:    lines.append(f"  title     = {{{{{title}}}}},")
+        if authors:  lines.append(f"  author    = {{{authors}}},")
+        if year:     lines.append(f"  year      = {{{year}}},")
+        if journal:  lines.append(f"  journal   = {{{{{journal}}}}},")
+        if publisher:lines.append(f"  publisher = {{{{{publisher}}}}},")
+        if volume:   lines.append(f"  volume    = {{{volume}}},")
+        if pages:    lines.append(f"  pages     = {{{pages}}},")
+        if doi:      lines.append(f"  doi       = {{{doi}}},")
+        if url:      lines.append(f"  url       = {{{url}}},")
+        lines.append("}\n")
+        exported += 1
+
+    if exported == 0:
+        return jsonify({"error": "No entries with database-corrected metadata found. Run with 'Verify references online' enabled."}), 400
+
+    bibtex_str = "\n".join(lines)
+    from flask import Response
+    return Response(
+        bibtex_str,
+        mimetype="text/plain",
+        headers={"Content-Disposition": "attachment; filename=corrected_references.bib"}
+    )
+
+
 @app.route("/batch", methods=["POST"])
 def batch_check():
     uploaded = request.files.getlist("files")
@@ -854,18 +948,19 @@ def submit_review():
     url = data.get("url", "")
     note = data.get("note", "")
     
-    # In real implementation, you'd look up the full paper details
+    # ai_verdict lets add_review_decision auto-record a false_positive
+    ai_verdict = data.get("ai_verdict", "")   # "FAKE" / "SUSPICIOUS" from frontend
+    authors    = data.get("authors", "")
+
     success = add_review_decision(
         title=title or f"Paper_{key}",
-        authors="",
+        authors=authors,
         decision=decision,
         note=note,
-        verified_url=url
+        verified_url=url,
+        ai_had_said=ai_verdict,
     )
-    
-    if decision == "verified":
-        add_false_positive(title, "", "AI_flagged", f"Professor marked as real: {note}")
-    
+
     return jsonify({"success": success})
 
 

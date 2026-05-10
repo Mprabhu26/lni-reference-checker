@@ -642,6 +642,74 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
 # 5. AI verification (UPDATED with composite scoring option)
 # ---------------------------------------------------------------------------
 
+
+def _llm_reverify_medium_confidence(entry: dict, vr: dict, matched_title: str) -> Optional[dict]:
+    """Re-verify a medium-confidence (0.45-0.74) database match using the LLM.
+
+    When a database found a title that's similar but not identical, the LLM checks:
+    - Is the cited metadata (authors, year, venue) consistent with the database result?
+    - Is this a legitimate version/edition mismatch, or a fabricated paper?
+
+    This mirrors Russinovich refchecker's core innovation: use the LLM as a second
+    opinion on borderline API matches before declaring FAKE or SUSPICIOUS.
+
+    Returns a verdict dict or None if LLM is not available.
+    """
+    if not _ai_available():
+        return None
+
+    title = entry.get("title", "")
+    authors = entry.get("authors", "")
+    year = entry.get("year", "")
+    doi = entry.get("doi", "")
+    api_confidence = round(vr.get("confidence", 0), 2)
+    api_sources = vr.get("sources_checked", [])
+
+    prompt = f"""You are an expert academic librarian doing a second-opinion check.
+
+A citation checker found a medium-confidence database match. Determine if this is:
+A) A real paper cited with minor metadata errors (e.g. different edition, arXiv vs published version)
+B) A suspicious citation that needs professor review
+C) A likely fabricated reference
+
+CITED IN PAPER:
+  Title:   {title}
+  Authors: {authors}
+  Year:    {year}
+  DOI:     {doi or "none"}
+
+DATABASE FOUND (confidence {api_confidence}):
+  Title:   {matched_title}
+  Sources: {", ".join(api_sources)}
+
+RULES:
+- If titles are conceptually the same paper with minor wording differences → A (REAL)
+- If year is off by 1-2 and rest matches → A (REAL), note version mismatch
+- If authors or venue are completely different from what you know → C (FAKE)
+- If you simply cannot confirm → B (SUSPICIOUS)
+- Do NOT call something FAKE unless you are genuinely confident it is fabricated
+
+Respond ONLY with valid JSON:
+{{"verdict": "REAL", "confidence": 0.82, "reasoning": "one sentence", "is_version_mismatch": false, "version_note": ""}}
+"""
+    try:
+        raw = _call_ai(prompt, max_tokens=200)
+        raw = raw.strip().replace("```json", "").replace("```", "").strip()
+        result = json.loads(raw)
+        verdict = result.get("verdict", "SUSPICIOUS").upper()
+        if verdict not in ("REAL", "SUSPICIOUS", "FAKE"):
+            verdict = "SUSPICIOUS"
+        return {
+            "verdict": verdict,
+            "confidence": float(result.get("confidence", 0.6)),
+            "reasoning": result.get("reasoning", "LLM re-verification"),
+            "version_note": result.get("version_note", ""),
+            "is_version_mismatch": bool(result.get("is_version_mismatch", False)),
+        }
+    except Exception:
+        return None
+
+
 def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     """
     Determine REAL / SUSPICIOUS / FAKE for each reference.
@@ -710,7 +778,33 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                     "risk_factors": composite["risk_factors"],
                 }
             else:
-                # Borderline - send to AI
+                # Medium-confidence database match — try LLM re-verification first
+                # (Russinovich-style: ask LLM if the API match is a valid version/edition)
+                matched_title = vr.get("matched_title", "")
+                api_conf = vr.get("confidence", 0)
+                if matched_title and 0.45 <= api_conf <= 0.74:
+                    reverify = _llm_reverify_medium_confidence(entry, vr, matched_title)
+                    if reverify and reverify["verdict"] == "REAL":
+                        # LLM confirmed it's real — skip AI batch
+                        pre_screen_cache[entry["key"]] = {
+                            "verdict": "REAL",
+                            "confidence": reverify["confidence"],
+                            "reasoning": f"LLM re-verified medium match: {reverify['reasoning']}",
+                            "risk_factors": [],
+                            "version_note": reverify.get("version_note", ""),
+                        }
+                        if reverify.get("is_version_mismatch"):
+                            pre_screen_cache[entry["key"]]["reasoning"] += " (version mismatch — paper is real)"
+                        continue
+                    elif reverify and reverify["verdict"] == "FAKE":
+                        pre_screen_cache[entry["key"]] = {
+                            "verdict": "FAKE",
+                            "confidence": reverify["confidence"],
+                            "reasoning": f"LLM re-verification: {reverify['reasoning']}",
+                            "risk_factors": ["llm_reverify_fake"],
+                        }
+                        continue
+                # Borderline - send to AI batch
                 needs_ai.append((entry, vr, title_sim, composite))
 
     ai_verdicts_by_key: Dict[str, dict] = {}
