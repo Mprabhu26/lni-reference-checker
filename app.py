@@ -193,6 +193,7 @@ def _assemble_result(
     cited_keys, has_numeric, xcheck, citation_contexts,
     duplicates, self_citations, style_suggestions,
     api_results_raw, verification_result, overall, ai_parse_improvements,
+    is_scanned=False,
 ):
     ai_verdicts_by_key = {v["key"]: v for v in verification_result.get("verdicts", [])}
     vr_by_key = {vr.key: vr for vr in api_results_raw}
@@ -313,7 +314,7 @@ def _assemble_result(
         "verification": verification_output,
         "verification_ai_summary": verification_result.get("summary", ""),
         "arxiv_version_notes": version_notes,
-        "is_scanned": bool(sections.get("is_scanned")),
+        "is_scanned": bool(is_scanned),
         "summary": {
             "missing_from_bib": len(xcheck.cited_not_in_bib),
             "uncited_entries": len(xcheck.in_bib_not_cited),
@@ -525,6 +526,7 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             verification_result=verification_result,
             overall=overall,
             ai_parse_improvements=ai_parse_improvements,
+            is_scanned=bool(sections.get("is_scanned")),
         )
         
         elapsed = time.time() - start_time
@@ -681,6 +683,7 @@ def _run_full_check(main_path: str, bib_path: str = None,
         verification_result=verification_result,
         overall=overall,
         ai_parse_improvements=ai_parse_improvements,
+        is_scanned=bool(sections.get("is_scanned")),
     )
 
 
