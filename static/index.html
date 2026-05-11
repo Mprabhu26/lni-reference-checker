@@ -60,9 +60,10 @@ main.sidebar-collapsed .sidebar{width:0;border:none}
 .mode-btn.active{background:var(--surface);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,0.08)}
 
 /* ── Upload zone ────────────────────────────────────────────────────────── */
-.upload-zone{border:2px dashed var(--border2);border-radius:var(--r);padding:20px 14px;text-align:center;cursor:pointer;position:relative;transition:all var(--transition);background:var(--bg)}
+.upload-zone{border:2px dashed var(--border2);border-radius:var(--r);padding:20px 14px;text-align:center;cursor:pointer;position:relative;transition:all var(--transition);background:var(--bg);display:block}
 .upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:var(--green-bg)}
-.upload-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.upload-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;z-index:1}
+.batch-zone{border:2px dashed var(--blue-border);border-radius:var(--r);padding:20px 14px;text-align:center;cursor:pointer;position:relative;background:var(--blue-bg);transition:all var(--transition);display:block}
 .up-icon{width:40px;height:40px;border-radius:10px;background:var(--green-bg);border:1px solid var(--green-border);display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:18px}
 .up-text{font-size:12px;color:var(--text2);font-weight:500;margin-bottom:3px}
 .up-hint{font-size:11px;color:var(--text3)}
@@ -79,14 +80,12 @@ main.sidebar-collapsed .sidebar{width:0;border:none}
 .chip-size{font-size:11px;color:var(--text3);margin-top:1px}
 .chip-rm{width:20px;height:20px;border:none;background:none;cursor:pointer;color:var(--text3);border-radius:4px;font-size:13px;display:flex;align-items:center;justify-content:center}
 .chip-rm:hover{background:var(--surface);color:var(--red)}
-.bib-attach{display:none;margin-top:6px;border:1px dashed var(--border2);border-radius:6px;padding:7px 10px;cursor:pointer;position:relative;font-size:11px;color:var(--text3);transition:all var(--transition);align-items:center;gap:8px}
-.bib-attach.show{display:flex}
+.bib-attach{margin-top:6px;border:1px dashed var(--border2);border-radius:6px;padding:7px 10px;cursor:pointer;position:relative;font-size:11px;color:var(--text3);transition:all var(--transition);align-items:center;gap:8px}
 .bib-attach:hover{border-color:var(--blue);color:var(--blue)}
-.bib-attach input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.bib-attach input{position:absolute;inset:0;opacity:0;cursor:pointer;z-index:1}
 .bib-nm{font-size:11px;color:var(--blue);margin-top:3px}
-.batch-zone{border:2px dashed var(--blue-border);border-radius:var(--r);padding:20px 14px;text-align:center;cursor:pointer;position:relative;background:var(--blue-bg);transition:all var(--transition)}
-.batch-zone:hover{border-color:var(--blue)}
-.batch-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.batch-zone:hover,.batch-zone:focus-within{border-color:var(--blue)}
+.batch-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;z-index:1}
 .batch-files{display:none;flex-direction:column;gap:3px;margin-top:6px;max-height:120px;overflow-y:auto}
 .batch-file{font-size:11px;color:var(--text2);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:3px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .opt-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}
@@ -324,8 +323,8 @@ main.sidebar-collapsed .sidebar{width:0;border:none}
       </div>
       <div id="singleMode">
         <div class="sec-lbl">Upload Paper</div>
-        <div class="upload-zone" id="dropZone">
-          <input type="file" id="fileInput" accept=".pdf,.docx,.tex,.latex"/>
+        <label class="upload-zone" id="dropZone" for="fileInput" role="button" tabindex="0" aria-label="Upload file">
+          <input type="file" id="fileInput" accept=".pdf,.docx,.tex,.latex" style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;z-index:1"/>
           <div class="up-icon">📄</div>
           <div class="up-text">Drop file or click to browse</div>
           <div class="up-hint">Student submission</div>
@@ -334,25 +333,25 @@ main.sidebar-collapsed .sidebar{width:0;border:none}
             <span class="fmt fmt-docx">DOCX</span>
             <span class="fmt fmt-tex">LaTeX</span>
           </div>
-        </div>
+        </label>
         <div class="file-chip" id="fileChip">
           <div class="chip-icon">📄</div>
           <div class="chip-info"><div class="chip-name" id="chipName"></div><div class="chip-size" id="chipSize"></div></div>
           <button class="chip-rm" onclick="removeFile()" aria-label="Remove file">✕</button>
         </div>
-        <div class="bib-attach" id="bibAttach">
-          <input type="file" id="bibInput" accept=".bib"/>
+        <label class="bib-attach" id="bibAttach" for="bibInput" style="display:none">
+          <input type="file" id="bibInput" accept=".bib" style="position:absolute;inset:0;opacity:0;cursor:pointer;z-index:1"/>
           <span>📚</span><span>Attach .bib <em style="color:var(--text3)">(optional)</em></span>
-        </div>
+        </label>
         <div class="bib-nm" id="bibNm"></div>
       </div>
       <div id="batchMode" style="display:none">
         <div class="sec-lbl">Upload Papers</div>
-        <div class="batch-zone">
-          <input type="file" id="batchInput" accept=".pdf,.docx,.tex,.latex" multiple/>
+        <label class="batch-zone" for="batchInput" role="button" tabindex="0">
+          <input type="file" id="batchInput" accept=".pdf,.docx,.tex,.latex" multiple style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;z-index:1"/>
           <div class="up-icon" style="background:var(--blue-bg);border-color:var(--blue-border)">📂</div>
           <div class="up-text" style="color:var(--blue)">Select multiple files</div>
-        </div>
+        </label>
         <div class="batch-files" id="batchFileList"></div>
       </div>
       <div class="sec-lbl">Options</div>
@@ -466,17 +465,34 @@ $('modeSingle').onclick=()=>{batchMode=false;$('modeSingle').classList.add('acti
 $('modeBatch').onclick=()=>{batchMode=true;$('modeBatch').classList.add('active');$('modeSingle').classList.remove('active');$('singleMode').style.display='none';$('batchMode').style.display='';$('runBtn').style.display='none';$('batchRunBtn').style.display='';showState('empty')};
 
 // ── File inputs ────────────────────────────────────────────────────────────
-$('fileInput').addEventListener('change',e=>{if(e.target.files[0])setFile(e.target.files[0])});
+$('fileInput').addEventListener('change',function(){
+  if(this.files&&this.files.length>0){setFile(this.files[0])}
+});
 $('bibInput').addEventListener('change',e=>{if(e.target.files[0]){selBib=e.target.files[0];$('bibNm').textContent='📗 '+selBib.name}});
-$('dropZone').addEventListener('dragover',e=>{e.preventDefault();$('dropZone').classList.add('drag')});
+$('dropZone').addEventListener('dragover',e=>{e.preventDefault();e.stopPropagation();$('dropZone').classList.add('drag')});
 $('dropZone').addEventListener('dragleave',()=>$('dropZone').classList.remove('drag'));
+$('dropZone').addEventListener('keydown',e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();$('fileInput').click()}});
 $('dropZone').addEventListener('drop',e=>{e.preventDefault();$('dropZone').classList.remove('drag');if(e.dataTransfer.files[0])setFile(e.dataTransfer.files[0])});
-function setFile(f){selFile=f;$('fileChip').classList.add('show');$('chipName').textContent=f.name;$('chipSize').textContent=(f.size/1024).toFixed(1)+' KB';$('bibAttach').classList.toggle('show',/\.(tex|latex)$/i.test(f.name));$('runBtn').disabled=false}
-function removeFile(){selFile=null;$('fileInput').value='';$('fileChip').classList.remove('show');$('bibAttach').classList.remove('show');$('runBtn').disabled=true}
-$('batchInput').addEventListener('change',e=>{
-  selBatch=Array.from(e.target.files);
-  const l=$('batchFileList');l.style.display=selBatch.length?'flex':'none';
-  l.innerHTML=selBatch.map(f=>`<div class="batch-file">📄 ${esc(f.name)}</div>`).join('');
+function setFile(f){
+  selFile=f;
+  const chip=$('fileChip');
+  chip.style.display='flex';
+  chip.style.marginTop='8px';
+  $('chipName').textContent=f.name;
+  $('chipSize').textContent=(f.size/1024).toFixed(1)+' KB';
+  const isTex=/\.(tex|latex)$/i.test(f.name);
+  $('bibAttach').style.display=isTex?'flex':'none';
+  $('runBtn').disabled=false;
+  // Scroll sb-body to show the chip
+  const sb=$('fileChip').closest('.sb-body');
+  if(sb)sb.scrollTop=sb.scrollHeight;
+}
+function removeFile(){selFile=null;try{$('fileInput').value=''}catch(e){};$('fileChip').style.display='none';$('bibAttach').style.display='none';$('runBtn').disabled=true}
+$('batchInput').addEventListener('change',function(){
+  selBatch=Array.from(this.files||[]);
+  const l=$('batchFileList');
+  l.style.display=selBatch.length?'flex':'none';
+  l.innerHTML=selBatch.map(f=>`<div class="batch-file">📄 ${esc(f.name)} <span style="float:right;color:var(--text3)">${(f.size/1024).toFixed(0)}KB</span></div>`).join('');
   $('batchRunBtn').disabled=!selBatch.length;
 });
 $('verifyToggle').onclick=function(){verifyOn=!verifyOn;this.classList.toggle('on',verifyOn);this.setAttribute('aria-pressed',verifyOn)};
