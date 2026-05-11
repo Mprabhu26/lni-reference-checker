@@ -989,7 +989,7 @@ function renderBatch(data){
   $('batchBody').innerHTML=files.map((f,i)=>{
     if(f.error)return`<tr><td>${i+1}</td><td>${esc(f.filename)}</td><td colspan="5" style="color:var(--red)">Error: ${esc(f.error)}</td></tr>`;
     const sc=f.score||{},sm=f.summary||{};const g=sc.grade||'?';const gl=g[0]||'F';
-    return`<tr><td>${i+1}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.filename)}</td><td><strong>${sc.score??'—'}</strong></td><td><span class="gp g${gl}">${g}</span></td><td style="color:${(sm.fake_candidates||0)?'var(--red)':'var(--text3)'}">${sm.fake_candidates||0}</td><td style="color:${(sm.retracted||0)?'var(--red)':'var(--text3)';}">${sm.retracted||0}</td><td style="color:${(sm.missing_from_bib||0)?'var(--red)':'var(--text3)'}">${sm.missing_from_bib||0}</td></tr>`;
+    return`<tr><td>${i+1}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.filename)}</td><td><strong>${sc.score??'—'}</strong></td><td><span class="gp g${gl}">${g}</span></td><td style="color:${(sm.fake_candidates||0)?'var(--red)':'var(--text3)'}">${sm.fake_candidates||0}</td><td style="color:${(sm.retracted||0)?'var(--red)':'var(--text3)'}">${sm.retracted||0}</td><td style="color:${(sm.missing_from_bib||0)?'var(--red)':'var(--text3)'}">${sm.missing_from_bib||0}</td></tr>`;
   }).join('');
 }
 
