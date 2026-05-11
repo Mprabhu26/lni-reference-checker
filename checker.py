@@ -1393,21 +1393,52 @@ def check_lni_macros(body_text: str) -> list:
     return suggestions
 
 
-def compute_score(bib_list, xcheck, verification_results, style_suggestions, duplicates, ai_fake_count=0):
+def compute_score(bib_list, xcheck, verification_results, style_suggestions, duplicates,
+                  ai_fake_count=0, retracted_count=0, year_mismatches=0, author_mismatches=0):
+    """Compute a 0-100 score with detailed per-category penalty breakdown.
+
+    Penalty table (per-item deduction, max cap):
+      Retracted citation          -25  (cap 50)  — citing retracted work, very serious
+      Missing from bibliography   -10  (cap 30)  — in-text key has no bib entry
+      Likely fabricated ref       -15  (cap 45)  — AI flagged as hallucinated
+      Year mismatch               - 8  (cap 24)  — cited year ≠ CrossRef year by >1
+      Author mismatch             - 5  (cap 20)  — cited authors don't match DB
+      Cited nowhere in text       - 5  (cap 20)  — orphan bib entry
+      Incomplete LNI entry        - 5  (cap 20)  — missing required fields
+      Duplicate entries           - 5  (cap 10)  — same paper listed twice
+      LNI style violations        - 2  (cap  6)  — macro / formatting issues
+    """
     score, penalties = 100, []
-    for label, count, per_item, cap in [
-        ("Missing from bibliography", len(xcheck.cited_not_in_bib), 10, 30),
-        ("Cited nowhere in text", len(xcheck.in_bib_not_cited), 5, 20),
-        ("Incomplete entries", sum(1 for e in bib_list if e.completeness_issues), 5, 20),
-        ("Likely fabricated references", ai_fake_count, 15, 45),
-        ("Duplicate entries", len(duplicates), 5, 10),
-        ("LNI style violations", len(style_suggestions), 2, 6),
-    ]:
+
+    rows = [
+        ("Retracted papers cited",      retracted_count,      25, 50),
+        ("Missing from bibliography",   len(xcheck.cited_not_in_bib), 10, 30),
+        ("Likely fabricated references",ai_fake_count,        15, 45),
+        ("Year mismatch (>1 yr off)",   year_mismatches,       8, 24),
+        ("Author mismatch",             author_mismatches,     5, 20),
+        ("Cited nowhere in text",       len(xcheck.in_bib_not_cited), 5, 20),
+        ("Incomplete LNI entries",      sum(1 for e in bib_list if e.completeness_issues), 5, 20),
+        ("Duplicate entries",           len(duplicates),       5, 10),
+        ("LNI style violations",        len(style_suggestions),2,  6),
+    ]
+    for label, count, per_item, cap in rows:
         p = min(count * per_item, cap)
         if p:
-            penalties.append({"category": label, "count": count, "deduction": p})
+            penalties.append({"category": label, "count": count,
+                              "deduction": p, "per_item": per_item, "cap": cap})
         score -= p
-    
+
     score = max(score, 0)
-    grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F"
+    if score >= 95:   grade = "A+"
+    elif score >= 90: grade = "A"
+    elif score >= 85: grade = "A-"
+    elif score >= 80: grade = "B+"
+    elif score >= 75: grade = "B"
+    elif score >= 70: grade = "B-"
+    elif score >= 65: grade = "C+"
+    elif score >= 60: grade = "C"
+    elif score >= 55: grade = "C-"
+    elif score >= 50: grade = "D"
+    else:             grade = "F"
+
     return {"score": score, "grade": grade, "penalties": penalties, "max_score": 100}

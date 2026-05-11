@@ -19,208 +19,288 @@
   --accent:#1a7f4b;
   --shadow:0 2px 8px rgba(0,0,0,0.08);--shadow-lg:0 8px 32px rgba(0,0,0,0.12);
   --r:8px;
+  --transition:0.18s ease;
+}
+[data-theme="dark"]{
+  --bg:#17161a;--surface:#21202a;--surface2:#2a2934;--border:#38364a;--border2:#4a4860;
+  --text:#e8e6f0;--text2:#b0aec4;--text3:#706e84;
+  --green:#34c97a;--green-bg:#0d2e1a;--green-border:#1a5a34;
+  --red:#f07070;--red-bg:#2e0d0d;--red-border:#5a1a1a;
+  --yellow:#e8b84b;--yellow-bg:#2e250a;--yellow-border:#5a4a10;
+  --blue:#5aabda;--blue-bg:#0a1e2e;--blue-border:#1a3a5a;
+  --purple:#9b7ee0;--purple-bg:#1a0e2e;--purple-border:#3a245a;
+  --accent:#34c97a;
 }
 html,body{height:100%;background:var(--bg);font-family:'IBM Plex Sans',sans-serif;font-size:14px;color:var(--text);overflow:hidden}
-body{display:grid;grid-template-rows:56px 1fr}
-header{background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;gap:12px}
+body{display:grid;grid-template-rows:56px 1fr;transition:background var(--transition),color var(--transition)}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+header{background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:10px;transition:background var(--transition)}
 .logo{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px}
 .logo-dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
-.sep{width:1px;height:18px;background:var(--border);margin:0 4px}
+.sep{width:1px;height:18px;background:var(--border);margin:0 2px}
 .header-right{margin-left:auto;display:flex;align-items:center;gap:8px}
 .badge{font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;background:var(--surface2);color:var(--text3);border:1px solid var(--border)}
+.icon-btn{width:32px;height:32px;border:1px solid var(--border);background:var(--surface2);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all var(--transition);color:var(--text2)}
+.icon-btn:hover{background:var(--border);color:var(--text)}
 #cacheStatus{display:none;font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
-main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
-.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
-.sb-body{flex:1;overflow-y:auto;padding:20px 16px}
-.sec-lbl{font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text3);margin:18px 0 10px}
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+main{display:grid;grid-template-columns:300px 1fr;overflow:hidden;transition:grid-template-columns var(--transition)}
+main.sidebar-collapsed{grid-template-columns:0px 1fr}
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;transition:all var(--transition)}
+main.sidebar-collapsed .sidebar{width:0;border:none}
+.sb-body{flex:1;overflow-y:auto;padding:16px 14px}
+.sec-lbl{font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text3);margin:16px 0 8px}
 .sec-lbl:first-child{margin-top:0}
+
+/* ── Mode toggle ────────────────────────────────────────────────────────── */
 .mode-toggle{display:flex;background:var(--surface2);border-radius:6px;padding:3px;gap:3px;border:1px solid var(--border)}
-.mode-btn{flex:1;padding:7px 12px;border:none;background:transparent;border-radius:4px;font-family:inherit;font-size:12px;font-weight:500;color:var(--text3);cursor:pointer;transition:all 0.15s}
-.mode-btn.active{background:var(--surface);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,0.05)}
-.upload-zone{border:2px dashed var(--border2);border-radius:var(--r);padding:24px 16px;text-align:center;cursor:pointer;position:relative;transition:all 0.2s;background:var(--bg)}
+.mode-btn{flex:1;padding:6px 10px;border:none;background:transparent;border-radius:4px;font-family:inherit;font-size:12px;font-weight:500;color:var(--text3);cursor:pointer;transition:all var(--transition)}
+.mode-btn.active{background:var(--surface);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,0.08)}
+
+/* ── Upload zone ────────────────────────────────────────────────────────── */
+.upload-zone{border:2px dashed var(--border2);border-radius:var(--r);padding:20px 14px;text-align:center;cursor:pointer;position:relative;transition:all var(--transition);background:var(--bg)}
 .upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:var(--green-bg)}
 .upload-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.up-icon{width:44px;height:44px;border-radius:10px;background:var(--green-bg);border:1px solid var(--green-border);display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:20px}
-.up-text{font-size:13px;color:var(--text2);font-weight:500;margin-bottom:4px}
+.up-icon{width:40px;height:40px;border-radius:10px;background:var(--green-bg);border:1px solid var(--green-border);display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:18px}
+.up-text{font-size:12px;color:var(--text2);font-weight:500;margin-bottom:3px}
 .up-hint{font-size:11px;color:var(--text3)}
-.fmt-tags{display:flex;justify-content:center;gap:4px;margin-top:10px}
-.fmt{font-size:10px;font-weight:600;padding:2px 8px;border-radius:3px;letter-spacing:0.5px}
+.fmt-tags{display:flex;justify-content:center;gap:4px;margin-top:8px}
+.fmt{font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px;letter-spacing:0.5px}
 .fmt-pdf{background:var(--red-bg);color:var(--red);border:1px solid var(--red-border)}
 .fmt-docx{background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-border)}
 .fmt-tex{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
-.file-chip{display:none;align-items:center;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-top:10px}
+.file-chip{display:none;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-top:8px}
 .file-chip.show{display:flex}
-.chip-icon{font-size:22px}
+.chip-icon{font-size:20px}
 .chip-info{flex:1;min-width:0}
 .chip-name{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chip-size{font-size:11px;color:var(--text3);margin-top:1px}
-.chip-rm{width:22px;height:22px;border:none;background:none;cursor:pointer;color:var(--text3);border-radius:4px;font-size:14px;display:flex;align-items:center;justify-content:center}
+.chip-rm{width:20px;height:20px;border:none;background:none;cursor:pointer;color:var(--text3);border-radius:4px;font-size:13px;display:flex;align-items:center;justify-content:center}
 .chip-rm:hover{background:var(--surface);color:var(--red)}
-.bib-attach{display:none;margin-top:8px;border:1px dashed var(--border2);border-radius:6px;padding:8px 12px;cursor:pointer;position:relative;font-size:12px;color:var(--text3);transition:all 0.15s;align-items:center;gap:8px}
+.bib-attach{display:none;margin-top:6px;border:1px dashed var(--border2);border-radius:6px;padding:7px 10px;cursor:pointer;position:relative;font-size:11px;color:var(--text3);transition:all var(--transition);align-items:center;gap:8px}
 .bib-attach.show{display:flex}
 .bib-attach:hover{border-color:var(--blue);color:var(--blue)}
 .bib-attach input{position:absolute;inset:0;opacity:0;cursor:pointer}
-.bib-nm{font-size:11px;color:var(--blue);margin-top:4px}
-.batch-zone{border:2px dashed var(--blue-border);border-radius:var(--r);padding:24px 16px;text-align:center;cursor:pointer;position:relative;background:var(--blue-bg);transition:all 0.2s}
+.bib-nm{font-size:11px;color:var(--blue);margin-top:3px}
+.batch-zone{border:2px dashed var(--blue-border);border-radius:var(--r);padding:20px 14px;text-align:center;cursor:pointer;position:relative;background:var(--blue-bg);transition:all var(--transition)}
 .batch-zone:hover{border-color:var(--blue)}
 .batch-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.batch-files{display:none;flex-direction:column;gap:3px;margin-top:8px}
-.batch-file{font-size:11px;color:var(--text2);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:4px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.opt-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)}
+.batch-files{display:none;flex-direction:column;gap:3px;margin-top:6px;max-height:120px;overflow-y:auto}
+.batch-file{font-size:11px;color:var(--text2);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:3px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.opt-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}
 .opt-row:last-child{border-bottom:none}
-.opt-lbl{font-size:13px;font-weight:500;color:var(--text2)}
-.opt-hint{font-size:11px;color:var(--text3);margin-top:2px}
-.toggle{width:38px;height:22px;background:var(--border2);border-radius:99px;cursor:pointer;position:relative;transition:background 0.2s;border:none;flex-shrink:0}
+.opt-lbl{font-size:12px;font-weight:500;color:var(--text2)}
+.opt-hint{font-size:10px;color:var(--text3);margin-top:1px}
+.toggle{width:36px;height:20px;background:var(--border2);border-radius:99px;cursor:pointer;position:relative;transition:background var(--transition);border:none;flex-shrink:0}
 .toggle.on{background:var(--accent)}
-.toggle::after{content:'';position:absolute;width:16px;height:16px;background:#fff;border-radius:50%;top:3px;left:3px;transition:transform 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.2)}
+.toggle::after{content:'';position:absolute;width:14px;height:14px;background:#fff;border-radius:50%;top:3px;left:3px;transition:transform var(--transition);box-shadow:0 1px 3px rgba(0,0,0,0.2)}
 .toggle.on::after{transform:translateX(16px)}
-.sb-footer{padding:14px 16px;border-top:1px solid var(--border)}
-.run-btn{width:100%;padding:13px;background:var(--accent);color:#fff;border:none;border-radius:var(--r);font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 2px 8px rgba(26,127,75,0.3)}
-.run-btn:hover:not(:disabled){background:#158a42;transform:translateY(-1px);box-shadow:0 4px 12px rgba(26,127,75,0.35)}
+.sb-footer{padding:12px 14px;border-top:1px solid var(--border)}
+.run-btn{width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--r);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:all var(--transition);display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 2px 8px rgba(26,127,75,0.3)}
+.run-btn:hover:not(:disabled){filter:brightness(1.1);transform:translateY(-1px)}
 .run-btn:disabled{background:var(--border2);color:var(--text3);cursor:not-allowed;box-shadow:none;transform:none}
-.right{overflow-y:auto;display:flex;flex-direction:column;background:var(--bg)}
+
+/* ── Right panel ────────────────────────────────────────────────────────── */
+.right{overflow-y:auto;display:flex;flex-direction:column;background:var(--bg);position:relative}
+.sidebar-toggle-fab{position:absolute;top:12px;left:12px;z-index:10;width:28px;height:28px;background:var(--surface);border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:var(--shadow)}
+.sidebar-toggle-fab:hover{background:var(--border)}
 .empty-state{flex:1;display:flex;align-items:center;justify-content:center;padding:40px}
-.empty-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:48px 40px;max-width:520px;width:100%;box-shadow:var(--shadow);text-align:center}
-.empty-icon{font-size:48px;display:block;margin-bottom:16px}
-.empty-title{font-size:22px;font-weight:600;margin-bottom:8px}
-.empty-desc{font-size:13px;color:var(--text3);line-height:1.7;max-width:360px;margin:0 auto}
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:28px}
-.step{background:var(--bg);border-radius:6px;padding:16px 12px;border:1px solid var(--border)}
-.step-n{width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 8px}
-.step-t{font-size:12px;color:var(--text3);line-height:1.5}
-.loading-state{flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:40px}
+.empty-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:40px 36px;max-width:520px;width:100%;box-shadow:var(--shadow);text-align:center}
+.empty-icon{font-size:44px;display:block;margin-bottom:14px}
+.empty-title{font-size:20px;font-weight:600;margin-bottom:8px}
+.empty-desc{font-size:13px;color:var(--text3);line-height:1.7;max-width:340px;margin:0 auto}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:24px}
+.step{background:var(--bg);border-radius:6px;padding:14px 10px;border:1px solid var(--border)}
+.step-n{width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 7px}
+.step-t{font-size:11px;color:var(--text3);line-height:1.5}
+
+/* ── Loading ────────────────────────────────────────────────────────────── */
+.loading-state{flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:40px}
 .loading-state.show{display:flex}
-.spinner{width:48px;height:48px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite}
+.spinner{width:44px;height:44px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .loading-title{font-size:16px;font-weight:600}
 .loading-step{font-size:13px;color:var(--text3)}
-.prog-wrap{width:360px;margin-top:4px}
-.prog-bar{height:4px;background:var(--border);border-radius:99px;overflow:hidden}
+.prog-wrap{width:340px}
+.prog-bar{height:5px;background:var(--border);border-radius:99px;overflow:hidden}
 .prog-fill{height:100%;background:var(--accent);border-radius:99px;transition:width 0.4s ease;width:0}
-.prog-lbl{font-size:11px;color:var(--text3);text-align:right;margin-top:4px}
-.prog-log{width:360px;max-height:140px;overflow-y:auto;display:flex;flex-direction:column-reverse;gap:3px;margin-top:8px}
-.log-item{font-size:11px;color:var(--text3);padding:4px 10px;background:var(--surface);border-radius:4px;border:1px solid var(--border);animation:fadeUp 0.2s ease;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prog-meta{display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-top:4px}
+.prog-log{width:340px;max-height:130px;overflow-y:auto;display:flex;flex-direction:column-reverse;gap:3px;margin-top:6px}
+.log-item{font-size:11px;color:var(--text3);padding:3px 9px;background:var(--surface);border-radius:4px;border:1px solid var(--border);animation:fadeUp 0.2s ease;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* ── Error ──────────────────────────────────────────────────────────────── */
 .error-state{flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;padding:40px}
 .error-state.show{display:flex}
-.error-card{background:var(--surface);border:1px solid var(--red-border);border-left:4px solid var(--red);border-radius:var(--r);padding:20px 24px;max-width:500px;width:100%}
+.error-card{background:var(--surface);border:1px solid var(--red-border);border-left:4px solid var(--red);border-radius:var(--r);padding:18px 22px;max-width:500px;width:100%}
 .err-title{font-weight:600;color:var(--red);margin-bottom:6px}
-.err-msg{font-size:13px;color:var(--text2);line-height:1.6}
+.err-msg{font-size:13px;color:var(--text2);line-height:1.6;white-space:pre-wrap;word-break:break-word}
+
+/* ── Results ────────────────────────────────────────────────────────────── */
 .results{display:none;flex-direction:column;min-height:100%}
 .results.show{display:flex}
+.scanned-banner{padding:9px 14px;background:var(--yellow-bg);border-bottom:1px solid var(--yellow-border);font-size:12px;color:var(--yellow);display:none;align-items:center;gap:8px}
 
-/* Verdict Banner */
-.verdict-banner{padding:20px 24px;background:var(--surface);border-bottom:2px solid var(--border)}
-.verdict-header{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:12px}
-.verdict-badge{font-size:24px;font-weight:700;padding:8px 20px;border-radius:10px;display:inline-flex;align-items:center;gap:10px}
+/* ── Verdict banner ─────────────────────────────────────────────────────── */
+.verdict-banner{padding:18px 22px;background:var(--surface);border-bottom:1px solid var(--border)}
+.verdict-header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+.verdict-badge{font-size:20px;font-weight:700;padding:7px 18px;border-radius:10px;display:inline-flex;align-items:center;gap:8px}
 .verdict-badge.pass{background:var(--green-bg);color:var(--green);border:2px solid var(--green-border)}
 .verdict-badge.flag{background:var(--yellow-bg);color:var(--yellow);border:2px solid var(--yellow-border)}
 .verdict-badge.fail{background:var(--red-bg);color:var(--red);border:2px solid var(--red-border)}
-.verdict-score{font-size:15px;color:var(--text2)}
-.verdict-score strong{font-size:26px;font-weight:700;color:var(--text);margin-right:4px}
-.verdict-reason{color:var(--text2);font-size:13px;padding:10px 14px;background:var(--bg);border-radius:8px;border-left:3px solid var(--accent);line-height:1.6}
-.accuracy-disclaimer{margin-top:10px;padding:8px 14px;background:var(--yellow-bg);border:1px solid var(--yellow-border);border-radius:6px;font-size:11px;color:var(--yellow);line-height:1.5}
+.verdict-score{font-size:14px;color:var(--text2)}
+.verdict-score strong{font-size:24px;font-weight:700;color:var(--text);margin-right:3px}
+.verdict-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.v-btn{padding:6px 14px;border-radius:6px;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer;border:1px solid;display:inline-flex;align-items:center;gap:5px;transition:all var(--transition)}
+.v-btn-export{background:var(--green-bg);border-color:var(--green-border);color:var(--green)}
+.v-btn-export:hover{background:var(--green);color:#fff}
+.v-btn-print{background:var(--surface2);border-color:var(--border2);color:var(--text2)}
+.v-btn-print:hover{background:var(--border);color:var(--text)}
+.verdict-reason{color:var(--text2);font-size:12px;padding:8px 12px;background:var(--bg);border-radius:6px;border-left:3px solid var(--accent);line-height:1.6;margin-top:10px}
+.accuracy-disclaimer{margin-top:8px;padding:7px 12px;background:var(--yellow-bg);border:1px solid var(--yellow-border);border-radius:6px;font-size:11px;color:var(--yellow);line-height:1.5}
 
-/* Tabs — now exactly as spec: Bibliography | Cross-Check | Verification */
-.tabs{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;gap:4px;flex-shrink:0}
-.tab{padding:14px 18px;font-size:13px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;white-space:nowrap}
+/* ── Penalty breakdown ──────────────────────────────────────────────────── */
+.penalty-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:10px}
+.penalty-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;display:flex;align-items:center;gap:10px}
+.penalty-card.clean{border-color:var(--green-border);background:var(--green-bg)}
+.pen-num{font-size:22px;font-weight:700;min-width:32px;text-align:right}
+.pen-num.bad{color:var(--red)}
+.pen-num.ok{color:var(--green)}
+.pen-label{font-size:11px;color:var(--text2);line-height:1.4;flex:1}
+.pen-deduct{font-size:10px;font-weight:600;color:var(--red);margin-top:2px}
+
+/* ── Feedback boxes ─────────────────────────────────────────────────────── */
+.fb-box{padding:9px 12px;border-radius:6px;font-size:12px;line-height:1.6;margin-top:8px}
+.fb-student{background:var(--blue-bg);border:1px solid var(--blue-border);color:var(--text2)}
+.fb-professor{background:var(--purple-bg);border:1px solid var(--purple-border);color:var(--text2)}
+
+/* ── Tabs ───────────────────────────────────────────────────────────────── */
+.tabs{background:var(--surface);border-bottom:1px solid var(--border);padding:0 20px;display:flex;gap:2px;flex-shrink:0}
+.tab{padding:12px 16px;font-size:13px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all var(--transition);white-space:nowrap;user-select:none}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.tab-badge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:10px;font-size:11px;font-weight:600;background:var(--surface2);color:var(--text3);margin-left:6px}
+.tab:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.tab-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;font-size:10px;font-weight:600;background:var(--surface2);color:var(--text3);margin-left:5px}
 .tab-badge.warn{background:var(--yellow-bg);color:var(--yellow)}
 .tab-badge.crit{background:var(--red-bg);color:var(--red)}
-
-.panels{flex:1;padding:24px;overflow-y:auto}
+.panels{flex:1;padding:20px 22px;overflow-y:auto}
 .panel{display:none}
 .panel.active{display:block}
 
-/* --- Tab 1: Bibliography ------------------------------------------------- */
-.bib-entry{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:10px}
+/* ── Bibliography tab ───────────────────────────────────────────────────── */
+.bib-search{width:100%;padding:8px 12px;border:1px solid var(--border2);border-radius:6px;font-family:inherit;font-size:12px;background:var(--surface);color:var(--text);margin-bottom:14px;transition:border-color var(--transition)}
+.bib-search:focus{outline:none;border-color:var(--accent)}
+.bib-entry{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:9px;transition:border-color var(--transition)}
 .bib-entry.has-issues{border-left:3px solid var(--yellow)}
 .bib-entry.key-error{border-left:3px solid var(--red)}
-.bib-entry-header{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
-.bib-key{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;background:var(--surface2);padding:2px 8px;border-radius:4px;color:var(--text)}
-.bib-type{font-size:11px;padding:2px 8px;border-radius:4px;background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-border)}
-.bib-key-ok{font-size:11px;padding:2px 6px;border-radius:4px}
-.bib-key-ok.ok{background:var(--green-bg);color:var(--green)}
-.bib-key-ok.bad{background:var(--red-bg);color:var(--red)}
-.bib-title{font-size:13px;font-weight:500;margin-bottom:6px;color:var(--text)}
-.bib-meta{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--text3);margin-bottom:8px}
-.bib-meta span{display:flex;align-items:center;gap:4px}
-.bib-field-ok{color:var(--green)}
-.bib-field-miss{color:var(--red)}
-.issue-pill{display:inline-block;font-size:10px;padding:2px 8px;border-radius:3px;background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow-border);margin:2px 3px 2px 0}
+.bib-entry.clean{border-left:3px solid var(--green)}
+.bib-entry-header{display:flex;align-items:center;gap:8px;margin-bottom:7px;flex-wrap:wrap}
+.bib-key{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;background:var(--surface2);padding:2px 7px;border-radius:4px;color:var(--text)}
+.bib-type{font-size:10px;padding:2px 7px;border-radius:4px;background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-border)}
+.bib-key-badge{font-size:10px;padding:2px 6px;border-radius:4px}
+.bib-key-badge.ok{background:var(--green-bg);color:var(--green)}
+.bib-key-badge.bad{background:var(--red-bg);color:var(--red)}
+.bib-title{font-size:13px;font-weight:500;margin-bottom:5px;color:var(--text)}
+.bib-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--text3);margin-bottom:6px}
+.issue-pill{display:inline-block;font-size:10px;padding:2px 7px;border-radius:3px;background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow-border);margin:2px 3px 2px 0}
 .issue-pill.err{background:var(--red-bg);color:var(--red);border-color:var(--red-border)}
-.oa-link{font-size:11px;color:var(--blue);text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-top:4px}
+.oa-link{font-size:11px;color:var(--blue);text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-top:3px}
 .oa-link:hover{text-decoration:underline}
-.retracted-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:2px 10px;border-radius:4px;background:#FCEBEB;color:#A32D2D;border:1px solid #F0B8B2}
-.scanned-banner{padding:10px 16px;background:var(--yellow-bg);border:1px solid var(--yellow-border);border-radius:8px;margin-bottom:16px;font-size:13px;color:var(--yellow);display:flex;align-items:center;gap:8px}
-.export-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:var(--green-bg);border:1px solid var(--green-border);color:var(--green);border-radius:6px;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer}
-.export-btn:hover{background:var(--green);color:#fff}
 
-/* --- Tab 2: Cross-Check -------------------------------------------------- */
-.xcheck-section{margin-bottom:28px}
-.xcheck-title{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
-.xcheck-item{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;display:flex;align-items:flex-start;gap:12px}
+/* ── Cross-check tab ────────────────────────────────────────────────────── */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center}
+.stat-num{font-size:26px;font-weight:700}
+.stat-lbl{font-size:11px;color:var(--text3);margin-top:2px}
+.stat-ok{color:var(--green)}.stat-warn{color:var(--yellow)}.stat-bad{color:var(--red)}
+.xcheck-section{margin-bottom:24px}
+.xcheck-title{font-size:13px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.xcheck-item{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:7px;display:flex;align-items:flex-start;gap:10px}
 .xcheck-item.missing{border-left:3px solid var(--red)}
 .xcheck-item.orphan{border-left:3px solid var(--yellow)}
 .xcheck-item.ok{border-left:3px solid var(--green)}
-.xcheck-icon{font-size:18px;flex-shrink:0;margin-top:1px}
+.xcheck-icon{font-size:16px;flex-shrink:0;margin-top:1px}
 .xcheck-body{flex:1;min-width:0}
-.xcheck-key{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;margin-bottom:4px}
-.xcheck-desc{font-size:12px;color:var(--text3)}
-.ctx-snippet{font-size:11px;color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:6px 10px;margin-top:6px;line-height:1.5;font-style:italic}
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px}
-.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;text-align:center}
-.stat-num{font-size:28px;font-weight:700}
-.stat-lbl{font-size:11px;color:var(--text3);margin-top:2px}
-.stat-ok{color:var(--green)}
-.stat-warn{color:var(--yellow)}
-.stat-bad{color:var(--red)}
+.xcheck-key{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;margin-bottom:3px}
+.xcheck-desc{font-size:11px;color:var(--text3)}
+.ctx-snippet{font-size:11px;color:var(--text2);background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:5px 9px;margin-top:5px;line-height:1.5;font-style:italic}
 
-/* --- Tab 3: Verification ------------------------------------------------- */
-.vref-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:10px}
+/* ── Verification tab ───────────────────────────────────────────────────── */
+.ver-filter{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.vfbtn{padding:5px 11px;font-size:12px;border-radius:4px;border:1px solid var(--border2);background:var(--surface2);color:var(--text2);cursor:pointer;font-family:inherit;transition:all var(--transition)}
+.vfbtn.active{border-color:var(--accent);background:var(--green-bg);color:var(--green)}
+.vref-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:9px;transition:border-color var(--transition)}
 .vref-card.real{border-left:3px solid var(--green)}
 .vref-card.suspicious{border-left:3px solid var(--yellow)}
 .vref-card.fake{border-left:3px solid var(--red)}
-.vref-header{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
-.vref-key{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;background:var(--surface2);padding:2px 8px;border-radius:4px}
-.vstatus{font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px}
+.vref-card.retracted{border-left:3px solid var(--red);border-top:2px solid var(--red)}
+.vref-header{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+.vref-key{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;background:var(--surface2);padding:2px 7px;border-radius:4px}
+.vstatus{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px}
 .vstatus.real{background:var(--green-bg);color:var(--green)}
 .vstatus.suspicious{background:var(--yellow-bg);color:var(--yellow)}
 .vstatus.fake{background:var(--red-bg);color:var(--red)}
-.vconf{font-size:11px;color:var(--text3)}
-.vref-title{font-size:13px;font-weight:500;margin-bottom:6px}
-.vref-meta{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--text3);margin-bottom:6px}
-.vref-reasoning{font-size:12px;color:var(--text2);background:var(--surface2);border-radius:4px;padding:8px 10px;margin-top:6px;line-height:1.5}
-.vref-risks{margin-top:6px}
-.risk-pill{display:inline-block;font-size:10px;padding:2px 8px;border-radius:3px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);margin:2px 3px 2px 0}
-.vref-actions{margin-top:10px;display:flex;gap:8px}
-.btn-act{padding:5px 12px;font-size:11px;border-radius:4px;border:1px solid;cursor:pointer;font-family:inherit;font-weight:500}
+.vstatus.retracted{background:var(--red-bg);color:var(--red)}
+.retracted-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);letter-spacing:.03em}
+.vref-title{font-size:13px;font-weight:500;margin-bottom:5px}
+.vref-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;margin-bottom:5px}
+.vref-reasoning{font-size:11px;color:var(--text2);background:var(--surface2);border-radius:4px;padding:7px 9px;margin-top:5px;line-height:1.5}
+.risk-pill{display:inline-block;font-size:10px;padding:2px 7px;border-radius:3px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);margin:2px 3px 2px 0}
+.sources-chips{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+.src-chip{font-size:10px;padding:1px 5px;border-radius:3px;background:var(--surface2);border:1px solid var(--border);color:var(--text3)}
+.conf-bar-wrap{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text3)}
+.conf-bar-track{width:52px;height:5px;background:var(--border);border-radius:3px;overflow:hidden;display:inline-block}
+.conf-bar-fill{height:100%;border-radius:3px;display:block}
+.correction-box{margin-top:7px;padding:7px 10px;background:var(--blue-bg);border:1px solid var(--blue-border);border-radius:6px}
+.correction-title{font-size:10px;font-weight:600;color:var(--blue);margin-bottom:4px}
+.correction-row{font-size:11px;color:var(--text2);margin-bottom:2px}
+.mismatch-warn{font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px}
+.mismatch-year{background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow-border)}
+.mismatch-author{background:var(--red-bg);color:var(--red);border:1px solid var(--red-border)}
+.vref-actions{margin-top:9px;display:flex;gap:6px;flex-wrap:wrap}
+.btn-act{padding:4px 11px;font-size:11px;border-radius:4px;border:1px solid;cursor:pointer;font-family:inherit;font-weight:500;transition:all var(--transition)}
 .btn-verify{background:var(--green-bg);border-color:var(--green-border);color:var(--green)}
 .btn-verify:hover{background:var(--green);color:#fff}
 .btn-reject{background:var(--red-bg);border-color:var(--red-border);color:var(--red)}
 .btn-reject:hover{background:var(--red);color:#fff}
-.ver-filter{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
-.vfbtn{padding:5px 12px;font-size:12px;border-radius:4px;border:1px solid var(--border2);background:var(--surface2);color:var(--text2);cursor:pointer;font-family:inherit}
-.vfbtn.active{border-color:var(--accent);background:var(--green-bg);color:var(--green)}
-.sources-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
-.src-chip{font-size:10px;padding:1px 6px;border-radius:3px;background:var(--surface2);border:1px solid var(--border);color:var(--text3)}
+.btn-copy{background:var(--surface2);border-color:var(--border2);color:var(--text2)}
+.btn-copy:hover{background:var(--border)}
 
-/* Empty sections */
-.empty-sec{text-align:center;padding:48px 20px;background:var(--surface);border:1px solid var(--border);border-radius:12px;color:var(--text3)}
-.empty-sec-icon{font-size:40px;display:block;margin-bottom:12px}
+/* ── Empty sections ─────────────────────────────────────────────────────── */
+.empty-sec{text-align:center;padding:40px 20px;background:var(--surface);border:1px solid var(--border);border-radius:12px;color:var(--text3)}
+.empty-sec-icon{font-size:36px;display:block;margin-bottom:10px}
 
-/* Batch panel */
-.batch-wrap{flex:1;overflow-y:auto;padding:20px 24px}
-.bt{width:100%;border-collapse:collapse;font-size:13px}
-.bt th{text-align:left;padding:10px 14px;border-bottom:2px solid var(--border);color:var(--text3);font-size:11px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;background:var(--surface);position:sticky;top:0}
-.bt td{padding:12px 14px;border-bottom:1px solid var(--border)}
-.gp{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700}
-.gA,.gB{background:var(--green-bg);color:var(--green)}.gC{background:var(--yellow-bg);color:var(--yellow)}.gD,.gF{background:var(--red-bg);color:var(--red)}
-.btn{padding:7px 14px;border-radius:6px;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer;border:1px solid;background:var(--surface2);border-color:var(--border2);color:var(--text2)}
-.btn:hover{background:var(--border)}
-::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+/* ── Batch ──────────────────────────────────────────────────────────────── */
+.batch-wrap{flex:1;overflow-y:auto;padding:18px 22px}
+.bt{width:100%;border-collapse:collapse;font-size:12px}
+.bt th{text-align:left;padding:9px 12px;border-bottom:2px solid var(--border);color:var(--text3);font-size:10px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;background:var(--surface);position:sticky;top:0}
+.bt td{padding:10px 12px;border-bottom:1px solid var(--border)}
+.gp{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:700}
+.gA{background:var(--green-bg);color:var(--green)}.gB{background:var(--blue-bg);color:var(--blue)}.gC{background:var(--yellow-bg);color:var(--yellow)}.gD,.gF{background:var(--red-bg);color:var(--red)}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media(max-width:900px){
+  main{grid-template-columns:0px 1fr}
+  .sidebar{width:0;border:none}
+}
+
+/* ── Print ──────────────────────────────────────────────────────────────── */
+@media print{
+  header,.sidebar,.tabs,.ver-filter,.vref-actions,.verdict-actions,.sidebar-toggle-fab{display:none!important}
+  body,html{overflow:auto;height:auto}
+  main{grid-template-columns:1fr;display:block}
+  .right{overflow:visible}
+  .results{display:flex!important}
+  .panel{display:block!important}
+  .panels{padding:0}
+  .verdict-banner{border:1px solid #ccc;margin-bottom:16px}
+  .vref-card,.bib-entry,.xcheck-item,.stat-card{break-inside:avoid}
+}
+
+/* ── Scrollbars ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 </style>
 </head>
 <body>
@@ -229,16 +309,18 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
   <div class="sep"></div>
   <div class="header-right">
     <span id="cacheStatus"></span>
-    <span class="badge">v6.1</span>
+    <span class="badge">v7.0</span>
+    <button class="icon-btn" id="darkToggle" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
+    <button class="icon-btn" id="sidebarToggleBtn" title="Toggle sidebar" aria-label="Toggle sidebar">⇔</button>
   </div>
 </header>
-<main>
-  <div class="sidebar">
+<main id="mainLayout">
+  <div class="sidebar" id="sidebar">
     <div class="sb-body">
       <div class="sec-lbl">Mode</div>
       <div class="mode-toggle">
         <button class="mode-btn active" id="modeSingle">Single File</button>
-        <button class="mode-btn" id="modeBatch">Batch Upload</button>
+        <button class="mode-btn" id="modeBatch">Batch</button>
       </div>
       <div id="singleMode">
         <div class="sec-lbl">Upload Paper</div>
@@ -246,7 +328,7 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
           <input type="file" id="fileInput" accept=".pdf,.docx,.tex,.latex"/>
           <div class="up-icon">📄</div>
           <div class="up-text">Drop file or click to browse</div>
-          <div class="up-hint">Student submission in any format</div>
+          <div class="up-hint">Student submission</div>
           <div class="fmt-tags">
             <span class="fmt fmt-pdf">PDF</span>
             <span class="fmt fmt-docx">DOCX</span>
@@ -256,17 +338,17 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
         <div class="file-chip" id="fileChip">
           <div class="chip-icon">📄</div>
           <div class="chip-info"><div class="chip-name" id="chipName"></div><div class="chip-size" id="chipSize"></div></div>
-          <button class="chip-rm" onclick="removeFile()">✕</button>
+          <button class="chip-rm" onclick="removeFile()" aria-label="Remove file">✕</button>
         </div>
         <div class="bib-attach" id="bibAttach">
           <input type="file" id="bibInput" accept=".bib"/>
-          <span>📚</span><span>Attach .bib file <em style="color:var(--text3)">(optional)</em></span>
+          <span>📚</span><span>Attach .bib <em style="color:var(--text3)">(optional)</em></span>
         </div>
         <div class="bib-nm" id="bibNm"></div>
       </div>
       <div id="batchMode" style="display:none">
         <div class="sec-lbl">Upload Papers</div>
-        <div class="batch-zone" id="batchZone">
+        <div class="batch-zone">
           <input type="file" id="batchInput" accept=".pdf,.docx,.tex,.latex" multiple/>
           <div class="up-icon" style="background:var(--blue-bg);border-color:var(--blue-border)">📂</div>
           <div class="up-text" style="color:var(--blue)">Select multiple files</div>
@@ -275,26 +357,32 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
       </div>
       <div class="sec-lbl">Options</div>
       <div class="opt-row">
-        <div><div class="opt-lbl">Verify references online</div><div class="opt-hint">CrossRef · Semantic Scholar · DBLP · arXiv</div></div>
-        <button class="toggle on" id="verifyToggle"></button>
+        <div><div class="opt-lbl">Verify references online</div><div class="opt-hint">9 APIs · CrossRef · S2 · DBLP · arXiv · OpenReview</div></div>
+        <button class="toggle on" id="verifyToggle" aria-pressed="true"></button>
       </div>
     </div>
     <div class="sb-footer">
-      <button class="run-btn" id="runBtn" disabled><span>Run Check</span><span>→</span></button>
-      <button class="run-btn" id="batchRunBtn" disabled style="display:none;margin-top:8px;background:var(--blue)"><span>Run Batch Check</span><span>→</span></button>
+      <button class="run-btn" id="runBtn" disabled aria-label="Run reference check">
+        <span>Run Check</span><span>→</span>
+      </button>
+      <button class="run-btn" id="batchRunBtn" disabled style="display:none;margin-top:8px;background:var(--blue)">
+        <span>Run Batch</span><span>→</span>
+      </button>
     </div>
   </div>
 
-  <div class="right">
+  <div class="right" id="rightPanel">
+    <button class="sidebar-toggle-fab" id="fabToggle" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button>
+
     <div class="empty-state" id="emptyState">
       <div class="empty-card">
         <span class="empty-icon">🔍</span>
         <div class="empty-title">LNI Reference Checker</div>
-        <p class="empty-desc">Upload a student submission to check for formatting errors, missing citations, and potentially fake references.</p>
+        <p class="empty-desc">Upload any student submission to verify citations, detect fake references, check LNI formatting, and catch retracted papers.</p>
         <div class="steps">
-          <div class="step"><div class="step-n">1</div><div class="step-t">Upload a PDF, Word, or LaTeX file</div></div>
+          <div class="step"><div class="step-n">1</div><div class="step-t">Upload PDF, Word, or LaTeX</div></div>
           <div class="step"><div class="step-n">2</div><div class="step-t">Click Run Check</div></div>
-          <div class="step"><div class="step-n">3</div><div class="step-t">Review the three-tab report</div></div>
+          <div class="step"><div class="step-n">3</div><div class="step-t">Review the 3-tab report</div></div>
         </div>
       </div>
     </div>
@@ -305,55 +393,41 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
       <div class="loading-step" id="ldStep">Starting…</div>
       <div class="prog-wrap" id="progWrap" style="display:none">
         <div class="prog-bar"><div class="prog-fill" id="progFill"></div></div>
-        <div class="prog-lbl" id="progLbl"></div>
+        <div class="prog-meta"><span id="progCount"></span><span id="progEta"></span></div>
       </div>
       <div class="prog-log" id="progLog"></div>
     </div>
 
     <div class="error-state" id="errorState">
-      <div class="error-card"><div class="err-title">Something went wrong</div><div class="err-msg" id="errMsg"></div></div>
+      <div class="error-card">
+        <div class="err-title">Something went wrong</div>
+        <div class="err-msg" id="errMsg"></div>
+      </div>
     </div>
 
     <div class="results" id="resultsPanel">
-      <!-- Scanned PDF warning -->
-      <div id="scannedBanner" class="scanned-banner" style="display:none;margin:12px 24px 0"></div>
+      <div id="scannedBanner" class="scanned-banner">⚠ This PDF appears to be scanned or image-based. Text extraction may be incomplete — results may be unreliable. Upload the original Word or LaTeX source for accurate checking.</div>
 
-      <!-- Verdict banner -->
-      <div id="verdictBanner" class="verdict-banner">
-        <button class="export-btn" id="exportBibBtn" style="display:none;float:right;margin-top:-4px" onclick="exportBibTeX()">⬇ Download corrected .bib</button>
-      </div>
+      <div id="verdictBanner" class="verdict-banner"></div>
 
-      <!-- THREE TABS matching the spec exactly -->
-      <div class="tabs">
-        <div class="tab active" data-tab="bibliography">📚 Bibliography <span class="tab-badge" id="tb-bib">—</span></div>
-        <div class="tab" data-tab="crosscheck">🔀 Cross-Check <span class="tab-badge" id="tb-xcheck">—</span></div>
-        <div class="tab" data-tab="verification">🔬 Verification <span class="tab-badge" id="tb-ver">—</span></div>
+      <div class="tabs" role="tablist" id="tabBar">
+        <div class="tab active" data-tab="bibliography" role="tab" tabindex="0" aria-selected="true">📚 Bibliography <span class="tab-badge" id="tb-bib">—</span></div>
+        <div class="tab" data-tab="crosscheck" role="tab" tabindex="0" aria-selected="false">🔀 Cross-Check <span class="tab-badge" id="tb-xcheck">—</span></div>
+        <div class="tab" data-tab="verification" role="tab" tabindex="0" aria-selected="false">🔬 Verification <span class="tab-badge" id="tb-ver">—</span></div>
       </div>
 
       <div class="panels">
-        <!-- TAB 1: Bibliography — formatting & missing field alerts -->
-        <div class="panel active" id="tab-bibliography">
-          <div id="bibContent"></div>
-        </div>
-
-        <!-- TAB 2: Cross-Check — discrepancy report -->
-        <div class="panel" id="tab-crosscheck">
-          <div id="xcheckContent"></div>
-        </div>
-
-        <!-- TAB 3: Verification — validity status & full-text links -->
-        <div class="panel" id="tab-verification">
-          <div id="verContent"></div>
-        </div>
+        <div class="panel active" id="tab-bibliography"><div id="bibContent"></div></div>
+        <div class="panel" id="tab-crosscheck"><div id="xcheckContent"></div></div>
+        <div class="panel" id="tab-verification"><div id="verContent"></div></div>
       </div>
     </div>
 
-    <!-- Batch results panel -->
     <div class="results" id="batchPanel" style="display:none">
-      <div id="batchScoreBar" style="padding:16px 24px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px"></div>
+      <div id="batchScoreBar" style="padding:14px 22px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px"></div>
       <div class="batch-wrap">
         <table class="bt">
-          <thead><tr><th>#</th><th>File</th><th>Score</th><th>Grade</th><th>Fake</th><th>Missing</th></tr></thead>
+          <thead><tr><th>#</th><th>File</th><th>Score</th><th>Grade</th><th>Fake</th><th>Retracted</th><th>Missing</th></tr></thead>
           <tbody id="batchBody"></tbody>
         </table>
       </div>
@@ -362,15 +436,36 @@ main{display:grid;grid-template-columns:320px 1fr;overflow:hidden}
 </main>
 
 <script>
+'use strict';
 let selFile=null,selBib=null,selBatch=[],verifyOn=true,batchMode=false,lastData=null;
+let progStartTime=0,progRefTimes=[];
 const $=id=>document.getElementById(id);
 function esc(s){if(s==null)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 
-// Mode toggle
+// ── Dark mode ──────────────────────────────────────────────────────────────
+const prefersDark=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;
+let isDark=localStorage.getItem('lni-dark')==='1'||(localStorage.getItem('lni-dark')===null&&prefersDark);
+function applyTheme(){
+  document.documentElement.setAttribute('data-theme',isDark?'dark':'');
+  $('darkToggle').textContent=isDark?'☀️':'🌙';
+}
+applyTheme();
+$('darkToggle').onclick=()=>{isDark=!isDark;localStorage.setItem('lni-dark',isDark?'1':'0');applyTheme()};
+
+// ── Sidebar toggle ─────────────────────────────────────────────────────────
+let sidebarOpen=true;
+function toggleSidebar(){
+  sidebarOpen=!sidebarOpen;
+  $('mainLayout').classList.toggle('sidebar-collapsed',!sidebarOpen);
+}
+$('sidebarToggleBtn').onclick=toggleSidebar;
+$('fabToggle').onclick=toggleSidebar;
+
+// ── Mode toggle ────────────────────────────────────────────────────────────
 $('modeSingle').onclick=()=>{batchMode=false;$('modeSingle').classList.add('active');$('modeBatch').classList.remove('active');$('singleMode').style.display='';$('batchMode').style.display='none';$('runBtn').style.display='';$('batchRunBtn').style.display='none';showState('empty')};
 $('modeBatch').onclick=()=>{batchMode=true;$('modeBatch').classList.add('active');$('modeSingle').classList.remove('active');$('singleMode').style.display='none';$('batchMode').style.display='';$('runBtn').style.display='none';$('batchRunBtn').style.display='';showState('empty')};
 
-// File input
+// ── File inputs ────────────────────────────────────────────────────────────
 $('fileInput').addEventListener('change',e=>{if(e.target.files[0])setFile(e.target.files[0])});
 $('bibInput').addEventListener('change',e=>{if(e.target.files[0]){selBib=e.target.files[0];$('bibNm').textContent='📗 '+selBib.name}});
 $('dropZone').addEventListener('dragover',e=>{e.preventDefault();$('dropZone').classList.add('drag')});
@@ -378,172 +473,216 @@ $('dropZone').addEventListener('dragleave',()=>$('dropZone').classList.remove('d
 $('dropZone').addEventListener('drop',e=>{e.preventDefault();$('dropZone').classList.remove('drag');if(e.dataTransfer.files[0])setFile(e.dataTransfer.files[0])});
 function setFile(f){selFile=f;$('fileChip').classList.add('show');$('chipName').textContent=f.name;$('chipSize').textContent=(f.size/1024).toFixed(1)+' KB';$('bibAttach').classList.toggle('show',/\.(tex|latex)$/i.test(f.name));$('runBtn').disabled=false}
 function removeFile(){selFile=null;$('fileInput').value='';$('fileChip').classList.remove('show');$('bibAttach').classList.remove('show');$('runBtn').disabled=true}
-
 $('batchInput').addEventListener('change',e=>{
   selBatch=Array.from(e.target.files);
   const l=$('batchFileList');l.style.display=selBatch.length?'flex':'none';
-  l.innerHTML=selBatch.map(f=>`<div class="batch-file">📄 ${esc(f.name)} <span style="float:right;color:var(--text3)">${(f.size/1024).toFixed(1)} KB</span></div>`).join('');
+  l.innerHTML=selBatch.map(f=>`<div class="batch-file">📄 ${esc(f.name)}</div>`).join('');
   $('batchRunBtn').disabled=!selBatch.length;
 });
-$('verifyToggle').onclick=()=>{verifyOn=!verifyOn;$('verifyToggle').classList.toggle('on',verifyOn)};
+$('verifyToggle').onclick=function(){verifyOn=!verifyOn;this.classList.toggle('on',verifyOn);this.setAttribute('aria-pressed',verifyOn)};
 
-// Tab switching
-document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
-  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
-  t.classList.add('active');
-  $('tab-'+t.dataset.tab).classList.add('active');
-}));
+// ── Keyboard tab navigation ────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t=>{
+  t.addEventListener('click',()=>switchTab(t.dataset.tab));
+  t.addEventListener('keydown',e=>{
+    const tabs=[...$('tabBar').querySelectorAll('.tab')];
+    const i=tabs.indexOf(t);
+    if(e.key==='ArrowRight'){e.preventDefault();tabs[(i+1)%tabs.length].focus();switchTab(tabs[(i+1)%tabs.length].dataset.tab)}
+    else if(e.key==='ArrowLeft'){e.preventDefault();tabs[(i-1+tabs.length)%tabs.length].focus();switchTab(tabs[(i-1+tabs.length)%tabs.length].dataset.tab)}
+    else if(e.key===' '||e.key==='Enter'){e.preventDefault();switchTab(t.dataset.tab)}
+  });
+});
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>{t.classList.toggle('active',t.dataset.tab===name);t.setAttribute('aria-selected',t.dataset.tab===name)});
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
+}
 
-// Cache status
+// ── Cache status ───────────────────────────────────────────────────────────
 async function refreshCache(){
-  try{const d=await(await fetch('/status')).json();const n=(d.cache?.llm_response_cache_entries||0)+(d.cache?.arxiv_bibtex_cache_entries||0);const el=$('cacheStatus');if(n>0){el.style.cssText='display:inline-flex;font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)';el.textContent=`⚡ ${n} cached`}else el.style.display='none'}catch(e){}
+  try{const d=await(await fetch('/status')).json();const n=(d.cache?.llm_response_cache_entries||0)+(d.cache?.arxiv_bibtex_cache_entries||0);const el=$('cacheStatus');
+  if(n>0){el.style.display='inline-flex';el.textContent=`⚡ ${n} cached`}else el.style.display='none'}catch(e){}
 }
 refreshCache();
 
-// Run check
+// ── Run check ─────────────────────────────────────────────────────────────
 $('runBtn').onclick=()=>{
   if(!selFile)return;showState('loading');resetProg();
-  const form=new FormData();form.append('file',selFile);if(selBib)form.append('bib',selBib);form.append('verify',verifyOn?'true':'false');form.append('stream','true');
+  const form=new FormData();form.append('file',selFile);if(selBib)form.append('bib',selBib);
+  form.append('verify',verifyOn?'true':'false');form.append('stream','true');
   fetch('/check',{method:'POST',body:form}).then(r=>{
-    if(!r.ok)return r.json().then(d=>{throw new Error(d.error||'Server error')});
+    if(!r.ok)return r.json().then(d=>{throw new Error(d.error||'Server error '+r.status)});
     const reader=r.body.getReader(),dec=new TextDecoder();let buf='';
     function pump(){reader.read().then(({done,value})=>{
       if(done)return;buf+=dec.decode(value,{stream:true});
       const parts=buf.split('\n\n');buf=parts.pop();
-      for(const p of parts){if(!p.trim())continue;const ls=p.split('\n');let type='message',data='';for(const l of ls){if(l.startsWith('event: '))type=l.slice(7).trim();else if(l.startsWith('data: '))data=l.slice(6)}try{onSSE(type,JSON.parse(data))}catch(e){}}
+      for(const p of parts){if(!p.trim())continue;const ls=p.split('\n');let type='message',data='';
+      for(const l of ls){if(l.startsWith('event: '))type=l.slice(7).trim();else if(l.startsWith('data: '))data=l.slice(6)}
+      try{onSSE(type,JSON.parse(data))}catch(e){}}
       pump();
     }).catch(e=>showError(e.message))}
     pump();
   }).catch(e=>showError(e.message));
 };
 
-let pt=0,pd=0;
-function resetProg(){pt=0;pd=0;$('progLog').innerHTML='';$('progWrap').style.display='none';$('progFill').style.width='0';$('ldTitle').textContent='Analysing submission…';$('ldStep').textContent='Starting…'}
+// ── Progress ───────────────────────────────────────────────────────────────
+function resetProg(){progStartTime=Date.now();progRefTimes=[];$('progLog').innerHTML='';$('progWrap').style.display='none';$('progFill').style.width='0';$('ldTitle').textContent='Analysing submission…';$('ldStep').textContent='Starting…'}
+
 function onSSE(type,p){
   if(type==='progress'){
     $('ldStep').textContent=p.message||'';
-    if(p.step==='verify'&&p.total){pt=p.total;pd=p.done||0;$('progWrap').style.display='';const pct=Math.round((pd/pt)*100);$('progFill').style.width=pct+'%';$('progLbl').textContent=`${pd} / ${pt} references checked`;$('ldTitle').textContent='Verifying references…'}
+    if(p.step==='verify'&&p.total){
+      $('progWrap').style.display='';
+      const pct=Math.round(((p.done||0)/p.total)*100);
+      $('progFill').style.width=pct+'%';
+      $('progCount').textContent=`${p.done}/${p.total} references`;
+      // ETA calculation
+      progRefTimes.push(Date.now());
+      if(progRefTimes.length>1){
+        const elapsed=(Date.now()-progStartTime)/1000;
+        const rate=(p.done||1)/elapsed;
+        const remaining=(p.total-(p.done||0))/rate;
+        $('progEta').textContent=remaining>2?`~${Math.ceil(remaining)}s remaining`:'almost done…';
+      }
+      $('ldTitle').textContent='Verifying references…';
+    }
     const li=document.createElement('div');li.className='log-item';li.textContent=p.message||'';$('progLog').prepend(li);
-  } else if(type==='done'){refreshCache();renderResults(p);showState('results')}
-  else if(type==='error'){showError(p.error+(p.trace?'\n\n'+p.trace.split('\n').slice(-3).join('\n'):''))}
+  }else if(type==='done'){refreshCache();renderResults(p);showState('results')}
+  else if(type==='error'){showError(p.error+(p.trace?'\n\n'+p.trace.split('\n').slice(-4).join('\n'):''))}
 }
 
-// ============================================================
-// RENDER: Verdict banner
-// ============================================================
+// ══════════════════════════════════════════════════════════════════
+// RENDER: Verdict banner + penalty breakdown
+// ══════════════════════════════════════════════════════════════════
 function renderVerdictBanner(data){
   const score=data.score||{};
-  const verdict=score.verdict||(score.score>=75?'PASS':score.score>=50?'FLAG':'FAIL');
+  const s=score.score??0;
+  const verdict=score.verdict||(s>=75?'PASS':s>=50?'FLAG':'FAIL');
   const cls=verdict==='PASS'?'pass':verdict==='FLAG'?'flag':'fail';
   const icon=verdict==='PASS'?'✓':verdict==='FLAG'?'⚠':'✗';
-  const label=verdict==='PASS'?'PASS — References look good':verdict==='FLAG'?'FLAG — Manual review required':'FAIL — Serious issues found';
-  const reasonHtml=score.verdict_reason?`<div class="verdict-reason">📝 ${esc(score.verdict_reason)}</div>`:'';
-  const fb=score.student_feedback||[];
-  const fbHtml=fb.length?`<div style="margin-top:10px;padding:10px 14px;background:var(--blue-bg);border:1px solid var(--blue-border);border-radius:6px"><div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:6px">📋 Feedback for student:</div><ul style="margin:0;padding-left:16px;font-size:12px;color:var(--text2);line-height:1.7">${fb.map(f=>`<li>${esc(f)}</li>`).join('')}</ul></div>`:'';
-  const profHtml=score.professor_note?`<div style="margin-top:8px;padding:8px 14px;background:var(--purple-bg);border:1px solid var(--purple-border);border-radius:6px;font-size:12px;color:var(--purple)">🔍 <strong>Professor note:</strong> ${esc(score.professor_note)}</div>`:'';
-  const oaCount=(data.summary||{}).open_access||0;
+  const label=verdict==='PASS'?'PASS':verdict==='FLAG'?'FLAG — Review Required':'FAIL';
   const retractedCount=(data.summary||{}).retracted||0;
-  const oaNote=oaCount>0?`<span style="font-size:11px;color:var(--green);margin-left:12px">🔓 ${oaCount} open-access link${oaCount>1?'s':''} found</span>`:'';
-  const retractedNote=retractedCount>0?`<span style="font-size:11px;font-weight:600;color:var(--red);margin-left:12px">⛔ ${retractedCount} RETRACTED paper${retractedCount>1?'s':''} cited!</span>`:'';
-  const unpayNote=!oaCount&&(data.verification||[]).some(v=>v.doi)?`<span style="font-size:11px;color:var(--yellow);margin-left:12px">💡 Set UNPAYWALL_EMAIL env var to enable open-access links</span>`:'';
+  const oaCount=(data.summary||{}).open_access||0;
+  const procTime=data.processing_time_seconds;
+
+  // Penalty breakdown
+  const penalties=score.penalties||[];
+  let penHtml='';
+  if(penalties.length){
+    penHtml=`<div class="penalty-grid" style="margin-top:12px">`;
+    penalties.forEach(p=>{
+      penHtml+=`<div class="penalty-card">
+        <div class="pen-num bad">-${p.deduction}</div>
+        <div><div class="pen-label">${esc(p.category)}</div><div class="pen-deduct">${p.count} × ${p.per_item||'?'} pts (max -${p.cap||'?'})</div></div>
+      </div>`;
+    });
+    penHtml+=`</div>`;
+  } else if(s>0){
+    penHtml=`<div class="penalty-card clean" style="margin-top:10px;display:inline-flex"><div class="pen-num ok">✓</div><div class="pen-label">No penalties — perfect submission!</div></div>`;
+  }
+
+  // Student feedback
+  const fb=score.student_feedback||[];
+  const fbHtml=fb.length?`<div class="fb-box fb-student"><strong>📋 Student feedback:</strong><ul style="margin:6px 0 0 16px;line-height:1.7">${fb.map(f=>`<li>${esc(f)}</li>`).join('')}</ul></div>`:'';
+  const profHtml=score.professor_note?`<div class="fb-box fb-professor">🔍 <strong>Professor note:</strong> ${esc(score.professor_note)}</div>`:'';
+  const reasonHtml=score.verdict_reason?`<div class="verdict-reason">📝 ${esc(score.verdict_reason)}</div>`:'';
+
   $('verdictBanner').innerHTML=`
     <div class="verdict-header">
       <div class="verdict-badge ${cls}">${icon} ${label}</div>
-      <div class="verdict-score"><strong>${score.score??0}</strong>/ 100 &nbsp;·&nbsp; Grade: <strong>${score.grade||'?'}</strong>${retractedNote}${oaNote}${unpayNote}</div>
+      <div class="verdict-score"><strong>${s}</strong>/100 &nbsp;·&nbsp; <strong>${score.grade||'?'}</strong>
+        ${retractedCount?`&nbsp;<span style="color:var(--red);font-weight:600;font-size:13px">⛔ ${retractedCount} RETRACTED</span>`:''}
+        ${oaCount?`&nbsp;<span style="color:var(--green);font-size:12px">🔓 ${oaCount} open-access</span>`:''}
+        ${procTime?`&nbsp;<span style="font-size:11px;color:var(--text3)">(${procTime}s)</span>`:''}
+      </div>
     </div>
-    ${reasonHtml}${fbHtml}${profHtml}
-    <div class="accuracy-disclaimer">⚠ Automated estimates only. AI fake-detection and database lookups can produce false positives/negatives. Always confirm flagged references manually before any marking decision.</div>`;
+    ${reasonHtml}
+    ${penHtml}
+    ${fbHtml}${profHtml}
+    <div class="verdict-actions">
+      <button class="v-btn v-btn-export" id="exportBibBtn" style="display:none" onclick="exportBibTeX()">⬇ Download corrected .bib</button>
+      <button class="v-btn v-btn-print" onclick="window.print()">🖨 Print / Save PDF</button>
+    </div>
+    <div class="accuracy-disclaimer">⚠ Automated estimates only — AI fake-detection and database lookups can produce false positives/negatives. Always confirm flagged references manually before marking decisions.</div>`;
 }
 
-// ============================================================
-// RENDER: TAB 1 — Bibliography (formatting & missing field alerts)
-// ============================================================
+// ══════════════════════════════════════════════════════════════════
+// RENDER: Bibliography tab
+// ══════════════════════════════════════════════════════════════════
 function renderBibliographyTab(data){
   const bib=data.bibliography||[];
   const verMap={};(data.verification||[]).forEach(v=>verMap[v.key]=v);
-
   if(!bib.length){$('bibContent').innerHTML=`<div class="empty-sec"><span class="empty-sec-icon">📚</span>No bibliography entries found</div>`;return}
 
   const issues=bib.filter(e=>e.completeness_issues&&e.completeness_issues.length);
   const clean=bib.filter(e=>!e.completeness_issues||!e.completeness_issues.length);
   const aiReparsed=bib.filter(e=>e.ai_reparsed);
   const keyMismatches=bib.filter(e=>e.key_consistent===false);
-
-  // Update tab badge
   $('tb-bib').className='tab-badge'+(issues.length?' warn':'');
-  $('tb-bib').textContent=issues.length?`${bib.length} entries / ${issues.length} issues`:bib.length+' entries';
+  $('tb-bib').textContent=issues.length?`${bib.length} / ${issues.length} issues`:bib.length;
 
-  let html='';
-
-  // Info bar: summary of bib-level stats
-  html+=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:20px">
+  let html=`<input class="bib-search" type="search" id="bibSearch" placeholder="Search by key, title or author…" oninput="filterBib(this.value)"/>`;
+  html+=`<div class="stats-grid" style="margin-bottom:16px">
     <div class="stat-card"><div class="stat-num">${bib.length}</div><div class="stat-lbl">Total entries</div></div>
     <div class="stat-card"><div class="stat-num ${issues.length?'stat-warn':'stat-ok'}">${issues.length}</div><div class="stat-lbl">LNI format issues</div></div>
     <div class="stat-card"><div class="stat-num ${keyMismatches.length?'stat-bad':'stat-ok'}">${keyMismatches.length}</div><div class="stat-lbl">Key mismatches</div></div>
-    <div class="stat-card"><div class="stat-num ${aiReparsed.length?'stat-warn':'stat-ok'}">${aiReparsed.length}</div><div class="stat-lbl">AI-reparsed entries</div></div>
+    <div class="stat-card"><div class="stat-num ${aiReparsed.length?'stat-warn':'stat-ok'}">${aiReparsed.length}</div><div class="stat-lbl">AI-reparsed</div></div>
   </div>`;
 
-  // Warning if AI reparsed entries (low-quality formatting)
   if(aiReparsed.length){
-    html+=`<div style="margin-bottom:16px;padding:10px 14px;background:var(--purple-bg);border:1px solid var(--purple-border);border-radius:8px;font-size:12px;color:var(--purple)">
-      🤖 <strong>${aiReparsed.length} entr${aiReparsed.length>1?'ies':'y'} could not be parsed by the LNI rule engine</strong> and required AI assistance.
-      This usually means non-standard formatting. Keys: ${aiReparsed.map(e=>`<code>[${esc(e.key)}]</code>`).join(', ')}
+    html+=`<div style="margin-bottom:14px;padding:8px 12px;background:var(--purple-bg);border:1px solid var(--purple-border);border-radius:6px;font-size:12px;color:var(--purple)">
+      🤖 <strong>${aiReparsed.length} entr${aiReparsed.length>1?'ies':'y'} required AI re-parsing</strong> — non-standard formatting: ${aiReparsed.map(e=>`<code>[${esc(e.key)}]</code>`).join(', ')}
     </div>`;
   }
 
+  const renderEntry=e=>bibEntryHtml(e,verMap[e.key]);
   if(issues.length){
-    html+=`<h3 style="font-size:13px;font-weight:600;color:var(--red);margin-bottom:12px">⚠ Entries with LNI formatting or missing field alerts (${issues.length})</h3>`;
-    for(const e of issues) html+=bibEntryHtml(e,verMap[e.key]);
-    if(clean.length) html+=`<h3 style="font-size:13px;font-weight:600;color:var(--green);margin:24px 0 12px">✓ Complete LNI-compliant entries (${clean.length})</h3>`;
+    html+=`<h3 style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:10px">⚠ Entries with formatting issues (${issues.length})</h3>`;
+    issues.forEach(e=>{html+=renderEntry(e)});
+    if(clean.length)html+=`<h3 style="font-size:12px;font-weight:600;color:var(--green);margin:20px 0 10px">✓ Complete LNI-compliant entries (${clean.length})</h3>`;
   }
-  for(const e of clean) html+=bibEntryHtml(e,verMap[e.key]);
+  clean.forEach(e=>{html+=renderEntry(e)});
+  html+=`<div id="bibEmpty" style="display:none" class="empty-sec"><span class="empty-sec-icon">🔍</span>No entries match your search</div>`;
   $('bibContent').innerHTML=html;
 }
 
 function bibEntryHtml(e,ver){
   const hasIssues=e.completeness_issues&&e.completeness_issues.length;
-  const keyErr=hasIssues&&e.completeness_issues.some(i=>i.toLowerCase().includes('key'));
-  const cls=keyErr?'key-error':hasIssues?'has-issues':'';
-  const keyConsistent=e.key_consistent;
-  const keyBadge=keyConsistent===false?`<span class="bib-key-ok bad">⚠ key mismatch</span>`:keyConsistent===true?`<span class="bib-key-ok ok">✓ key valid</span>`:'';
-
-  const fields=[
-    {label:'Authors',val:e.authors},
-    {label:'Year',val:e.year},
-    {label:'Publisher',val:e.publisher},
-    {label:'Journal',val:e.journal},
-    {label:'Pages',val:e.pages},
-    {label:'DOI',val:e.doi},
-    {label:'URL',val:e.url},
-  ].filter(f=>f.val);
-
-  const metaHtml=fields.map(f=>`<span><strong style="color:var(--text2)">${f.label}:</strong> ${esc(f.val)}</span>`).join('');
-  const issueHtml=hasIssues?`<div style="margin-top:8px">`+e.completeness_issues.map(i=>{
-    const isErr=i.toLowerCase().includes('missing')||i.toLowerCase().includes('inconsist')||i.toLowerCase().includes('fake');
-    return `<span class="issue-pill${isErr?' err':''}">${esc(i)}</span>`;
-  }).join('')+`</div>`:'';
-
+  const cls=e.key_consistent===false?'key-error':hasIssues?'has-issues':'clean';
+  const keyBadge=e.key_consistent===false?`<span class="bib-key-badge bad">⚠ key mismatch</span>`:e.key_consistent===true?`<span class="bib-key-badge ok">✓</span>`:'';
   const oaUrl=ver&&ver.open_access_url;
-  const oaHtml=oaUrl?`<a href="${esc(oaUrl)}" class="oa-link" target="_blank">🔓 Open Access PDF ↗</a>`:'';
-
-  return `<div class="bib-entry ${cls}">
+  return `<div class="bib-entry ${cls}" data-key="${esc(e.key)}" data-title="${esc((e.title||'').toLowerCase())}" data-authors="${esc((e.authors||'').toLowerCase())}">
     <div class="bib-entry-header">
       <span class="bib-key">[${esc(e.key)}]</span>
-      <span class="bib-type">${esc(e.type||e.entry_type||'unknown')}</span>
-      ${keyBadge}
-      ${e.ai_reparsed?`<span style="font-size:10px;background:var(--purple-bg);color:var(--purple);border:1px solid var(--purple-border);border-radius:3px;padding:1px 6px">🤖 AI-parsed</span>`:''}
+      <span class="bib-type">${esc(e.type||e.entry_type||'misc')}</span>${keyBadge}
+      ${e.ai_reparsed?`<span style="font-size:10px;background:var(--purple-bg);color:var(--purple);border:1px solid var(--purple-border);border-radius:3px;padding:1px 5px">🤖 AI-parsed</span>`:''}
     </div>
-    <div class="bib-title">${esc(e.title||'No title extracted')}</div>
-    ${metaHtml?`<div class="bib-meta">${metaHtml}</div>`:''}
-    ${oaHtml}
-    ${issueHtml}
+    <div class="bib-title">${esc(e.title||'No title')}</div>
+    <div class="bib-meta">
+      ${e.authors?`<span>👤 ${esc(e.authors)}</span>`:''}
+      ${e.year?`<span>📅 ${esc(e.year)}</span>`:''}
+      ${e.publisher?`<span>🏢 ${esc(e.publisher)}</span>`:''}
+      ${e.journal?`<span>📰 ${esc(e.journal)}</span>`:''}
+      ${e.doi?`<span>🔗 ${esc(e.doi)}</span>`:''}
+    </div>
+    ${oaUrl?`<a href="${esc(oaUrl)}" class="oa-link" target="_blank" rel="noopener">🔓 Open Access ↗</a>`:''}
+    ${hasIssues?`<div style="margin-top:6px">${e.completeness_issues.map(i=>{const bad=i.toLowerCase().includes('missing')||i.toLowerCase().includes('inconsist');return `<span class="issue-pill${bad?' err':''}">${esc(i)}</span>`}).join('')}</div>`:''}
   </div>`;
 }
 
-// ============================================================
-// RENDER: TAB 2 — Cross-Check (discrepancy report)
-// ============================================================
+window.filterBib=function(q){
+  q=q.toLowerCase().trim();
+  let anyVisible=false;
+  document.querySelectorAll('#bibContent .bib-entry').forEach(card=>{
+    const match=!q||card.dataset.key.toLowerCase().includes(q)||card.dataset.title.includes(q)||card.dataset.authors.includes(q);
+    card.style.display=match?'':'none';
+    if(match)anyVisible=true;
+  });
+  const emp=$('bibEmpty');if(emp)emp.style.display=anyVisible?'none':'block';
+};
+
+// ══════════════════════════════════════════════════════════════════
+// RENDER: Cross-Check tab
+// ══════════════════════════════════════════════════════════════════
 function renderCrossCheckTab(data){
   const xcheck=data.cross_check||{};
   const missing=xcheck.cited_not_in_bib||[];
@@ -553,233 +692,228 @@ function renderCrossCheckTab(data){
   const bibMap={};(data.bibliography||[]).forEach(b=>bibMap[b.key]=b);
   const dupes=data.duplicates||[];
   const selfCites=data.self_citations||[];
-
-  // Update tab badge
-  const totalIssues=missing.length+orphaned.length+dupes.length;
+  const totalIssues=missing.filter(k=>!k.startsWith('__')).length+orphaned.filter(k=>!k.startsWith('__')).length+dupes.length;
   $('tb-xcheck').textContent=totalIssues===0?'✓':totalIssues+' issues';
   $('tb-xcheck').className='tab-badge'+(totalIssues>0?' crit':'');
 
   let html=`<div class="stats-grid">
-    <div class="stat-card"><div class="stat-num ${missing.length>0?'stat-bad':'stat-ok'}">${missing.length}</div><div class="stat-lbl">Cited but missing from bibliography</div></div>
-    <div class="stat-card"><div class="stat-num ${orphaned.length>0?'stat-warn':'stat-ok'}">${orphaned.length}</div><div class="stat-lbl">In bibliography, never cited</div></div>
+    <div class="stat-card"><div class="stat-num ${missing.length?'stat-bad':'stat-ok'}">${missing.length}</div><div class="stat-lbl">Missing from bibliography</div></div>
+    <div class="stat-card"><div class="stat-num ${orphaned.length?'stat-warn':'stat-ok'}">${orphaned.length}</div><div class="stat-lbl">Never cited in text</div></div>
     <div class="stat-card"><div class="stat-num stat-ok">${correct.length}</div><div class="stat-lbl">Correctly matched</div></div>
-    <div class="stat-card"><div class="stat-num ${dupes.length>0?'stat-warn':'stat-ok'}">${dupes.length}</div><div class="stat-lbl">Duplicate entries</div></div>
+    <div class="stat-card"><div class="stat-num ${dupes.length?'stat-warn':'stat-ok'}">${dupes.length}</div><div class="stat-lbl">Duplicates</div></div>
   </div>`;
 
-  if(missing.length){
-    html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--red)">🔴 Cited in text but NOT in bibliography (${missing.length})</div>`;
-    for(const k of missing){
-      const ctxArr=ctxMap[k]||[];
-      const ctxHtml=ctxArr.length?`<div class="ctx-snippet">"${esc(ctxArr[0])}"</div>`:'';
-      html+=`<div class="xcheck-item missing"><div class="xcheck-icon">📌</div><div class="xcheck-body"><div class="xcheck-key">[${esc(k)}]</div><div class="xcheck-desc">This citation key appears in the body text but has no corresponding bibliography entry. The student must add it.</div>${ctxHtml}</div></div>`;
-    }
+  const realMissing=missing.filter(k=>!k.startsWith('__'));
+  const numericOverflow=missing.find(k=>k.startsWith('__NUMERIC_OVERFLOW__'));
+  const numericUnder=orphaned.find(k=>k.startsWith('__NUMERIC_UNDERREF__'));
+
+  if(numericOverflow){
+    html+=`<div style="padding:10px 14px;background:var(--yellow-bg);border:1px solid var(--yellow-border);border-radius:8px;margin-bottom:16px;font-size:12px;color:var(--yellow)">
+      🔢 ${esc(numericOverflow.replace('__NUMERIC_OVERFLOW__ ',''))} — more numeric citations than bibliography entries.
+    </div>`;
+  }
+  if(numericUnder){
+    html+=`<div style="padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;font-size:12px;color:var(--text3)">
+      🔢 ${esc(numericUnder.replace('__NUMERIC_UNDERREF__ ',''))} — some bibliography entries may be uncited.
+    </div>`;
+  }
+
+  if(realMissing.length){
+    html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--red)">🔴 Cited in text but NOT in bibliography (${realMissing.length})</div>`;
+    realMissing.forEach(k=>{
+      const ctx=(ctxMap[k]||[])[0]||'';
+      html+=`<div class="xcheck-item missing"><div class="xcheck-icon">📌</div><div class="xcheck-body"><div class="xcheck-key">[${esc(k)}]</div><div class="xcheck-desc">No bibliography entry — student must add it.</div>${ctx?`<div class="ctx-snippet">"${esc(ctx)}"</div>`:''}</div></div>`;
+    });
     html+=`</div>`;
   }
 
-  if(orphaned.length){
-    html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--yellow)">🟡 In bibliography but never cited in text (${orphaned.length})</div>`;
-    for(const k of orphaned){
+  const realOrphaned=orphaned.filter(k=>!k.startsWith('__'));
+  if(realOrphaned.length){
+    html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--yellow)">🟡 In bibliography but never cited (${realOrphaned.length})</div>`;
+    realOrphaned.forEach(k=>{
       const entry=bibMap[k];
-      html+=`<div class="xcheck-item orphan"><div class="xcheck-icon">📖</div><div class="xcheck-body"><div class="xcheck-key">[${esc(k)}]</div><div class="xcheck-desc">${entry?esc(entry.title||'No title'):'Entry exists in bibliography but is never referenced in the body text.'}</div></div></div>`;
-    }
+      html+=`<div class="xcheck-item orphan"><div class="xcheck-icon">📖</div><div class="xcheck-body"><div class="xcheck-key">[${esc(k)}]</div><div class="xcheck-desc">${entry?esc(entry.title||'No title'):'Never referenced in the body text.'}</div></div></div>`;
+    });
     html+=`</div>`;
   }
 
   if(dupes.length){
     html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--yellow)">🔁 Duplicate entries (${dupes.length})</div>`;
-    for(const d of dupes){
+    dupes.forEach(d=>{
       html+=`<div class="xcheck-item orphan"><div class="xcheck-icon">♊</div><div class="xcheck-body"><div class="xcheck-key">[${esc(d.key_a)}] ↔ [${esc(d.key_b)}]</div><div class="xcheck-desc">${Math.round(d.similarity*100)}% similar — "${esc(d.title_a)}" vs "${esc(d.title_b)}"</div></div></div>`;
-    }
+    });
     html+=`</div>`;
   }
 
   if(selfCites.length){
-    html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--text2)">👤 Possible self-citations (${selfCites.length}) — informational</div>`;
-    for(const s of selfCites){
-      html+=`<div class="xcheck-item" style="border-left:3px solid var(--text3)"><div class="xcheck-icon">👤</div><div class="xcheck-body"><div class="xcheck-key">[${esc(s.key)}]</div><div class="xcheck-desc">Author "${esc(s.matched_author)}" appears to match a name in the document body — potential self-citation.</div></div></div>`;
-    }
+    html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--text2)">👤 Possible self-citations (${selfCites.length})</div>`;
+    selfCites.forEach(s=>{
+      html+=`<div class="xcheck-item" style="border-left:3px solid var(--text3)"><div class="xcheck-icon">👤</div><div class="xcheck-body"><div class="xcheck-key">[${esc(s.key)}]</div><div class="xcheck-desc">Author "${esc(s.matched_author)}" appears to match a name in the document.</div></div></div>`;
+    });
     html+=`</div>`;
   }
 
   if(correct.length){
-    html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--green)">✓ Correctly matched citations (${correct.length})</div>`;
-    html+=`<div style="display:flex;flex-wrap:wrap;gap:6px">`;
-    for(const k of correct){
-      html+=`<span style="font-family:'IBM Plex Mono',monospace;font-size:12px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);padding:3px 10px;border-radius:4px">[${esc(k)}]</span>`;
-    }
+    html+=`<div class="xcheck-section"><div class="xcheck-title" style="color:var(--green)">✓ Correctly matched (${correct.length})</div><div style="display:flex;flex-wrap:wrap;gap:5px">`;
+    correct.forEach(k=>{html+=`<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);padding:3px 8px;border-radius:4px">[${esc(k)}]</span>`});
     html+=`</div></div>`;
   }
 
-  if(!missing.length&&!orphaned.length&&!dupes.length&&!selfCites.length){
-    html+=`<div class="empty-sec"><span class="empty-sec-icon">✅</span><div>All citations match perfectly</div><div style="font-size:12px;color:var(--text3);margin-top:8px">Every in-text citation has a bibliography entry and every bibliography entry is cited.</div></div>`;
+  if(!realMissing.length&&!realOrphaned.length&&!dupes.length&&!selfCites.length&&!numericOverflow){
+    html+=`<div class="empty-sec"><span class="empty-sec-icon">✅</span><strong>All citations match perfectly</strong><div style="font-size:12px;margin-top:6px">Every in-text citation has a bibliography entry and vice versa.</div></div>`;
   }
-
   $('xcheckContent').innerHTML=html;
 }
 
-// ============================================================
-// RENDER: TAB 3 — Verification (validity status & full-text links)
-// ============================================================
+// ══════════════════════════════════════════════════════════════════
+// RENDER: Verification tab
+// ══════════════════════════════════════════════════════════════════
 function renderVerificationTab(data){
   const verification=data.verification||[];
-  const fake=verification.filter(v=>v.ai_verdict==='FAKE');
-  const suspicious=verification.filter(v=>v.ai_verdict==='SUSPICIOUS');
-  const real=verification.filter(v=>v.ai_verdict==='REAL');
-  const aiSummary=data.verification_ai_summary||'';
-  const versionNotes=data.arxiv_version_notes||[];
+  if(!verification.length){$('verContent').innerHTML=`<div class="empty-sec"><span class="empty-sec-icon">🔬</span>No verification data — enable "Verify references online"</div>`;return}
 
-  // Tab badge
-  const flagCount=fake.length+suspicious.length;
+  const retracted=verification.filter(v=>v.is_retracted);
+  const fake=verification.filter(v=>v.ai_verdict==='FAKE'&&!v.is_retracted);
+  const suspicious=verification.filter(v=>v.ai_verdict==='SUSPICIOUS'&&!v.is_retracted);
+  const real=verification.filter(v=>v.ai_verdict==='REAL'&&!v.is_retracted);
+  const flagCount=retracted.length+fake.length+suspicious.length;
+
   $('tb-ver').textContent=flagCount===0?`${real.length} verified`:flagCount+' flagged';
-  $('tb-ver').className='tab-badge'+(fake.length>0?' crit':suspicious.length>0?' warn':'');
+  $('tb-ver').className='tab-badge'+(retracted.length+fake.length>0?' crit':suspicious.length>0?' warn':'');
 
-  if(!verification.length){$('verContent').innerHTML=`<div class="empty-sec"><span class="empty-sec-icon">🔬</span>No verification data — run with "Verify references online" enabled</div>`;return}
-
-  // Helper: confidence bar
+  const aiSummary=data.verification_ai_summary||'';
   const confBar=conf=>{
     if(conf==null)return'';
     const pct=Math.round(conf*100);
     const col=pct>=80?'var(--green)':pct>=50?'var(--yellow)':'var(--red)';
-    return `<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text3)">
-      <span style="width:60px;height:6px;background:var(--border);border-radius:3px;overflow:hidden;display:inline-block">
-        <span style="display:block;height:100%;width:${pct}%;background:${col};border-radius:3px"></span>
-      </span>${pct}% confidence</span>`;
+    return `<span class="conf-bar-wrap"><span class="conf-bar-track"><span class="conf-bar-fill" style="width:${pct}%;background:${col}"></span></span>${pct}%</span>`;
   };
 
   const vhtml=v=>{
-    const verdict=(v.ai_verdict||'SUSPICIOUS').toLowerCase();
-    const cls=verdict==='real'?'real':verdict==='fake'?'fake':'suspicious';
-    const statusText=verdict==='real'?'REAL':verdict==='fake'?'FAKE':'SUSPICIOUS';
+    const verdict=(v.is_retracted?'retracted':(v.ai_verdict||'SUSPICIOUS')).toLowerCase();
+    const cls=v.is_retracted?'retracted':verdict==='real'?'real':verdict==='fake'?'fake':'suspicious';
+    const statusText=v.is_retracted?'RETRACTED':verdict==='real'?'REAL':verdict==='fake'?'FAKE':'SUSPICIOUS';
     const doiUrl=v.doi?`https://doi.org/${v.doi}`:(v.url||'');
-    const doiLink=doiUrl?`<a href="${esc(doiUrl)}" target="_blank" style="color:var(--blue);text-decoration:none;font-size:11px">🔗 ${esc(v.doi||v.url||'')} ↗</a>`:'';
-    // open_access_url comes directly on the verification object
-    const oaLink=v.open_access_url?`<a href="${esc(v.open_access_url)}" target="_blank" class="oa-link" style="font-size:11px">🔓 Open Access PDF ↗</a>`:'';
-    const sources=(v.sources_checked||[]).length?`<div class="sources-chips" style="margin-top:6px">${v.sources_checked.map(s=>`<span class="src-chip">${esc(s)}</span>`).join('')}</div>`:'';
+    const doiLink=doiUrl?`<a href="${esc(doiUrl)}" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:none;font-size:11px">🔗 ${esc(v.doi||v.url||'')} ↗</a>`:'';
+    const oaLink=v.open_access_url?`<a href="${esc(v.open_access_url)}" target="_blank" rel="noopener" class="oa-link" style="font-size:11px">🔓 Open Access ↗</a>`:'';
+    const sources=(v.sources_checked||[]).length?`<div class="sources-chips">${v.sources_checked.map(s=>`<span class="src-chip">${esc(s)}</span>`).join('')}</div>`:'';
     const reasoning=v.ai_reasoning?`<div class="vref-reasoning">🤖 ${esc(v.ai_reasoning)}</div>`:'';
-    const risks=(v.ai_risk_factors||[]).length?`<div class="vref-risks">${v.ai_risk_factors.map(r=>`<span class="risk-pill">⚠ ${esc(r)}</span>`).join('')}</div>`:'';
-    const versionNote=v.version_note?`<div style="margin-top:6px;font-size:11px;color:var(--blue);background:var(--blue-bg);padding:4px 10px;border-radius:4px">📋 arXiv note: ${esc(v.version_note)}</div>`:'';
-    const matchedTitle=v.matched_title&&v.matched_title!==v.title?`<div style="font-size:11px;color:var(--text3);margin-top:3px">Database match: "${esc(v.matched_title)}"</div>`:'';
-    return `<div class="vref-card ${cls}" data-verdict="${verdict}" data-retracted="${v.is_retracted?'true':'false'}">
+    const risks=(v.ai_risk_factors||[]).length?`<div style="margin-top:5px">${v.ai_risk_factors.map(r=>`<span class="risk-pill">⚠ ${esc(r)}</span>`).join('')}</div>`:'';
+    const versionNote=v.version_note?`<div style="margin-top:5px;font-size:11px;color:var(--blue);background:var(--blue-bg);padding:4px 9px;border-radius:4px">📋 ${esc(v.version_note)}</div>`:'';
+    const matchedTitle=v.matched_title&&v.matched_title!==v.title?`<div style="font-size:11px;color:var(--text3);margin-top:2px">DB match: "${esc(v.matched_title)}"</div>`:'';
+    const retractNote=v.is_retracted?`<div style="margin-top:6px;padding:7px 10px;background:var(--red-bg);border:1px solid var(--red-border);border-radius:6px;font-size:12px;color:var(--red);font-weight:500">⛔ ${esc(v.retraction_note||'This paper has been retracted. Do not cite.')}</div>`:'';
+
+    // Mismatch warnings
+    let mismatchHtml='';
+    if(v.year_mismatch&&Math.abs(v.year_mismatch)>1){
+      const dir=v.year_mismatch>0?`${v.year_mismatch} yr later`:`${Math.abs(v.year_mismatch)} yr earlier`;
+      mismatchHtml+=`<span class="mismatch-warn mismatch-year">📅 Year off by ${dir}</span> `;
+    }
+    if(v.author_overlap!==null&&v.author_overlap!==undefined&&v.author_overlap<0.4){
+      mismatchHtml+=`<span class="mismatch-warn mismatch-author">👤 Author mismatch (${Math.round(v.author_overlap*100)}% overlap)</span>`;
+    }
+    if(mismatchHtml)mismatchHtml=`<div style="margin-top:5px">${mismatchHtml}</div>`;
+
+    // Corrected metadata panel
+    const corrFields=[];
+    if(v.corrected_title&&v.corrected_title!==v.title)corrFields.push(`<div class="correction-row"><strong>Title:</strong> ${esc(v.corrected_title)}</div>`);
+    if(v.corrected_authors)corrFields.push(`<div class="correction-row"><strong>Authors:</strong> ${esc(v.corrected_authors)}</div>`);
+    if(v.corrected_year)corrFields.push(`<div class="correction-row"><strong>Year:</strong> ${esc(v.corrected_year)}</div>`);
+    if(v.corrected_journal)corrFields.push(`<div class="correction-row"><strong>Journal/Venue:</strong> ${esc(v.corrected_journal)}</div>`);
+    if(v.corrected_pages)corrFields.push(`<div class="correction-row"><strong>Pages:</strong> ${esc(v.corrected_pages)}</div>`);
+    const corrHtml=corrFields.length?`<div class="correction-box"><div class="correction-title">📋 DATABASE CORRECTION</div>${corrFields.join('')}</div>`:'';
+
+    // Corrected BibTeX for this single entry
+    const hasBibtex=v.doi||(v.corrected_title&&(v.corrected_authors||v.corrected_year));
+    const bibtexBtn=hasBibtex?`<button class="btn-act btn-copy" onclick="copyOneBibtex('${esc(v.key)}')">📋 Copy BibTeX</button>`:'';
+
+    return `<div class="vref-card ${cls}" data-verdict="${v.is_retracted?'retracted':verdict}" data-retracted="${v.is_retracted?'true':'false'}" id="vcard-${esc(v.key)}">
       <div class="vref-header">
         <span class="vref-key">[${esc(v.key)}]</span>
-        <span class="vstatus ${cls}">${statusText}</span>
-        ${v.is_retracted?`<span class="retracted-badge">⛔ RETRACTED</span>`:''}
+        ${v.is_retracted?`<span class="retracted-badge">⛔ RETRACTED</span>`:`<span class="vstatus ${cls}">${statusText}</span>`}
         ${confBar(v.confidence)}
       </div>
-      <div class="vref-title">${esc(v.title||'No title extracted')}</div>
+      <div class="vref-title">${esc(v.title||'No title')}</div>
       ${matchedTitle}
-      <div class="vref-meta" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:10px">${doiLink}${oaLink}</div>
-      ${v.is_retracted?`<div style="margin-top:6px;padding:8px 12px;background:var(--red-bg);border:1px solid var(--red-border);border-radius:6px;font-size:12px;color:var(--red);font-weight:500">⛔ ${esc(v.retraction_note||'This paper has been retracted. Do not cite.')}</div>`:''}
+      <div class="vref-meta">${doiLink}${oaLink}</div>
+      ${mismatchHtml}
       ${sources}
-      ${reasoning}
-      ${risks}
-      ${versionNote}
-      ${(()=>{
-        const fields=[];
-        if(v.corrected_title&&v.corrected_title!==v.title)fields.push(`<div style="font-size:11px"><strong>Title:</strong> ${esc(v.corrected_title)}</div>`);
-        if(v.corrected_authors&&v.corrected_authors!==v.authors)fields.push(`<div style="font-size:11px"><strong>Authors:</strong> ${esc(v.corrected_authors)}</div>`);
-        if(v.corrected_year)fields.push(`<div style="font-size:11px"><strong>Year:</strong> ${esc(v.corrected_year)}</div>`);
-        if(v.corrected_journal)fields.push(`<div style="font-size:11px"><strong>Journal/Venue:</strong> ${esc(v.corrected_journal)}</div>`);
-        if(v.corrected_pages)fields.push(`<div style="font-size:11px"><strong>Pages:</strong> ${esc(v.corrected_pages)}</div>`);
-        return fields.length?`<div style="margin-top:8px;padding:8px 10px;background:var(--blue-bg);border:1px solid var(--blue-border);border-radius:6px"><div style="font-size:10px;font-weight:600;color:var(--blue);margin-bottom:4px">📋 DATABASE CORRECTION</div>${fields.join('')}</div>`:'';
-      })()}
+      ${retractNote}
+      ${reasoning}${risks}${versionNote}${corrHtml}
       <div class="vref-actions">
-        <button class="btn-act btn-verify" onclick="markVerified('${esc(v.key)}','${(v.title||'').replace(/\'/g,"\\'")}','${verdict.toUpperCase()}','${esc(v.authors||'')}')">✓ Professor verify</button>
-        <button class="btn-act btn-reject" onclick="markRejected('${esc(v.key)}','${(v.title||'').replace(/\'/g,"\\'")}','${esc(v.authors||'')}')">✗ Mark as fake</button>
+        <button class="btn-act btn-verify" onclick="markVerified('${esc(v.key)}','${(v.title||'').replace(/'/g,"\\'")}','${(v.ai_verdict||'').replace(/'/g,"\\'")}','${(v.authors||v.correct_authors||'').replace(/'/g,"\\'")}')">✓ Verify</button>
+        <button class="btn-act btn-reject" onclick="markRejected('${esc(v.key)}','${(v.title||'').replace(/'/g,"\\'")}','${(v.authors||'').replace(/'/g,"\\'")}')">✗ Mark fake</button>
+        ${bibtexBtn}
       </div>
     </div>`;
   };
 
-  const aiSummaryHtml=aiSummary?`<div style="margin-bottom:16px;padding:10px 14px;background:var(--surface2);border-radius:8px;font-size:12px;color:var(--text2);border:1px solid var(--border)">🤖 ${esc(aiSummary)}</div>`:'';
-
-  const retracted=verification.filter(v=>v.is_retracted);
-  const filterBar=`<div class="ver-filter">
-    <button class="vfbtn active" data-f="all" onclick="setVerFilter('all',this)">All (${verification.length})</button>
-    ${retracted.length?`<button class="vfbtn" data-f="retracted" onclick="setVerFilter('retracted',this)" style="border-color:var(--red-border);color:var(--red);font-weight:600">⛔ Retracted (${retracted.length})</button>`:''}
-    <button class="vfbtn" data-f="fake" onclick="setVerFilter('fake',this)" style="${fake.length?'border-color:var(--red-border);color:var(--red)':''}">Fake (${fake.length})</button>
-    <button class="vfbtn" data-f="suspicious" onclick="setVerFilter('suspicious',this)" style="${suspicious.length?'border-color:var(--yellow-border);color:var(--yellow)':''}">Suspicious (${suspicious.length})</button>
-    <button class="vfbtn" data-f="real" onclick="setVerFilter('real',this)">Verified (${real.length})</button>
+  const aiSumHtml=aiSummary?`<div style="margin-bottom:12px;padding:9px 12px;background:var(--surface2);border-radius:6px;font-size:12px;color:var(--text2);border:1px solid var(--border)">🤖 ${esc(aiSummary)}</div>`:'';
+  const filterBar=`<div class="ver-filter" role="group" aria-label="Filter verification results">
+    <button class="vfbtn active" onclick="setVerFilter('all',this)">All (${verification.length})</button>
+    ${retracted.length?`<button class="vfbtn" onclick="setVerFilter('retracted',this)" style="border-color:var(--red-border);color:var(--red)">⛔ Retracted (${retracted.length})</button>`:''}
+    ${fake.length?`<button class="vfbtn" onclick="setVerFilter('fake',this)" style="border-color:var(--red-border)">Fake (${fake.length})</button>`:''}
+    ${suspicious.length?`<button class="vfbtn" onclick="setVerFilter('suspicious',this)" style="border-color:var(--yellow-border)">Suspicious (${suspicious.length})</button>`:''}
+    <button class="vfbtn" onclick="setVerFilter('real',this)">Verified (${real.length})</button>
   </div>`;
 
-  const cards=verification.map(vhtml).join('');
-  $('verContent').innerHTML=aiSummaryHtml+filterBar+`<div id="verCards">${cards}</div>`;
+  $('verContent').innerHTML=aiSumHtml+filterBar+`<div id="verCards">${verification.map(vhtml).join('')}</div>`;
 }
 
 function setVerFilter(f,btn){
   document.querySelectorAll('.vfbtn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
   document.querySelectorAll('#verCards .vref-card').forEach(c=>{
-    if(f==='all') c.style.display='';
-    else if(f==='retracted') c.style.display=c.dataset.retracted==='true'?'':'none';
+    if(f==='all')c.style.display='';
+    else if(f==='retracted')c.style.display=c.dataset.retracted==='true'?'':'none';
     else c.style.display=c.dataset.verdict===f?'':'none';
   });
 }
 
-// ============================================================
-// Main render entry point
-// ============================================================
+// ══════════════════════════════════════════════════════════════════
+// MAIN RENDER
+// ══════════════════════════════════════════════════════════════════
 function renderResults(data){
   lastData=data;
   renderVerdictBanner(data);
   renderBibliographyTab(data);
   renderCrossCheckTab(data);
   renderVerificationTab(data);
-  // Scanned PDF banner
-  const sb=$('scannedBanner');
-  if(data.is_scanned){sb.style.display='flex';sb.textContent='⚠ This PDF appears to be scanned or image-based. Text extraction may be incomplete — results may be unreliable. Upload the original Word or LaTeX source for accurate checking.'}
-  else{sb.style.display='none'}
-  // Show export button only if any corrected data exists
+  $('scannedBanner').style.display=data.is_scanned?'flex':'none';
   const hasCorrections=(data.verification||[]).some(v=>v.corrected_title||v.corrected_authors||v.corrected_year||v.is_retracted);
-  $('exportBibBtn').style.display=hasCorrections?'inline-flex':'none';
-  // Reset to first tab
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',i===0));
-  document.querySelectorAll('.panel').forEach((p,i)=>p.classList.toggle('active',i===0));
+  const eb=$('exportBibBtn');if(eb)eb.style.display=hasCorrections?'inline-flex':'none';
+  switchTab('bibliography');
 }
 
-// ============================================================
-// Professor review actions
-// ============================================================
+// ══════════════════════════════════════════════════════════════════
+// Professor review
+// ══════════════════════════════════════════════════════════════════
 async function markVerified(key,title,aiVerdict,authors){
   const url=prompt('Enter a verified URL for this paper (or leave blank):');
-  const note=prompt('Note for student (optional):');
+  const note=prompt('Note (optional):');
   try{
     const r=await fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({key,title,decision:'verified',url:url||'',
-        note:note||'Professor manually verified',ai_verdict:aiVerdict||'',authors:authors||''})});
-    if(r.ok){alert(`✅ [${key}] marked as verified. Future checks will not re-flag this paper.`)}
-    else{const e=await r.json();alert('Failed: '+(e.error||'Unknown error'))}
+      body:JSON.stringify({key,title,decision:'verified',url:url||'',note:note||'Professor manually verified',ai_verdict:aiVerdict||'',authors:authors||''})});
+    if(r.ok){
+      const card=$(`vcard-${key}`);
+      if(card){card.style.borderLeftColor='var(--green)';card.querySelector('.vstatus,.retracted-badge').textContent='✓ VERIFIED';card.querySelector('.vstatus,.retracted-badge').className='vstatus real'}
+      alert(`✅ [${key}] marked as verified — future checks will not re-flag this paper.`);
+    }else{const e=await r.json();alert('Failed: '+(e.error||'Unknown error'))}
   }catch(e){alert('Error: '+e.message)}
 }
 async function markRejected(key,title,authors){
-  const reason=prompt('Why is this reference fake? (shown to student):');
-  if(!reason)return;
+  const reason=prompt('Why is this reference fake?');if(!reason)return;
   try{
     const r=await fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({key,title,decision:'rejected',note:reason,authors:authors||''})});
-    if(r.ok){alert(`❌ [${key}] marked as fake/rejected.`)}
+    if(r.ok){alert(`❌ [${key}] marked as rejected.`)}
     else{const e=await r.json();alert('Failed: '+(e.error||'Unknown error'))}
   }catch(e){alert('Error: '+e.message)}
 }
 
-// ============================================================
-// Batch check
-// ============================================================
-$('batchRunBtn').onclick=async()=>{
-  if(!selBatch.length)return;showState('loading');resetProg();$('ldStep').textContent=`Checking ${selBatch.length} file(s)…`;
-  try{const form=new FormData();selBatch.forEach(f=>form.append('files',f));form.append('verify',verifyOn?'true':'false');const data=await(await fetch('/batch',{method:'POST',body:form})).json();if(data.error){showError(data.error);return}refreshCache();renderBatch(data);showState('batch')}catch(e){showError(e.message)}
-};
-
-function renderBatch(data){
-  const files=data.files||[];
-  const fakeTotal=files.reduce((s,f)=>s+(f.summary?.fake_candidates||0),0);
-  $('batchScoreBar').innerHTML=`<span style="font-weight:600">Batch Results · ${files.length} files</span><span style="margin-left:8px;font-size:12px;padding:3px 10px;border-radius:99px;background:${fakeTotal>0?'var(--red-bg)':'var(--green-bg)'};color:${fakeTotal>0?'var(--red)':'var(--green)'};border:1px solid ${fakeTotal>0?'var(--red-border)':'var(--green-border)'}">${fakeTotal} fake references</span>`;
-  $('batchBody').innerHTML=files.map((f,i)=>{
-    if(f.error)return`<tr><td>${i+1}</td><td>${esc(f.filename)}</td><td colspan="4" style="color:var(--red)">Error: ${esc(f.error)}</td></tr>`;
-    const sc=f.score||{},sm=f.summary||{};const g=sc.grade||'?';
-    return`<tr><td>${i+1}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.filename)}</td><td><strong>${sc.score??'—'}</strong></td><td><span class="gp g${g}">${g}</span></td><td style="color:${(sm.fake_candidates||0)>0?'var(--red)':'var(--text3)'}">${sm.fake_candidates||0}</td><td style="color:${(sm.missing_from_bib||0)>0?'var(--red)':'var(--text3)'}">${sm.missing_from_bib||0}</td></tr>`;
-  }).join('');
-}
-
+// ══════════════════════════════════════════════════════════════════
+// BibTeX export
+// ══════════════════════════════════════════════════════════════════
 async function exportBibTeX(){
   if(!lastData)return;
   try{
@@ -788,11 +922,64 @@ async function exportBibTeX(){
     if(!r.ok){const e=await r.json();alert('Export failed: '+(e.error||'Unknown error'));return}
     const blob=await r.blob();
     const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');a.href=url;a.download='corrected_references.bib';a.click();
-    URL.revokeObjectURL(url);
+    const a=document.createElement('a');a.href=url;a.download='corrected_references.bib';a.click();URL.revokeObjectURL(url);
   }catch(e){alert('Export error: '+e.message)}
 }
 
+window.copyOneBibtex=function(key){
+  if(!lastData)return;
+  const v=(lastData.verification||[]).find(x=>x.key===key);
+  const b=(lastData.bibliography||[]).find(x=>x.key===key);
+  if(!v&&!b){alert('Entry not found');return}
+  const type=(b&&(b.type||b.entry_type)||'misc').toLowerCase().replace('@','');
+  const lines=[`@${type}{${key},`];
+  const title=v&&v.corrected_title||b&&b.title||'';
+  const authors=v&&v.corrected_authors||b&&b.authors||'';
+  const year=v&&v.corrected_year||b&&b.year||'';
+  const journal=v&&v.corrected_journal||b&&b.journal||'';
+  const doi=v&&v.doi||b&&b.doi||'';
+  if(title)lines.push(`  title  = {{${title}}},`);
+  if(authors)lines.push(`  author = {${authors}},`);
+  if(year)lines.push(`  year   = {${year}},`);
+  if(journal)lines.push(`  journal= {{${journal}}},`);
+  if(doi)lines.push(`  doi    = {${doi}},`);
+  lines.push('}');
+  navigator.clipboard.writeText(lines.join('\n')).then(()=>{
+    const btn=document.querySelector(`#vcard-${key} .btn-copy`);
+    if(btn){btn.textContent='✓ Copied!';setTimeout(()=>btn.textContent='📋 Copy BibTeX',2000)}
+  });
+};
+
+// ══════════════════════════════════════════════════════════════════
+// Batch check
+// ══════════════════════════════════════════════════════════════════
+$('batchRunBtn').onclick=async()=>{
+  if(!selBatch.length)return;showState('loading');resetProg();
+  $('ldStep').textContent=`Checking ${selBatch.length} file(s)…`;
+  try{
+    const form=new FormData();selBatch.forEach(f=>form.append('files',f));form.append('verify',verifyOn?'true':'false');
+    const data=await(await fetch('/batch',{method:'POST',body:form})).json();
+    if(data.error){showError(data.error);return}
+    refreshCache();renderBatch(data);showState('batch');
+  }catch(e){showError(e.message)}
+};
+function renderBatch(data){
+  const files=data.files||[];
+  const fakeTotal=files.reduce((s,f)=>s+(f.summary?.fake_candidates||0),0);
+  const retTotal=files.reduce((s,f)=>s+(f.summary?.retracted||0),0);
+  $('batchScoreBar').innerHTML=`<span style="font-weight:600">Batch · ${files.length} files</span>
+    ${fakeTotal?`<span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);">${fakeTotal} fake refs</span>`:''}
+    ${retTotal?`<span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--red-bg);color:var(--red);font-weight:600;border:1px solid var(--red-border);">⛔ ${retTotal} retracted</span>`:''}`;
+  $('batchBody').innerHTML=files.map((f,i)=>{
+    if(f.error)return`<tr><td>${i+1}</td><td>${esc(f.filename)}</td><td colspan="5" style="color:var(--red)">Error: ${esc(f.error)}</td></tr>`;
+    const sc=f.score||{},sm=f.summary||{};const g=sc.grade||'?';const gl=g[0]||'F';
+    return`<tr><td>${i+1}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.filename)}</td><td><strong>${sc.score??'—'}</strong></td><td><span class="gp g${gl}">${g}</span></td><td style="color:${(sm.fake_candidates||0)?'var(--red)':'var(--text3)'}">${sm.fake_candidates||0}</td><td style="color:${(sm.retracted||0)?'var(--red)':'var(--text3)';}">${sm.retracted||0}</td><td style="color:${(sm.missing_from_bib||0)?'var(--red)':'var(--text3)'}">${sm.missing_from_bib||0}</td></tr>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════
+// State management
+// ══════════════════════════════════════════════════════════════════
 function showState(s){
   $('emptyState').style.display=s==='empty'?'flex':'none';
   $('loadingState').classList.toggle('show',s==='loading');

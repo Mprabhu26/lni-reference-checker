@@ -146,6 +146,30 @@ def _bib_to_dicts(bib_list: list) -> list:
     ]
 
 
+
+def _check_year_mismatch(vr, bib_dict: dict) -> Optional[int]:
+    """Return year difference if cited year differs from CrossRef year by >1, else None."""
+    corrected_year = getattr(vr, "corrected_year", None)
+    entry = bib_dict.get(vr.key)
+    if corrected_year and entry and entry.year:
+        try:
+            diff = int(corrected_year) - int(entry.year)
+            return diff if abs(diff) > 1 else None
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _check_author_overlap(vr, bib_dict: dict) -> Optional[float]:
+    """Return author overlap score (0-1) if corrected authors available, else None."""
+    corrected_authors = getattr(vr, "corrected_authors", None)
+    entry = bib_dict.get(vr.key)
+    if corrected_authors and entry and entry.authors:
+        from checker import author_overlap_score
+        return author_overlap_score(entry.authors, corrected_authors)
+    return None
+
+
 def _vr_to_dicts(api_results_raw: list) -> list:
     return [
         {"key": vr.key, "status": vr.status, "confidence": round(vr.confidence, 2),
@@ -164,6 +188,8 @@ def _vr_to_dicts(api_results_raw: list) -> list:
          "corrected_publisher": getattr(vr, "corrected_publisher", None),
          "corrected_volume": getattr(vr, "corrected_volume", None),
          "corrected_pages": getattr(vr, "corrected_pages", None),
+         "year_mismatch": _check_year_mismatch(vr, {}),
+         "author_overlap": _check_author_overlap(vr, {}),
          }
         for vr in api_results_raw
     ]
@@ -253,8 +279,38 @@ def _assemble_result(
             })
 
     ai_fake_count = verification_result.get("fake_count", 0)
+
+    # Count retracted, year mismatches, author mismatches from verification output
+    retracted_count = 0
+    year_mismatches = 0
+    author_mismatches = 0
+    for vr in api_results_raw:
+        if getattr(vr, "is_retracted", False):
+            retracted_count += 1
+        # Year mismatch: cited year vs CrossRef corrected year, diff > 1
+        corrected_year = getattr(vr, "corrected_year", None)
+        bib_entry = bib_dict.get(vr.key)
+        if corrected_year and bib_entry and bib_entry.year:
+            try:
+                diff = abs(int(corrected_year) - int(bib_entry.year))
+                if diff > 1:
+                    year_mismatches += 1
+            except (ValueError, TypeError):
+                pass
+        # Author mismatch: overlap score below 0.4 when we have corrected authors
+        corrected_authors = getattr(vr, "corrected_authors", None)
+        if corrected_authors and bib_entry and bib_entry.authors:
+            from checker import author_overlap_score
+            overlap = author_overlap_score(bib_entry.authors, corrected_authors)
+            if overlap is not None and overlap < 0.4:
+                author_mismatches += 1
+
     det_score = compute_score(bib_list, xcheck, api_results_raw,
-                              style_suggestions, duplicates, ai_fake_count=ai_fake_count)
+                              style_suggestions, duplicates,
+                              ai_fake_count=ai_fake_count,
+                              retracted_count=retracted_count,
+                              year_mismatches=year_mismatches,
+                              author_mismatches=author_mismatches)
     s = det_score["score"]
     det_verdict = "PASS" if s >= 75 else "FLAG" if s >= 50 else "FAIL"
 
