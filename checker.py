@@ -142,66 +142,127 @@ def _put_cache(entry: BibEntry, result: "VerificationResult") -> None:
 # Title similarity (improved)
 # ---------------------------------------------------------------------------
 
+def _normalize_title(t: str) -> str:
+    """Shared title normalizer — used by both similarity and search query building."""
+    t = t.lower().strip()
+    # German umlauts — normalize both ways for cross-database matching
+    for a, b in [('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss'), ('à', 'a'), ('é', 'e')]:
+        t = t.replace(a, b)
+    # Strip HTML entities
+    t = re.sub(r'&[a-z]+;', ' ', t)
+    # Strip LaTeX commands like \emph{word} → word
+    t = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', t)
+    t = re.sub(r'[{}]', '', t)
+    # Normalize subtitle separator (colon/dash) — "Title: Subtitle" == "Title - Subtitle"
+    t = re.sub(r'[:\-]+', ' ', t)
+    # Remove punctuation
+    t = re.sub(r'[^\w\s]', ' ', t)
+    # Collapse whitespace
+    t = re.sub(r'\s+', ' ', t).strip()
+    # Remove common stopwords (EN + DE)
+    stop = {'the', 'a', 'an', 'in', 'of', 'for', 'on', 'and', 'to', 'with', 'its',
+            'using', 'based', 'towards', 'toward', 'via', 'approach',
+            'der', 'die', 'das', 'und', 'fur', 'fuer', 'von', 'mit', 'im', 'an',
+            'zu', 'zur', 'zum', 'eine', 'ein', 'des', 'dem', 'den', 'is', 'are',
+            'was', 'were', 'be', 'by', 'at', 'or', 'not'}
+    return ' '.join(w for w in t.split() if w not in stop and len(w) > 2)
+
+
 def _title_similarity(title1: str, title2: str) -> float:
-    """Calculate title similarity with normalization."""
+    """Multi-strategy title similarity — returns best score across strategies."""
     if not title1 or not title2:
         return 0.0
 
-    def _norm(t: str) -> str:
-        t = t.lower()
-        # German umlauts
-        for a, b in [('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss')]:
-            t = t.replace(a, b)
-        # Strip LaTeX commands
-        t = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', t)
-        t = re.sub(r'[{}]', '', t)
-        # Remove punctuation
-        t = re.sub(r'[^\w\s]', ' ', t)
-        # Remove common stopwords
-        stop = {'the', 'a', 'an', 'in', 'of', 'for', 'on', 'and', 'to', 'with',
-                'der', 'die', 'das', 'und', 'fur', 'von', 'mit', 'im', 'an', 'zu',
-                'eine', 'ein', 'des', 'dem', 'is', 'are', 'was', 'were', 'be', 'by'}
-        return ' '.join(w for w in t.split() if w not in stop and len(w) > 2)
-
-    t1, t2 = _norm(title1), _norm(title2)
+    t1, t2 = _normalize_title(title1), _normalize_title(title2)
     if not t1 or not t2:
         return 0.0
-    
+
+    # Strategy A: token_sort_ratio (handles word reordering across databases)
     try:
-        from rapidfuzz.fuzz import token_sort_ratio
-        return token_sort_ratio(t1, t2) / 100.0
+        from rapidfuzz.fuzz import token_sort_ratio, partial_ratio
+        score_a = token_sort_ratio(t1, t2) / 100.0
+        # Strategy B: partial_ratio catches truncated titles
+        score_b = partial_ratio(t1[:120], t2[:120]) / 100.0
+        fuzzy_score = max(score_a, score_b)
     except ImportError:
         from difflib import SequenceMatcher
-        return SequenceMatcher(None, t1, t2).ratio()
+        fuzzy_score = SequenceMatcher(None, t1, t2).ratio()
+
+    # Strategy C: significant word overlap (catches reworded-but-same papers)
+    words1 = set(t1.split())
+    words2 = set(t2.split())
+    # Only count words ≥5 chars (more discriminative)
+    sig1 = {w for w in words1 if len(w) >= 5}
+    sig2 = {w for w in words2 if len(w) >= 5}
+    if sig1 and sig2:
+        overlap = len(sig1 & sig2) / max(len(sig1), len(sig2))
+    else:
+        overlap = 0.0
+
+    # Combine: fuzzy string + word overlap (weighted)
+    combined = 0.75 * fuzzy_score + 0.25 * overlap
+    return round(min(combined, 1.0), 4)
+
+
+def _extract_surnames(s: str) -> List[str]:
+    """Extract surnames from an author string, handling compound particles and initials."""
+    out = []
+    # Split on semicolon, "and", "und"
+    for part in re.split(r';|\band\b|\bund\b', s, flags=re.IGNORECASE):
+        part = part.strip()
+        if not part:
+            continue
+        # Normalize case and umlauts
+        part_lower = part.lower()
+        for a, b in [('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss'),
+                     ('à', 'a'), ('é', 'e'), ('è', 'e'), ('ñ', 'n')]:
+            part_lower = part_lower.replace(a, b)
+        # Skip "et al."
+        if re.match(r'^et\s+al\.?$', part_lower.strip()):
+            continue
+        # "Lastname, Firstname" format
+        if ',' in part_lower:
+            surname_part = part_lower.split(',')[0].strip()
+        else:
+            # "Firstname Lastname" or "F. Lastname" — take last token
+            tokens = part_lower.split()
+            # Drop noble particles (von, van, de, del, della, von der, etc.)
+            particles = {'von', 'van', 'de', 'del', 'della', 'der', 'la', 'le', 'du', 'des', 'di'}
+            non_particle = [t for t in tokens if t not in particles and not re.match(r'^[a-z]\.?$', t)]
+            surname_part = non_particle[-1] if non_particle else (tokens[-1] if tokens else '')
+        # Clean to alphanumeric
+        surname_clean = re.sub(r'[^a-z0-9]', '', surname_part)
+        if len(surname_clean) > 2:
+            out.append(surname_clean)
+    return out
 
 
 def author_overlap_score(cited_authors: str, correct_authors: str) -> Optional[float]:
-    """Return fraction of cited author surnames found in correct_authors."""
+    """Return fraction of cited author surnames found in correct_authors.
+
+    Uses fuzzy surname matching to handle minor spelling differences,
+    compound names (von der Heide), and initials-only formats.
+    """
     if not cited_authors or not correct_authors:
         return None
 
-    def _surnames(s: str) -> List[str]:
-        out = []
-        for part in re.split(r';|\band\b', s, flags=re.IGNORECASE):
-            part = part.strip().lower()
-            if re.match(r'^et\s+al\.?$', part):
-                continue
-            for a, b in [('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss')]:
-                part = part.replace(a, b)
-            surname = part.split(',')[0].strip() if ',' in part else (part.split() or [''])[-1]
-            surname = re.sub(r'[^\w]', '', surname)
-            if len(surname) > 2:
-                out.append(surname)
-        return out
-
-    cited = _surnames(cited_authors)
-    correct = _surnames(correct_authors)
+    cited   = _extract_surnames(cited_authors)
+    correct = _extract_surnames(correct_authors)
     if not cited or not correct:
         return None
 
     correct_set = set(correct)
-    matches = sum(1 for s in cited[:5] if any(s in c or c in s for c in correct_set))
-    return matches / min(len(cited[:5]), 5)
+    matches = 0
+    for s in cited[:6]:
+        # Exact match
+        if s in correct_set:
+            matches += 1
+            continue
+        # Fuzzy: one is prefix of the other (truncated names)
+        if any(s.startswith(c[:4]) or c.startswith(s[:4]) for c in correct_set if len(c) >= 4):
+            matches += 0.8
+            continue
+    return round(matches / min(len(cited[:6]), 6), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -589,44 +650,104 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
     return None
 
 
-def _search_dblp(entry: BibEntry) -> Optional[VerificationResult]:
-    """Search DBLP by title."""
-    if not entry.title:
-        return None
-    
-    _rate_limit("dblp.org", 1.0)
+def _dblp_query(query: str, timeout: int = 6) -> list:
+    """Execute a DBLP search and return hit list."""
     try:
-        clean_title = re.sub(r'[^\w\s]', ' ', entry.title.lower()).strip()
         resp = requests.get(
             "https://dblp.org/search/publ/api",
-            params={"q": clean_title, "format": "json", "h": 5},
-            timeout=6,
-            headers={"User-Agent": "LNI-Checker/6.2"}
+            params={"q": query, "format": "json", "h": 8},
+            timeout=timeout,
+            headers={"User-Agent": "LNI-Checker/6.3"},
         )
         if resp.status_code == 200:
-            hits = resp.json().get("result", {}).get("hits", {}).get("hit", [])
-            for hit in hits[:3]:
-                info = hit.get("info", {})
-                title = info.get("title", "")
-                sim = _title_similarity(entry.title, title)
-                if sim >= 0.5:
-                    doi = info.get("doi")
-                    url = info.get("url")
-                    
-                    return VerificationResult(
-                        key=entry.key,
-                        title=entry.title,
-                        status="verified" if sim >= 0.75 else "partial_match",
-                        confidence=sim,
-                        matched_title=title,
-                        doi=doi,
-                        open_access_url=url,
-                        note=f"Found on DBLP (match: {int(sim*100)}%)",
-                        sources_checked=["DBLP"],
-                    )
+            return resp.json().get("result", {}).get("hits", {}).get("hit", [])
     except Exception:
         pass
-    return None
+    return []
+
+
+def _search_dblp(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search DBLP with multiple query strategies for maximum recall.
+
+    Strategy 1: title + first author surname (most precise)
+    Strategy 2: title only (catches author name variations)
+    Strategy 3: first 6 significant title words (handles truncated/subtitle variants)
+    """
+    if not entry.title:
+        return None
+
+    _rate_limit("dblp.org", 1.0)
+
+    norm_title = _normalize_title(entry.title)
+    # Strategy 1: title + author
+    first_author_surname = ""
+    if entry.authors:
+        surnames = _extract_surnames(entry.authors)
+        if surnames:
+            first_author_surname = surnames[0]
+
+    queries = []
+    if first_author_surname:
+        queries.append(f"{norm_title} {first_author_surname}")
+    queries.append(norm_title)
+    # Strategy 3: shortened title (first 6 significant words)
+    sig_words = [w for w in norm_title.split() if len(w) >= 4][:6]
+    if len(sig_words) >= 3:
+        queries.append(" ".join(sig_words))
+
+    best: Optional[VerificationResult] = None
+    for q in queries:
+        hits = _dblp_query(q)
+        for hit in hits[:5]:
+            info = hit.get("info", {})
+            title = info.get("title", "")
+            if not title:
+                continue
+            sim = _title_similarity(entry.title, title)
+            if sim >= 0.5:
+                # Year check: if both have years and they differ by >2, penalize
+                dblp_year = str(info.get("year", ""))
+                if dblp_year and entry.year and abs(int(dblp_year) - int(entry.year)) > 2:
+                    sim *= 0.85  # Penalize year mismatch
+
+                doi = info.get("doi") or ""
+                url = info.get("url") or ""
+                # Author check
+                authors_info = info.get("authors", {})
+                if isinstance(authors_info, dict):
+                    author_list = authors_info.get("author", [])
+                    if isinstance(author_list, list):
+                        author_str = "; ".join(
+                            a.get("text", "") if isinstance(a, dict) else str(a)
+                            for a in author_list[:4]
+                        )
+                    elif isinstance(author_list, dict):
+                        author_str = author_list.get("text", "")
+                    else:
+                        author_str = str(author_list)
+                else:
+                    author_str = ""
+
+                status = "verified" if sim >= 0.78 else "partial_match"
+                vr = VerificationResult(
+                    key=entry.key,
+                    title=entry.title,
+                    status=status,
+                    confidence=sim,
+                    matched_title=title,
+                    doi=doi,
+                    open_access_url=url if url.startswith("http") else None,
+                    note=f"Found on DBLP (match: {int(sim*100)}%, strategy: {queries.index(q)+1})",
+                    sources_checked=["DBLP"],
+                    correct_authors=author_str or None,
+                    corrected_year=dblp_year or None,
+                )
+                if best is None or sim > best.confidence:
+                    best = vr
+        if best and best.confidence >= 0.78:
+            break  # Good enough — stop querying
+
+    return best
 
 
 def _search_acl(entry: BibEntry) -> Optional[VerificationResult]:
@@ -762,6 +883,177 @@ def _search_openreview(entry: BibEntry) -> Optional[VerificationResult]:
     except Exception:
         pass
     return None
+
+
+def _search_ieee(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search IEEE Xplore API — covers IEEE journals, transactions, and conferences.
+
+    IEEE Xplore free API: https://developer.ieee.org/
+    Works without API key for title search (limited to 200 req/day).
+    With IEEE_API_KEY env var: up to 200 req/day (same, but authenticated).
+    """
+    if not entry.title:
+        return None
+
+    _rate_limit("ieeexplore.ieee.org", 1.0)
+    try:
+        api_key = os.environ.get("IEEE_API_KEY", "").strip()
+        params = {
+            "querytext": entry.title[:200],
+            "max_records": 5,
+            "format": "json",
+            "apikey": api_key or "none",  # IEEE requires apikey param even for open tier
+        }
+        resp = requests.get(
+            "https://ieeexploreapi.ieee.org/api/v1/search/articles",
+            params=params,
+            timeout=7,
+            headers={"User-Agent": "LNI-Checker/6.3"},
+        )
+        if resp.status_code == 200:
+            articles = resp.json().get("articles", [])
+            for art in articles[:5]:
+                title = art.get("title", "")
+                if not title:
+                    continue
+                sim = _title_similarity(entry.title, title)
+                if sim >= 0.55:
+                    doi = art.get("doi", "")
+                    authors_raw = art.get("authors", {}).get("authors", [])
+                    author_str = "; ".join(
+                        a.get("full_name", "") for a in authors_raw[:4]
+                    ) if authors_raw else None
+                    year = str(art.get("publication_year", ""))
+                    return VerificationResult(
+                        key=entry.key,
+                        title=entry.title,
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim,
+                        matched_title=title,
+                        doi=doi or None,
+                        open_access_url=f"https://doi.org/{doi}" if doi else None,
+                        note=f"Found on IEEE Xplore (match: {int(sim*100)}%)",
+                        sources_checked=["IEEE Xplore"],
+                        correct_authors=author_str,
+                        corrected_year=year or None,
+                    )
+    except Exception:
+        pass
+    return None
+
+
+def _search_core(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search CORE (core.ac.uk) — largest aggregator of open-access research papers.
+
+    CORE aggregates 200M+ papers from repositories worldwide.
+    Free API with optional CORE_API_KEY for higher rate limits.
+    """
+    if not entry.title:
+        return None
+
+    _rate_limit("api.core.ac.uk", 0.5)
+    try:
+        api_key = os.environ.get("CORE_API_KEY", "").strip()
+        headers = {"User-Agent": "LNI-Checker/6.3"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        resp = requests.get(
+            "https://api.core.ac.uk/v3/search/works",
+            params={"q": entry.title[:200], "limit": 5},
+            timeout=7,
+            headers=headers,
+        )
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            for r in results[:5]:
+                title = r.get("title", "")
+                if not title:
+                    continue
+                sim = _title_similarity(entry.title, title)
+                if sim >= 0.6:
+                    doi = r.get("doi", "")
+                    oa_url = (r.get("downloadUrl") or
+                              (r.get("links") or [{}])[0].get("url") if r.get("links") else None)
+                    authors_raw = r.get("authors", [])
+                    author_str = "; ".join(
+                        a.get("name", "") for a in authors_raw[:4]
+                    ) if isinstance(authors_raw, list) else None
+                    year = str(r.get("yearPublished", ""))
+                    return VerificationResult(
+                        key=entry.key,
+                        title=entry.title,
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim,
+                        matched_title=title,
+                        doi=doi or None,
+                        open_access_url=oa_url,
+                        note=f"Found on CORE (match: {int(sim*100)}%)",
+                        sources_checked=["CORE"],
+                        correct_authors=author_str,
+                        corrected_year=year or None,
+                    )
+    except Exception:
+        pass
+    return None
+
+
+def _search_springer(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search Springer Nature API — covers Springer journals and Lecture Notes series.
+
+    Springer Lecture Notes in Computer Science (LNCS) / LNI papers
+    are indexed here. Requires SPRINGER_API_KEY (free at dev.springernature.com).
+    """
+    if not entry.title:
+        return None
+
+    api_key = os.environ.get("SPRINGER_API_KEY", "").strip()
+    if not api_key:
+        return None  # Skip gracefully if no key — don't waste time
+
+    _rate_limit("api.springernature.com", 0.5)
+    try:
+        resp = requests.get(
+            "https://api.springernature.com/meta/v2/json",
+            params={
+                "q": f'title:"{entry.title[:150]}"',
+                "api_key": api_key,
+                "p": 5,
+            },
+            timeout=7,
+            headers={"User-Agent": "LNI-Checker/6.3"},
+        )
+        if resp.status_code == 200:
+            records = resp.json().get("records", [])
+            for rec in records[:5]:
+                title = rec.get("title", "")
+                if not title:
+                    continue
+                sim = _title_similarity(entry.title, title)
+                if sim >= 0.6:
+                    doi = rec.get("doi", "")
+                    creators = rec.get("creators", [])
+                    author_str = "; ".join(
+                        c.get("creator", "") for c in creators[:4]
+                    ) if creators else None
+                    year = str(rec.get("publicationDate", ""))[:4]
+                    return VerificationResult(
+                        key=entry.key,
+                        title=entry.title,
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim,
+                        matched_title=title,
+                        doi=doi or None,
+                        open_access_url=f"https://doi.org/{doi}" if doi else None,
+                        note=f"Found on Springer (match: {int(sim*100)}%)",
+                        sources_checked=["Springer"],
+                        correct_authors=author_str,
+                        corrected_year=year or None,
+                    )
+    except Exception:
+        pass
+    return None
+
 
 def _search_google_scholar(entry: BibEntry) -> Optional[VerificationResult]:
     """Google Scholar scrape fallback."""
@@ -923,6 +1215,55 @@ def _check_unpaywall(doi: str) -> Optional[str]:
 # Main verification function - AGGREGATES ALL SOURCES
 # ---------------------------------------------------------------------------
 
+
+def _validate_doi_format(doi: str) -> tuple:
+    """Validate DOI format. Real DOIs follow: 10.NNNN/suffix.
+    
+    Returns (is_valid: bool, reason: str).
+    Common AI hallucination: DOIs with wrong prefix, all-numeric suffix,
+    or obviously fake patterns like 10.1234/fake.2023.001.
+    """
+    if not doi:
+        return True, ""  # No DOI — not a validation failure
+    doi = doi.strip()
+    # Must start with 10.
+    if not doi.startswith("10."):
+        return False, f"DOI does not start with '10.': {doi[:30]}"
+    # Must have registrant (4+ digits) followed by /
+    m = re.match(r"^10\.([0-9]{4,})/(\S+)$", doi)
+    if not m:
+        return False, f"Malformed DOI structure: {doi[:40]}"
+    registrant, suffix = m.group(1), m.group(2)
+    # Registrant should be a known range (10000–99999 for CrossRef assignments)
+    if int(registrant) < 1000:
+        return False, f"Implausible DOI registrant: 10.{registrant}"
+    # Suffix should not be purely whitespace or clearly fake
+    if re.match(r"^(fake|test|example|placeholder)", suffix.lower()):
+        return False, f"Fake-looking DOI suffix: {suffix[:30]}"
+    return True, ""
+
+
+def _check_year_plausibility(year: str) -> tuple:
+    """Check if publication year is plausible.
+    
+    Returns (is_plausible: bool, reason: str).
+    Flags: future years, years before academic publishing era.
+    """
+    if not year:
+        return True, ""
+    try:
+        y = int(str(year).strip()[:4])
+    except ValueError:
+        return False, f"Non-numeric year: {year}"
+    import datetime
+    current_year = datetime.date.today().year
+    if y > current_year + 1:
+        return False, f"Future year: {y} (current: {current_year})"
+    if y < 1800:
+        return False, f"Implausibly old publication year: {y}"
+    return True, ""
+
+
 def verify_reference(entry: BibEntry) -> VerificationResult:
     """
     Verify a single reference by checking ALL available online sources.
@@ -1004,7 +1345,18 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         
     
     all_results: List[VerificationResult] = []
-    
+
+    # Pre-flight checks: DOI format validation + year plausibility
+    # These are fast, deterministic signals that improve fake detection accuracy.
+    _doi_valid, _doi_reason   = _validate_doi_format(entry.doi or "")
+    _year_plaus, _year_reason = _check_year_plausibility(entry.year or "")
+    # Store as attributes for AI checker to use (via note field)
+    _preflight_flags: List[str] = []
+    if not _doi_valid:
+        _preflight_flags.append(f"Invalid DOI format: {_doi_reason}")
+    if not _year_plaus:
+        _preflight_flags.append(f"Implausible year: {_year_reason}")
+
     # PHASE 1: Fast identifier lookups (run in parallel)
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = []
@@ -1020,17 +1372,20 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             except Exception:
                 pass
     
-    # PHASE 2: Title/author search (run in parallel)
+    # PHASE 2: Title/author search (run in parallel — 8 sources)
     if not any(r.status == "verified" for r in all_results):
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             futures = []
             futures.append(executor.submit(_search_crossref, entry))
             futures.append(executor.submit(_search_semantic_scholar, entry))
             futures.append(executor.submit(_search_openalex, entry))
             futures.append(executor.submit(_search_dblp, entry))
             futures.append(executor.submit(_search_acl, entry))
-            
-            for future in as_completed(futures, timeout=7):
+            futures.append(executor.submit(_search_ieee, entry))        # IEEE journals/conf
+            futures.append(executor.submit(_search_core, entry))        # 200M+ OA papers
+            futures.append(executor.submit(_search_springer, entry))    # Springer/LNCS
+
+            for future in as_completed(futures, timeout=10):
                 try:
                     r = future.result()
                     if r:
@@ -1128,6 +1483,13 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             if src not in all_sources:
                 all_sources.append(src)
     best.sources_checked = all_sources
+
+    # Append pre-flight flags to note
+    if _preflight_flags:
+        flag_str = " | ".join(_preflight_flags)
+        best.note = f"{best.note or ''} ⚠ Pre-flight: {flag_str}".strip()
+        if not _doi_valid and best.status == "not_found":
+            best.confidence = min(best.confidence, 0.2)
     
     # Collect additional evidence
     for r in all_results:

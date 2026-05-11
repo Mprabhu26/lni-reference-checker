@@ -65,6 +65,8 @@ def get_llm_cache_stats() -> dict:
 # ---------------------------------------------------------------------------
 
 def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
+    """Call AI backend with automatic retry + exponential backoff on transient failures."""
+    import time
     groq_key   = os.environ.get("GROQ_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
@@ -78,52 +80,65 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    result: Optional[str] = None
-    used_model: Optional[str] = None
+    MAX_RETRIES = 2
+    for attempt in range(MAX_RETRIES + 1):
+        result: Optional[str] = None
+        used_model: Optional[str] = None
 
-    if groq_key:
-        try:
-            resp = requests.post(
-                GROQ_URL,
-                headers={"Authorization": f"Bearer {groq_key}",
-                         "Content-Type": "application/json"},
-                json={"model": GROQ_MODEL, "messages": messages,
-                      "max_tokens": max_tokens, "temperature": 0.1},
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                result = resp.json()["choices"][0]["message"]["content"].strip()
-                used_model = f"groq:{GROQ_MODEL}"
-        except Exception:
-            pass
+        if groq_key:
+            try:
+                resp = requests.post(
+                    GROQ_URL,
+                    headers={"Authorization": f"Bearer {groq_key}",
+                             "Content-Type": "application/json"},
+                    json={"model": GROQ_MODEL, "messages": messages,
+                          "max_tokens": max_tokens, "temperature": 0.1},
+                    timeout=35,
+                )
+                if resp.status_code == 200:
+                    result = resp.json()["choices"][0]["message"]["content"].strip()
+                    used_model = f"groq:{GROQ_MODEL}"
+                elif resp.status_code == 429:
+                    # Rate limited — wait then retry
+                    wait = float(resp.headers.get("Retry-After", 2 ** attempt))
+                    time.sleep(min(wait, 8))
+                    continue
+            except Exception:
+                pass
 
-    if result is None and gemini_key:
-        try:
-            full_prompt = (system + "\n\n" + prompt) if system else prompt
-            resp = requests.post(
-                f"{GEMINI_URL}?key={gemini_key}",
-                headers={"Content-Type": "application/json"},
-                json={"contents": [{"parts": [{"text": full_prompt}]}],
-                      "generationConfig": {"maxOutputTokens": max_tokens,
-                                           "temperature": 0.1}},
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                parts = resp.json()["candidates"][0]["content"]["parts"]
-                result = "".join(p.get("text", "") for p in parts).strip()
-                used_model = "gemini:1.5-flash"
-        except Exception:
-            pass
+        if result is None and gemini_key:
+            try:
+                full_prompt = (system + "\n\n" + prompt) if system else prompt
+                resp = requests.post(
+                    f"{GEMINI_URL}?key={gemini_key}",
+                    headers={"Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": full_prompt}]}],
+                          "generationConfig": {"maxOutputTokens": max_tokens,
+                                               "temperature": 0.1}},
+                    timeout=35,
+                )
+                if resp.status_code == 200:
+                    parts = resp.json()["candidates"][0]["content"]["parts"]
+                    result = "".join(p.get("text", "") for p in parts).strip()
+                    used_model = "gemini:1.5-flash"
+                elif resp.status_code == 429:
+                    time.sleep(2 ** attempt)
+                    continue
+            except Exception:
+                pass
 
-    if result is None:
-        missing = [k for k, v in [("GROQ_API_KEY", groq_key), ("GEMINI_API_KEY", gemini_key)] if not v]
-        raise RuntimeError(
-            f"No AI API key configured. Set {' or '.join(missing)}. "
-            "Groq: console.groq.com (free) | Gemini: aistudio.google.com (free)"
-        )
+        if result is not None:
+            _llm_cache_put(used_model or model_tag, system, prompt, result)
+            return result
 
-    _llm_cache_put(used_model or model_tag, system, prompt, result)
-    return result
+        if attempt < MAX_RETRIES:
+            time.sleep(1.5 ** attempt)
+
+    missing = [k for k, v in [("GROQ_API_KEY", groq_key), ("GEMINI_API_KEY", gemini_key)] if not v]
+    raise RuntimeError(
+        f"No AI API key configured. Set {' or '.join(missing)}. "
+        "Groq: console.groq.com (free) | Gemini: aistudio.google.com (free)"
+    )
 
 
 def _call_ai_json(prompt: str, max_tokens: int = 2000, system: str = "") -> dict:
@@ -325,28 +340,64 @@ def _check_journal_plausibility(journal: str) -> tuple:
     
     journal_lower = journal.lower()
     
-    # Known legitimate journals (partial list)
+    # Known legitimate publishers / journal families
     legit_journals = [
         'springer', 'elsevier', 'wiley', 'ieee', 'acm', 'nature', 'science',
         'cell', 'plos', 'frontiers', 'mdpi', 'sage', 'taylor', 'francis',
-        'oxford', 'cambridge', 'mit press', 'world scientific',
-        'journal of ', 'transactions on ', 'letters in ', 'proceedings of '
+        'oxford', 'cambridge', 'mit press', 'world scientific', 'informs',
+        'aaai', 'usenix', 'dagstuhl', 'lecture notes in informatics', 'lni',
+        'lecture notes in computer science', 'lncs', 'gi gesellschaft',
+        'informatik spektrum', 'acm sigchi', 'acm sigmod', 'vldb', 'sigcomm',
+        'neurips', 'icml', 'iclr', 'cvpr', 'iccv', 'eccv', 'emnlp', 'acl',
+        'journal of ', 'transactions on ', 'letters in ', 'proceedings of ',
+        'conference on ', 'symposium on ', 'workshop on ',
+        # German venues
+        'informatik', 'wirtschaftsinformatik', 'delfi', 'mensch und computer',
+        'btw', 'ki ', 'kunstliche intelligenz',
     ]
-    
-    # Fake indicators
+
+    # Predatory/fake journal indicators (expanded from Beall's list patterns)
     fake_indicators = [
-        ('international journal of advanced', 'Overused generic prefix'),
-        ('journal of emerging', 'Predatory journal pattern'),
-        ('journal of current', 'Predatory journal pattern'),
-        ('american journal of', 'Often impersonated'),
-        ('european journal of', 'Often impersonated'),
+        # Generic AI-generated journal name patterns
+        ('international journal of advanced', 'Generic predatory prefix'),
+        ('international journal of innovative', 'Generic predatory prefix'),
+        ('international journal of recent', 'Generic predatory prefix'),
+        ('international journal of emerging', 'Generic predatory prefix'),
+        ('international journal of engineering sciences', 'Generic phrase'),
+        ('journal of emerging technologies', 'Predatory pattern'),
+        ('journal of current research', 'Predatory pattern'),
+        ('journal of modern', 'Predatory pattern'),
+        ('global journal of', 'Generic predatory prefix'),
+        ('world journal of', 'Generic predatory prefix'),
+        ('asian journal of', 'Often predatory'),
+        ('american journal of applied', 'Often impersonated/predatory'),
+        ('european journal of applied', 'Often predatory'),
         ('research journal of', 'Generic fake journal'),
         ('scientific journal of', 'Generic fake journal'),
-        ('global journal of', 'Generic fake journal'),
         ('journal of engineering and technology', 'Generic phrase'),
         ('international research journal', 'Generic phrase'),
-        ('academy of', 'Often fake'),
-        ('institute of', 'Often fake without verification'),
+        ('journal of multidisciplinary', 'Predatory pattern'),
+        ('advances in science', 'Generic predatory prefix'),
+        ('science and technology journal', 'Generic phrase'),
+        # Known predatory publishers (Beall's list)
+        ('omics publishing', 'Known predatory publisher'),
+        ('hindawi', 'Historically predatory'),
+        ('sciencepg', 'Known predatory'),
+        ('ijser', 'Known predatory (ijser.org)'),
+        ('ijesrt', 'Known predatory'),
+        ('jetir', 'Known predatory'),
+        ('irjet', 'Known predatory'),
+        ('ijarcce', 'Known predatory'),
+        ('researchpublish', 'Known predatory'),
+        ('scirp', 'Scientific Research Publishing - predatory'),
+        ('ijar', 'Known predatory (ijar.info)'),
+        ('graphy publications', 'Known predatory'),
+        ('austin publishing', 'Known predatory'),
+        ('insight medical publishing', 'Known predatory'),
+        # Hallmarks of AI-generated journal names
+        ('journal of computational and theoretical', 'AI-generated pattern'),
+        ('international journal of computer applications', 'Overused generic title'),
+        ('journal of software engineering and applications', 'Overused generic title'),
     ]
     
     for indicator, reason in fake_indicators:
@@ -457,6 +508,45 @@ def _check_conference_plausibility(booktitle: str) -> tuple:
     return True, red_flags
 
 
+
+def _check_author_name_plausibility(authors: str) -> tuple:
+    """Check if author names look plausible vs AI-generated.
+
+    Red flags:
+    - All single-word names with no given name/initial
+    - Names containing digits
+    - Implausibly long names (title fragments)
+    - All authors share same surname
+    Returns (is_plausible: bool, flags: list).
+    """
+    flags = []
+    if not authors:
+        return True, []
+    parts = [p.strip() for p in re.split(r";|\band\b|\bund\b", authors, flags=re.IGNORECASE) if p.strip()]
+    parts = [p for p in parts if not re.match(r"^et\s+al\.?$", p, re.IGNORECASE)]
+    if not parts:
+        return True, []
+    single_token = sum(1 for p in parts if len(p.split()) == 1 and "," not in p)
+    if single_token == len(parts) and len(parts) >= 2:
+        flags.append("All authors are single-word names — unusual")
+    long_names = [p for p in parts if len(p) > 45]
+    if long_names:
+        flags.append(f"Implausibly long author name: {long_names[0][:30]}…")
+    digit_names = [p for p in parts if re.search(r"\d", p)]
+    if digit_names:
+        flags.append("Author name contains digits")
+    if len(parts) >= 3:
+        def get_surname(p):
+            if "," in p:
+                return p.split(",")[0].strip().lower()
+            toks = p.split()
+            return toks[-1].lower() if toks else ""
+        surnames = [get_surname(p) for p in parts]
+        if len(set(surnames)) == 1 and surnames[0]:
+            flags.append(f"All authors share surname '{surnames[0]}' — suspicious")
+    return (len(flags) == 0, flags)
+
+
 def _compute_composite_fake_score(entry: dict, api_result: dict, title_sim: float) -> dict:
     """
     Compute composite fake detection score from multiple signals.
@@ -532,6 +622,49 @@ def _compute_composite_fake_score(entry: dict, api_result: dict, title_sim: floa
     signals.append({"name": "missing_fields", "risk": missing_risk, "weight": weight})
     weighted_sum += missing_risk * weight
     total_weight += weight
+
+    # Signal 7: DOI format validity
+    doi = entry.get("doi", "") or ""
+    if doi:
+        try:
+            from checker import _validate_doi_format
+            doi_valid, doi_reason = _validate_doi_format(doi)
+            if not doi_valid:
+                doi_risk = 0.65
+                weight = 0.12
+                signals.append({"name": "invalid_doi_format", "risk": doi_risk, "weight": weight,
+                                "note": doi_reason})
+                weighted_sum += doi_risk * weight
+                total_weight += weight
+        except ImportError:
+            pass
+
+    # Signal 8: Future-year detection
+    year = entry.get("year", "") or ""
+    if year:
+        try:
+            from checker import _check_year_plausibility
+            year_ok, year_reason = _check_year_plausibility(str(year))
+            if not year_ok:
+                year_risk = 0.75  # Future year is a strong fake signal
+                weight = 0.12
+                signals.append({"name": "implausible_year", "risk": year_risk, "weight": weight,
+                                "note": year_reason})
+                weighted_sum += year_risk * weight
+                total_weight += weight
+        except ImportError:
+            pass
+
+    # Signal 9: Author name plausibility
+    authors = entry.get("authors", "") or ""
+    if authors:
+        auth_plausible, auth_flags = _check_author_name_plausibility(authors)
+        if not auth_plausible:
+            auth_risk = 0.45
+            weight = 0.08
+            signals.append({"name": "suspicious_author_names", "risk": auth_risk, "weight": weight})
+            weighted_sum += auth_risk * weight
+            total_weight += weight
     
     # Normalize
     composite_risk = weighted_sum / total_weight if total_weight > 0 else 0.5
@@ -566,68 +699,85 @@ def _compute_composite_fake_score(entry: dict, api_result: dict, title_sim: floa
 # ---------------------------------------------------------------------------
 
 def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: float) -> Optional[dict]:
-    """
-    Deterministic pre-screen using author overlap.
-    UPDATED: Lower thresholds for FAKE detection.
+    """Deterministic pre-screen using author overlap + multi-source evidence.
+
+    Conservative: short-circuits only on strong evidence.
+    Avoids false FAKE verdicts on German papers not in major databases.
     """
     from checker import author_overlap_score
 
+    api_status      = api_result.get("status", "not_checked")
+    confidence      = api_result.get("confidence", 0)
+    sources         = api_result.get("sources_checked", [])
+    n_sources       = len(sources)
+    is_retracted    = api_result.get("is_retracted", False)
+    has_doi         = bool(api_result.get("doi"))
+    has_oa_url      = bool(api_result.get("open_access_url"))
+    has_version_note= bool(api_result.get("version_note"))
+
+    # ── STRONG REAL signals (bypass AI entirely) ──
+    if is_retracted:
+        return {"verdict": "REAL", "confidence": 0.99,
+                "reasoning": "Paper confirmed to exist but RETRACTED — do not cite",
+                "risk_factors": ["RETRACTED"]}
+
+    if has_doi and api_status == "verified" and confidence >= 0.80:
+        return {"verdict": "REAL", "confidence": 0.95,
+                "reasoning": f"DOI confirmed + title {confidence:.0%} match ({', '.join(sources[:2])})",
+                "risk_factors": []}
+
+    if has_oa_url and confidence >= 0.75:
+        return {"verdict": "REAL", "confidence": 0.91,
+                "reasoning": f"Open-access copy retrieved and title verified ({', '.join(sources[:2])})",
+                "risk_factors": []}
+
+    if has_version_note and confidence >= 0.65:
+        return {"verdict": "REAL", "confidence": 0.88,
+                "reasoning": f"Preprint found: {api_result.get('version_note','')}",
+                "risk_factors": []}
+
+    if api_status == "verified" and confidence >= 0.88 and n_sources >= 2:
+        return {"verdict": "REAL", "confidence": confidence,
+                "reasoning": f"Confirmed by {n_sources} independent databases ({confidence:.0%})",
+                "risk_factors": []}
+
+    # ── Author overlap check ──
     cited_authors   = (entry.get("authors") or "").strip()
-    correct_authors = (api_result.get("correct_authors") or "").strip()
+    correct_authors = (api_result.get("correct_authors") or
+                       api_result.get("corrected_authors") or "").strip()
 
     if not cited_authors or not correct_authors:
+        # No author data — still allow REAL if other signals are strong
+        if api_status == "verified" and confidence >= 0.82:
+            return {"verdict": "REAL", "confidence": confidence,
+                    "reasoning": f"Verified in {', '.join(sources[:2])} ({confidence:.0%}) — no author data to cross-check",
+                    "risk_factors": []}
         return None
 
     overlap = author_overlap_score(cited_authors, correct_authors)
     if overlap is None:
         return None
 
-    api_status = api_result.get("status", "not_checked")
     pct = int(overlap * 100)
 
-    # NEW: If overlap is very low AND API has any match → STRONG FAKE signal
-    if overlap < 0.25:
-        if api_status in ("verified", "partial_match"):
-            # Even stronger if title also matches
-            if title_sim >= 0.35:
-                return {
-                    "verdict": "FAKE",
-                    "confidence": 0.92,
-                    "reasoning": (
-                        f"Paper found in database ({int(title_sim*100)}% title match) "
-                        f"but author overlap is only {pct}% — this is a MISMATCHED reference. "
-                        "The student cited a different paper or fabricated the authors."
-                    ),
-                    "risk_factors": [
-                        f"Author overlap: {pct}% (threshold: 25%)",
-                        f"Title match: {int(title_sim*100)}%",
-                        f"API status: {api_status}",
-                    ],
-                }
-        # No API match + very low author-derived signals → SUSPICIOUS (not necessarily fake)
+    # Author mismatch + title match → likely cited wrong paper / fabricated authors
+    if overlap < 0.25 and api_status in ("verified", "partial_match") and title_sim >= 0.40:
         return {
-            "verdict": "SUSPICIOUS",
-            "confidence": 0.45,
+            "verdict": "FAKE",
+            "confidence": 0.88,
             "reasoning": (
-                f"Reference not found in academic databases and author-derived signals "
-                f"are weak ({pct}% author indicator match). "
-                "May be a niche publication or incorrectly formatted reference."
+                f"Title matches database ({int(title_sim*100)}%) but author overlap is "
+                f"only {pct}% — student cited a different paper or fabricated authors."
             ),
-            "risk_factors": [
-                f"Weak database presence",
-                f"Author signal: {pct}% match",
-            ],
+            "risk_factors": [f"Author overlap {pct}%", f"Title sim {int(title_sim*100)}%"],
         }
 
-    # High overlap (≥70%) + API verified = REAL
-    if overlap >= 0.70 and api_status == "verified":
+    # Good author + title match → REAL
+    if overlap >= 0.60 and api_status in ("verified", "partial_match") and confidence >= 0.65:
         return {
             "verdict": "REAL",
-            "confidence": round(min(0.85 + overlap * 0.15, 1.0), 2),
-            "reasoning": (
-                f"Found in academic database with {pct}% author match — "
-                "reference appears genuine."
-            ),
+            "confidence": round(min(0.80 + overlap * 0.18, 0.97), 2),
+            "reasoning": f"Author overlap {pct}% + title {confidence:.0%} match ({', '.join(sources[:2])})",
             "risk_factors": [],
         }
 
@@ -837,42 +987,64 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 "composite_risk":    composite.get("composite_risk", 0.5),
             })
 
-        prompt = f"""You are an academic integrity officer detecting fabricated references
-in a student LNI-formatted paper.
+        # Inject pre-flight flags into each entry for the AI to see
+        for item in combined:
+            key = item["key"]
+            vr = vr_by_key.get(key, {})
+            note = vr.get("note", "") or ""
+            if "Pre-flight:" in note:
+                item["preflight_flags"] = note.split("Pre-flight:")[-1].strip()
 
-━━━ THREE-TIER VERDICTS ━━━
-REAL       — Paper exists and is correctly cited. Can be confirmed.
-SUSPICIOUS — Cannot confirm but cannot call FAKE. Professor should manually verify.
-FAKE       — Strong evidence of fabrication. CONFIDENTLY FLAG.
+        prompt = f"""You are a senior academic librarian and integrity specialist.
+Analyze each reference below and return REAL / SUSPICIOUS / FAKE.
 
-━━━ FAKE SIGNALS (2+ = FAKE) ━━━
-• Composite risk score > 0.65 from automated checks
-• key_consistent=false (initials/year don't match parsed metadata)
-• Journal name sounds plausible but is NOT found anywhere
-• Conference name has "of" instead of "on" (e.g., "Conference of AI")
-• Unusually long page range (>50 pages for a single article)
-• 2025+ publication year but no DOI or arXiv ID
-• Generic, AI-sounding title without specific contribution
-• Authors listed but none found in any academic database
-• DOI present but does not resolve (checked via API)
+━━━ VERDICTS ━━━
+REAL       — Paper demonstrably exists. Confirmed by database or strong evidence.
+SUSPICIOUS — Cannot confirm, cannot falsify. Flag for professor manual review.
+FAKE       — Positive evidence of fabrication. Only use when confident.
 
-━━━ DO NOT OVER-FLAG ━━━
-• arxiv_version_note is set → the paper IS real (just older version)
-• German/B2 conference papers often not indexed → SUSPICIOUS not FAKE
-• Pre-2000 papers → be lenient
-• Low API confidence alone ≠ FAKE
+━━━ CALIBRATION (read carefully) ━━━
+CONSERVATIVE BIAS: Calling a real paper FAKE harms a student unjustly.
+Only mark FAKE when ≥2 independent signals confirm fabrication.
+"Not found in database" alone is NOT enough to call FAKE.
 
-Return ONLY valid JSON:
+━━━ STRONG FAKE SIGNALS (each worth ~1 point; need ≥2) ━━━
+F1. composite_risk > 0.70 from automated pre-screening
+F2. preflight_flags present (invalid DOI format, future year)
+F3. key_consistent=false AND entry type/year in key don't match metadata
+F4. api_status="not_found" AND journal/conf is generic/unknown AND year > 2020
+F5. Journal matches known predatory publisher pattern
+F6. Conference name uses "of" not "on" (e.g. "Conf. of Machine Learning")
+F7. Page range > 60 for a journal article, or page numbers are backwards
+F8. Authors contain digits, are all single-word, or are suspiciously identical
+
+━━━ STRONG REAL SIGNALS ━━━
+R1. api_confidence > 0.80 from CrossRef, DBLP, or Semantic Scholar
+R2. DOI confirmed + title matches
+R3. arxiv_version_note is set (preprint found — paper IS real)
+R4. open_access_url is present (paper was found and retrieved)
+R5. api_sources includes ≥2 independent databases
+R6. Venue is a known GI/LNI/Dagstuhl/IEEE/ACM/Springer series
+
+━━━ DOMAIN KNOWLEDGE ━━━
+• German CS papers (GI, LNI, Dagstuhl, Informatik, BTW, KI, WI, MKWI, DeLFI,
+  Mensch und Computer, Wirtschaftsinformatik) are often not in CrossRef/S2 →
+  be lenient; mark SUSPICIOUS not FAKE unless other red flags present
+• Pre-2005 papers are frequently not digitized → absence is normal
+• arXiv papers may have title capitalization differences between preprint and final
+
+Return ONLY valid JSON (no markdown, no explanation outside JSON):
 {{
   "verdicts": [
     {{"key": "string", "verdict": "REAL", "confidence": 0.95,
-      "reasoning": "one concise sentence", "risk_factors": []}}
+      "reasoning": "one concise sentence explaining the verdict",
+      "risk_factors": ["list", "of", "specific", "flags"]}}
   ],
   "fake_count": 0, "suspicious_count": 0, "real_count": 0,
-  "summary": "2-3 sentence overall assessment"
+  "summary": "2-3 sentence overall assessment of the submission quality"
 }}
 
-References with pre-computed signals:
+References (with pre-computed signals from 13 API sources):
 {json.dumps(combined, ensure_ascii=False, indent=2)}"""
 
         try:
