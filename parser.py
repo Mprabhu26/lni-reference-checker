@@ -465,20 +465,42 @@ def _check_completeness(entry: BibEntry) -> None:
                 "(e.g. S. 12--34)."
             )
 
-    # LNI author order: must be "Lastname, Firstname"
+    # LNI author format: MUST be "Lastname, Firstname" (or "Lastname, F.")
+    # Flag 'Firstname Lastname', 'F. Lastname', and 'F.Lastname' patterns explicitly
     if entry.authors:
         for name in entry.authors.split(';'):
             name = name.strip()
-            # Pattern: TitleCaseWord SPACE TitleCaseWord with no comma
-            # Require that neither word is a short particle (von, de, van…)
-            if re.match(
-                r'^[A-ZÄÖÜ][a-zäöüß]{2,}\s+[A-ZÄÖÜ][a-zäöüß]{2,}$', name
-            ) and ',' not in name:
+            if not name:
+                continue
+            # Pattern 1: "Firstname Lastname" — two TitleCase words, no comma
+            if re.match(r'^[A-ZÄÖÜ][a-zäöüß]{2,}\s+[A-ZÄÖÜ][a-zäöüß]{2,}$', name) and ',' not in name:
+                parts = name.split()
+                suggested = f"{parts[-1]}, {parts[0]}"
                 entry.completeness_issues.append(
-                    f"Author '{name}' appears to be 'Firstname Lastname' — "
-                    "LNI requires 'Lastname, Firstname'."
+                    f"Author '{name}' uses 'Firstname Lastname' order — "
+                    f"LNI requires 'Lastname, Firstname' (e.g. '{suggested}')."
                 )
                 break
+            # Pattern 2: "F. Lastname" or "F.Lastname" — initial before surname, no comma
+            if re.match(r'^[A-ZÄÖÜ]\.?\s+[A-ZÄÖÜ][a-zäöüß]{2,}$', name) and ',' not in name:
+                parts = name.split()
+                suggested = f"{parts[-1]}, {parts[0]}"
+                entry.completeness_issues.append(
+                    f"Author '{name}' uses 'Initial Lastname' order — "
+                    f"LNI requires 'Lastname, Firstname' (e.g. '{suggested}')."
+                )
+                break
+            # Pattern 3: Multiple initials before surname e.g. "A.B. Lastname"
+            if re.match(r'^(?:[A-ZÄÖÜ]\.){1,3}\s*[A-ZÄÖÜ][a-zäöüß]{2,}$', name) and ',' not in name:
+                surname = re.search(r'[A-ZÄÖÜ][a-zäöüß]{2,}', name)
+                initials = re.findall(r'[A-ZÄÖÜ]\.', name)
+                if surname and initials:
+                    suggested = f"{surname.group()}, {''.join(initials)}"
+                    entry.completeness_issues.append(
+                        f"Author '{name}' uses initials-before-surname order — "
+                        f"LNI requires 'Lastname, Initials' (e.g. '{suggested}')."
+                    )
+                    break
 
     # Future-year check
     if entry.year:

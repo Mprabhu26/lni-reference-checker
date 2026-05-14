@@ -203,6 +203,7 @@ main.sidebar-collapsed .sidebar{width:0;border:none}
 .bib-key-badge.bad{background:var(--red-bg);color:var(--red)}
 .bib-title{font-size:13px;font-weight:500;margin-bottom:5px;color:var(--text)}
 .bib-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--text3);margin-bottom:6px}
+.bib-meta .broken-url{color:var(--red);text-decoration:line-through;opacity:0.8}
 .issue-pill{display:inline-block;font-size:10px;padding:2px 7px;border-radius:3px;background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow-border);margin:2px 3px 2px 0}
 .issue-pill.err{background:var(--red-bg);color:var(--red);border-color:var(--red-border)}
 .oa-link{font-size:11px;color:var(--blue);text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-top:3px}
@@ -666,10 +667,13 @@ function bibEntryHtml(e,ver){
   const cls=e.key_consistent===false?'key-error':hasIssues?'has-issues':'clean';
   const keyBadge=e.key_consistent===false?`<span class="bib-key-badge bad">⚠ key mismatch</span>`:e.key_consistent===true?`<span class="bib-key-badge ok">✓</span>`:'';
   const oaUrl=ver&&ver.open_access_url;
+  // Broken URL badge — shown when entry has a URL but verification says not_found/error
+  const hasBrokenUrl=e.entry_type==='website'&&ver&&(ver.status==='not_found'||ver.status==='error')&&e.url;
+  const brokenUrlBadge=hasBrokenUrl?`<span class="bib-key-badge bad" title="URL is broken or unreachable">🔴 Broken URL</span>`:'';
   return `<div class="bib-entry ${cls}" data-key="${esc(e.key)}" data-title="${esc((e.title||'').toLowerCase())}" data-authors="${esc((e.authors||'').toLowerCase())}">
     <div class="bib-entry-header">
       <span class="bib-key">[${esc(e.key)}]</span>
-      <span class="bib-type">${esc(e.type||e.entry_type||'misc')}</span>${keyBadge}
+      <span class="bib-type">${esc(e.type||e.entry_type||'misc')}</span>${keyBadge}${brokenUrlBadge}
       ${e.ai_reparsed?`<span style="font-size:10px;background:var(--purple-bg);color:var(--purple);border:1px solid var(--purple-border);border-radius:3px;padding:1px 5px">🤖 AI-parsed</span>`:''}
     </div>
     <div class="bib-title">${esc(e.title||'No title')}</div>
@@ -679,9 +683,10 @@ function bibEntryHtml(e,ver){
       ${e.publisher?`<span>🏢 ${esc(e.publisher)}</span>`:''}
       ${e.journal?`<span>📰 ${esc(e.journal)}</span>`:''}
       ${e.doi?`<span>🔗 ${esc(e.doi)}</span>`:''}
+      ${e.url?`<span class="${hasBrokenUrl?'broken-url':''}" title="${esc(e.url)}">🌐 ${esc(e.url.length>50?e.url.slice(0,50)+'…':e.url)}</span>`:''}
     </div>
-    ${oaUrl?`<a href="${esc(oaUrl)}" class="oa-link" target="_blank" rel="noopener">🔓 Open Access ↗</a>`:''}
-    ${hasIssues?`<div style="margin-top:6px">${e.completeness_issues.map(i=>{const bad=i.toLowerCase().includes('missing')||i.toLowerCase().includes('inconsist');return `<span class="issue-pill${bad?' err':''}">${esc(i)}</span>`}).join('')}</div>`:''}
+    ${oaUrl&&!hasBrokenUrl?`<a href="${esc(oaUrl)}" class="oa-link" target="_blank" rel="noopener">🔓 Open Access ↗</a>`:''}
+    ${hasIssues?`<div style="margin-top:6px">${e.completeness_issues.map(i=>{const bad=i.toLowerCase().includes('missing')||i.toLowerCase().includes('inconsist')||i.toLowerCase().includes('broken');return `<span class="issue-pill${bad?' err':''}">${esc(i)}</span>`}).join('')}</div>`:''}
   </div>`;
 }
 
@@ -798,11 +803,15 @@ function renderVerificationTab(data){
   $('tb-ver').className='tab-badge'+(retracted.length+fake.length>0?' crit':suspicious.length>0?' warn':'');
 
   const aiSummary=data.verification_ai_summary||'';
+  const CONF_TOOLTIP = "Confidence score: how certain the system is about this verdict.\n"
+    + "80–100% = strong evidence found in academic databases\n"
+    + "50–79% = partial match or single source found\n"
+    + "0–49% = little or no evidence — treat verdict cautiously";
   const confBar=conf=>{
     if(conf==null)return'';
     const pct=Math.round(conf*100);
     const col=pct>=80?'var(--green)':pct>=50?'var(--yellow)':'var(--red)';
-    return `<span class="conf-bar-wrap"><span class="conf-bar-track"><span class="conf-bar-fill" style="width:${pct}%;background:${col}"></span></span>${pct}%</span>`;
+    return `<span class="conf-bar-wrap" title="${esc(CONF_TOOLTIP)}" style="cursor:help"><span class="conf-bar-track"><span class="conf-bar-fill" style="width:${pct}%;background:${col}"></span></span>${pct}% <span style="font-size:10px;color:var(--text3)">ℹ</span></span>`;
   };
 
   const vhtml=v=>{
@@ -871,19 +880,41 @@ function renderVerificationTab(data){
     ${fake.length?`<button class="vfbtn" onclick="setVerFilter('fake',this)" style="border-color:var(--red-border)">Fake (${fake.length})</button>`:''}
     ${suspicious.length?`<button class="vfbtn" onclick="setVerFilter('suspicious',this)" style="border-color:var(--yellow-border)">Suspicious (${suspicious.length})</button>`:''}
     <button class="vfbtn" onclick="setVerFilter('real',this)">Verified (${real.length})</button>
-  </div>`;
+  </div>
+  <input class="bib-search" type="search" id="verSearch" placeholder="Search by key or title…" oninput="filterVer(this.value)" style="margin-bottom:10px"/>`;
 
   $('verContent').innerHTML=aiSumHtml+filterBar+`<div id="verCards">${verification.map(vhtml).join('')}</div>`;
+  $('verContent').insertAdjacentHTML('beforeend','<div id="verEmpty" style="display:none" class="empty-sec"><span class="empty-sec-icon">🔍</span>No matching references</div>');
 }
 
 function setVerFilter(f,btn){
   document.querySelectorAll('.vfbtn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
+  window._verActiveFilter=f;
+  _applyVerFilter();
+}
+
+function filterVer(q){
+  window._verSearchQ=(q||'').toLowerCase().trim();
+  _applyVerFilter();
+}
+
+function _applyVerFilter(){
+  const f=window._verActiveFilter||'all';
+  const q=window._verSearchQ||'';
+  let anyVisible=false;
   document.querySelectorAll('#verCards .vref-card').forEach(c=>{
-    if(f==='all')c.style.display='';
-    else if(f==='retracted')c.style.display=c.dataset.retracted==='true'?'':'none';
-    else c.style.display=c.dataset.verdict===f?'':'none';
+    const matchFilter=f==='all'||f==='retracted'?c.dataset.retracted==='true':(f==='retracted'?c.dataset.retracted==='true':c.dataset.verdict===f);
+    const matchFilter2=f==='all'||(f==='retracted'&&c.dataset.retracted==='true')||c.dataset.verdict===f;
+    const key=(c.querySelector('.vref-key')||{}).textContent||'';
+    const title=(c.querySelector('.vref-title')||{}).textContent||'';
+    const matchSearch=!q||key.toLowerCase().includes(q)||title.toLowerCase().includes(q);
+    const show=matchFilter2&&matchSearch;
+    c.style.display=show?'':'none';
+    if(show)anyVisible=true;
   });
+  const emp=document.getElementById('verEmpty');
+  if(emp)emp.style.display=anyVisible?'none':'block';
 }
 
 // ══════════════════════════════════════════════════════════════════

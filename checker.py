@@ -507,25 +507,32 @@ def _lookup_by_isbn(entry: BibEntry) -> Optional[VerificationResult]:
 # ---------------------------------------------------------------------------
 
 def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
-    """Search CrossRef by title and author."""
+    """Search CrossRef by title and author (combined query.author for precision) + timeout retry."""
     if not entry.title:
         return None
-    
+
     _rate_limit("crossref.org", 0.2)
     try:
         params = {"query.title": entry.title, "rows": 5}
         if entry.authors:
             first_author = entry.authors.split(';')[0].split(',')[0].strip()
-            params["query.author"] = first_author
-        
+            params["query.author"] = first_author  # CrossRef polite pool: combined query
+
         mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
-        ua = f"LNI-Checker/6.2 (mailto:{mailto})" if mailto else "LNI-Checker/6.2"
-        resp = requests.get(
-            "https://api.crossref.org/works",
-            params=params,
-            timeout=6,
-            headers={"User-Agent": ua}
-        )
+        ua = f"LNI-Checker/6.3 (mailto:{mailto})" if mailto else "LNI-Checker/6.3"
+        resp = None
+        for attempt in range(2):
+            try:
+                resp = requests.get(
+                    "https://api.crossref.org/works",
+                    params=params,
+                    timeout=6,
+                    headers={"User-Agent": ua},
+                )
+                break
+            except requests.exceptions.Timeout:
+                if attempt == 0:
+                    time.sleep(1)
         if resp.status_code == 200:
             items = resp.json().get("message", {}).get("items", [])
             for item in items[:3]:
@@ -566,103 +573,194 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
     return None
 
 
+def _s2_papers_from_response(entry: BibEntry, papers: list, source_label: str) -> Optional[VerificationResult]:
+    """Helper: find best match from a list of S2 paper dicts."""
+    for paper in papers[:5]:
+        title = paper.get("title", "")
+        sim = _title_similarity(entry.title, title)
+        if sim >= 0.5:
+            authors = paper.get("authors", [])
+            author_str = "; ".join([a.get("name", "") for a in authors[:3]]) if authors else None
+            oa = (paper.get("openAccessPdf") or {}).get("url")
+            doi = paper.get("externalIds", {}).get("DOI")
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title,
+                status="verified" if sim >= 0.75 else "partial_match",
+                confidence=sim,
+                matched_title=title,
+                doi=doi,
+                open_access_url=oa,
+                note=f"Found on {source_label} (match: {int(sim*100)}%)",
+                sources_checked=[source_label],
+                correct_authors=author_str,
+            )
+    return None
+
+
 def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
-    """Search Semantic Scholar by title."""
+    """Search Semantic Scholar by title, with author-first fallback and timeout retry."""
     if not entry.title:
         return None
-    
+
     _rate_limit("api.semanticscholar.org", 0.2)
-    try:
-        api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
-        headers = {"User-Agent": "LNI-Checker/6.2"}
-        if api_key:
-            headers["x-api-key"] = api_key
-        
-        resp = requests.get(
-            "https://api.semanticscholar.org/graph/v1/paper/search",
-            params={"query": entry.title, "limit": 5, "fields": "title,authors,year,openAccessPdf,externalIds"},
-            timeout=6,
-            headers=headers
-        )
-        if resp.status_code == 200:
-            papers = resp.json().get("data", [])
-            for paper in papers[:3]:
-                title = paper.get("title", "")
-                sim = _title_similarity(entry.title, title)
-                if sim >= 0.5:
-                    authors = paper.get("authors", [])
-                    author_str = "; ".join([a.get("name", "") for a in authors[:3]]) if authors else None
-                    oa = (paper.get("openAccessPdf") or {}).get("url")
-                    doi = paper.get("externalIds", {}).get("DOI")
-                    
-                    return VerificationResult(
-                        key=entry.key,
-                        title=entry.title,
-                        status="verified" if sim >= 0.75 else "partial_match",
-                        confidence=sim,
-                        matched_title=title,
-                        doi=doi,
-                        open_access_url=oa,
-                        note=f"Found on Semantic Scholar (match: {int(sim*100)}%)",
-                        sources_checked=["Semantic Scholar"],
-                        correct_authors=author_str,
-                    )
-    except Exception:
-        pass
+    api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+    headers = {"User-Agent": "LNI-Checker/6.3"}
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    def _s2_get(url, params):
+        """GET with one retry on Timeout."""
+        for attempt in range(2):
+            try:
+                return requests.get(url, params=params, timeout=6, headers=headers)
+            except requests.exceptions.Timeout:
+                if attempt == 0:
+                    time.sleep(1)
+        return None
+
+    # PHASE A: title search
+    resp = _s2_get(
+        "https://api.semanticscholar.org/graph/v1/paper/search",
+        {"query": entry.title, "limit": 5, "fields": "title,authors,year,openAccessPdf,externalIds"},
+    )
+    if resp and resp.status_code == 200:
+        result = _s2_papers_from_response(entry, resp.json().get("data", []), "Semantic Scholar")
+        if result:
+            return result
+
+    # PHASE B: author-first fallback — title search returned nothing useful
+    # Strategy: find the author in S2, then match their papers by title
+    if not entry.authors:
+        return None
+    surnames = _extract_surnames(entry.authors)
+    if not surnames:
+        return None
+    first_surname = surnames[0]
+    full_first = entry.authors.split(';')[0].strip()
+
+    _rate_limit("api.semanticscholar.org", 0.3)
+    author_resp = _s2_get(
+        "https://api.semanticscholar.org/graph/v1/author/search",
+        {"query": full_first, "limit": 3, "fields": "authorId,name,papers.title,papers.authors,papers.year,papers.openAccessPdf,papers.externalIds"},
+    )
+    if not author_resp or author_resp.status_code != 200:
+        return None
+
+    for author_hit in author_resp.json().get("data", [])[:3]:
+        # Verify it's plausibly the same person by surname match
+        hit_name = author_hit.get("name", "").lower()
+        if not any(s in hit_name for s in [first_surname]):
+            continue
+        papers = author_hit.get("papers", [])
+        result = _s2_papers_from_response(entry, papers, "Semantic Scholar (author fallback)")
+        if result:
+            return result
     return None
 
 
 def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
-    """Search OpenAlex by title."""
+    """Search OpenAlex by title, with author-first fallback and timeout retry."""
     if not entry.title:
         return None
-    
+
     _rate_limit("api.openalex.org", 0.2)
-    try:
-        resp = requests.get(
+    oa_headers = {"User-Agent": "LNI-Checker/6.3"}
+
+    def _oa_get(url, params):
+        """GET with one retry on Timeout."""
+        for attempt in range(2):
+            try:
+                return requests.get(url, params=params, timeout=6, headers=oa_headers)
+            except requests.exceptions.Timeout:
+                if attempt == 0:
+                    time.sleep(1)
+        return None
+
+    def _oa_work_to_result(work, source_label) -> Optional[VerificationResult]:
+        title = work.get("title", "")
+        sim = _title_similarity(entry.title, title)
+        if sim >= 0.5:
+            doi = (work.get("doi") or "").replace("https://doi.org/", "") or None
+            oa_url = work.get("open_access", {}).get("oa_url")
+            authorships = work.get("authorships", [])
+            author_str = "; ".join(
+                a.get("author", {}).get("display_name", "") for a in authorships[:3]
+            ) if authorships else None
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title,
+                status="verified" if sim >= 0.75 else "partial_match",
+                confidence=sim,
+                matched_title=title,
+                doi=doi,
+                open_access_url=oa_url,
+                note=f"Found on {source_label} (match: {int(sim*100)}%)",
+                sources_checked=[source_label],
+                correct_authors=author_str,
+            )
+        return None
+
+    # PHASE A: title search
+    resp = _oa_get("https://api.openalex.org/works", {"search": entry.title, "per-page": 5})
+    if resp and resp.status_code == 200:
+        for work in resp.json().get("results", [])[:3]:
+            result = _oa_work_to_result(work, "OpenAlex")
+            if result:
+                return result
+
+    # PHASE B: author-first fallback via /authors?search=
+    if not entry.authors:
+        return None
+    surnames = _extract_surnames(entry.authors)
+    if not surnames:
+        return None
+    full_first = entry.authors.split(';')[0].strip()
+
+    _rate_limit("api.openalex.org", 0.3)
+    author_resp = _oa_get("https://api.openalex.org/authors", {"search": full_first, "per-page": 3})
+    if not author_resp or author_resp.status_code != 200:
+        return None
+
+    for author_hit in author_resp.json().get("results", [])[:3]:
+        hit_name = author_hit.get("display_name", "").lower()
+        if not any(s in hit_name for s in surnames[:2]):
+            continue
+        author_id = author_hit.get("id", "").replace("https://openalex.org/", "")
+        if not author_id:
+            continue
+        _rate_limit("api.openalex.org", 0.3)
+        works_resp = _oa_get(
             "https://api.openalex.org/works",
-            params={"search": entry.title, "per-page": 5},
-            timeout=6,
-            headers={"User-Agent": "LNI-Checker/6.2"}
+            {"filter": f"author.id:{author_id}", "per-page": 10, "select": "title,doi,open_access,authorships"},
         )
-        if resp.status_code == 200:
-            results = resp.json().get("results", [])
-            for work in results[:3]:
-                title = work.get("title", "")
-                sim = _title_similarity(entry.title, title)
-                if sim >= 0.5:
-                    doi = (work.get("doi") or "").replace("https://doi.org/", "") or None
-                    oa = work.get("open_access", {}).get("oa_url")
-                    
-                    return VerificationResult(
-                        key=entry.key,
-                        title=entry.title,
-                        status="verified" if sim >= 0.75 else "partial_match",
-                        confidence=sim,
-                        matched_title=title,
-                        doi=doi,
-                        open_access_url=oa,
-                        note=f"Found on OpenAlex (match: {int(sim*100)}%)",
-                        sources_checked=["OpenAlex"],
-                    )
-    except Exception:
-        pass
+        if not works_resp or works_resp.status_code != 200:
+            continue
+        for work in works_resp.json().get("results", [])[:10]:
+            result = _oa_work_to_result(work, "OpenAlex (author fallback)")
+            if result:
+                return result
     return None
 
 
 def _dblp_query(query: str, timeout: int = 6) -> list:
-    """Execute a DBLP search and return hit list."""
-    try:
-        resp = requests.get(
-            "https://dblp.org/search/publ/api",
-            params={"q": query, "format": "json", "h": 8},
-            timeout=timeout,
-            headers={"User-Agent": "LNI-Checker/6.3"},
-        )
-        if resp.status_code == 200:
-            return resp.json().get("result", {}).get("hits", {}).get("hit", [])
-    except Exception:
-        pass
+    """Execute a DBLP search and return hit list, with one retry on Timeout."""
+    for attempt in range(2):
+        try:
+            resp = requests.get(
+                "https://dblp.org/search/publ/api",
+                params={"q": query, "format": "json", "h": 8},
+                timeout=timeout,
+                headers={"User-Agent": "LNI-Checker/6.3"},
+            )
+            if resp.status_code == 200:
+                return resp.json().get("result", {}).get("hits", {}).get("hit", [])
+            return []
+        except requests.exceptions.Timeout:
+            if attempt == 0:
+                time.sleep(1)
+        except Exception:
+            break
     return []
 
 
@@ -1129,11 +1227,63 @@ def _search_duckduckgo(entry: BibEntry) -> Optional[VerificationResult]:
 
 
 # ---------------------------------------------------------------------------
+# GND (Gemeinsame Normdatei) author lookup — German National Library
+# ---------------------------------------------------------------------------
+
+def _lookup_gnd_author(entry: BibEntry) -> Optional[VerificationResult]:
+    """Confirm author existence via GND (lobid.org) — free, no key needed.
+
+    Particularly valuable for German-language papers that DBLP / S2 miss.
+    We do NOT use this as a paper-existence proof, only as a supporting signal
+    that raises confidence when other sources also found something.
+    """
+    if not entry.authors or not entry.title:
+        return None
+
+    _rate_limit("lobid.org", 0.5)
+    first_author_full = entry.authors.split(';')[0].strip()
+    if not first_author_full or len(first_author_full) < 4:
+        return None
+
+    try:
+        resp = requests.get(
+            "https://lobid.org/gnd/search",
+            params={"q": first_author_full, "filter": "type:Person", "format": "json", "size": 3},
+            timeout=6,
+            headers={"User-Agent": "LNI-Checker/6.3"},
+        )
+        if resp.status_code != 200:
+            return None
+        items = resp.json().get("member", [])
+        if not items:
+            return None
+        # Check if any hit's name overlaps substantially with our author string
+        surnames = _extract_surnames(first_author_full)
+        for item in items[:3]:
+            preferred = (item.get("preferredName") or "").lower()
+            if any(s in preferred for s in surnames):
+                return VerificationResult(
+                    key=entry.key,
+                    title=entry.title,
+                    status="partial_match",
+                    confidence=0.6,
+                    matched_title=None,
+                    note=f"Author '{first_author_full}' confirmed in GND (German authority file)",
+                    sources_checked=["GND (lobid.org)"],
+                    correct_authors=item.get("preferredName"),
+                )
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Website verification
 # ---------------------------------------------------------------------------
 
 def _verify_website(entry: BibEntry) -> VerificationResult:
-    """Verify website/URL references."""
+    """Verify website/URL references, with URL liveness result + urldate freshness check."""
+    import datetime as _dt
     url = entry.url or ""
     if not url:
         return VerificationResult(
@@ -1144,40 +1294,68 @@ def _verify_website(entry: BibEntry) -> VerificationResult:
             note="No URL provided for website",
             sources_checked=[],
         )
-    
+
     try:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        
+
         _rate_limit(url.split("/")[2], 0.5)
         resp = requests.head(url, timeout=5, allow_redirects=True)
-        
-        if resp.status_code < 400:
-            return VerificationResult(
-                key=entry.key,
-                title=entry.title or url,
-                status="verified",
-                confidence=0.95,
-                open_access_url=url,
-                note=f"URL reachable (HTTP {resp.status_code})",
-                sources_checked=["URL check"],
-            )
-        else:
-            return VerificationResult(
-                key=entry.key,
-                title=entry.title or url,
-                status="not_found",
-                confidence=0.0,
-                note=f"URL returned HTTP {resp.status_code}",
-                sources_checked=["URL check"],
-            )
+        url_ok = resp.status_code < 400
+        http_code = resp.status_code
     except Exception as e:
+        url_ok = False
+        http_code = None
+        _err_msg = str(e)[:80]
+
+    # --- urldate freshness check ---
+    urldate_issue = None
+    if not url_ok and entry.urldate:
+        try:
+            # Try to parse various date formats
+            raw_date = re.sub(r'[./]', '-', entry.urldate.strip())
+            parts = raw_date.split('-')
+            if len(parts) >= 3:
+                year_part = int(parts[2]) if len(parts[2]) == 4 else int(parts[0])
+            elif len(parts) == 2:
+                year_part = int(parts[-1]) if len(parts[-1]) == 4 else int(parts[0])
+            else:
+                year_part = int(parts[0])
+            current_year = _dt.date.today().year
+            age_years = current_year - year_part
+            if age_years >= 2:
+                urldate_issue = (
+                    f"URL is broken and access date '{entry.urldate}' is {age_years} year(s) old "
+                    f"— content may have changed or disappeared since access."
+                )
+        except Exception:
+            pass
+
+    if url_ok:
         return VerificationResult(
             key=entry.key,
             title=entry.title or url,
-            status="error",
+            status="verified",
+            confidence=0.95,
+            open_access_url=url,
+            note=f"URL reachable (HTTP {http_code})",
+            sources_checked=["URL check"],
+        )
+    else:
+        issues_note = f"URL returned HTTP {http_code}" if http_code else f"URL unreachable: {_err_msg if 'url_ok' in dir() else 'connection error'}"
+        if urldate_issue:
+            issues_note += f" ⚠ {urldate_issue}"
+        # Surface broken URL as a completeness issue on the entry so bib tab shows it
+        if urldate_issue:
+            entry.completeness_issues.append(f"Broken URL + stale access date: {urldate_issue}")
+        else:
+            entry.completeness_issues.append(f"Broken URL (HTTP {http_code or 'unreachable'}): {url[:80]}")
+        return VerificationResult(
+            key=entry.key,
+            title=entry.title or url,
+            status="not_found",
             confidence=0.0,
-            note=f"URL check failed: {str(e)[:100]}",
+            note=issues_note,
             sources_checked=["URL check"],
         )
 
@@ -1374,9 +1552,7 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     
     # PHASE 2: Title/author search (run in parallel — 8 sources)
     if not any(r.status == "verified" for r in all_results):
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = []
-            futures.append(executor.submit(_search_crossref, entry))
+        with ThreadPoolExecutor(max_workers=9) as executor:
             futures.append(executor.submit(_search_semantic_scholar, entry))
             futures.append(executor.submit(_search_openalex, entry))
             futures.append(executor.submit(_search_dblp, entry))
@@ -1384,6 +1560,7 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             futures.append(executor.submit(_search_ieee, entry))        # IEEE journals/conf
             futures.append(executor.submit(_search_core, entry))        # 200M+ OA papers
             futures.append(executor.submit(_search_springer, entry))    # Springer/LNCS
+            futures.append(executor.submit(_lookup_gnd_author, entry))  # GND — German authority
 
             for future in as_completed(futures, timeout=10):
                 try:
