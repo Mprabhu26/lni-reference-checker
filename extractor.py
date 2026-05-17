@@ -133,7 +133,11 @@ def extract_pdf(path: str) -> dict:
     """
     Extract text from PDF with multiple fallback methods.
     Returns structured text with body and bibliography sections.
+    Raises FileNotFoundError if the file does not exist.
     """
+    from pathlib import Path as _Path
+    if not _Path(path).exists():
+        raise FileNotFoundError(f"PDF file not found: {path}")
     text = ""
     extraction_method = "pdfplumber"
     is_scanned = False
@@ -219,12 +223,14 @@ def extract_pdf(path: str) -> dict:
             extraction_method = f"pypdf also failed: {e}"
     
     # If we still have no text, try a raw text extraction (just in case)
-    if len(text.strip()) < 200:
+    if len(text.strip()) < 30:
         try:
-            # Try reading as plain text (some PDFs are text files with .pdf extension?)
+            # Try reading as plain text (only if pdfplumber produced nothing at all)
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 raw_text = f.read()
-                if len(raw_text.strip()) > len(text.strip()):
+                # Only use raw text if it looks like actual text (not binary PDF)
+                printable_ratio = sum(c.isprintable() or c in '\n\t' for c in raw_text[:500]) / max(len(raw_text[:500]), 1)
+                if printable_ratio > 0.85 and len(raw_text.strip()) > len(text.strip()):
                     text = raw_text
                     extraction_method = "raw text (unusual PDF)"
         except:

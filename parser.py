@@ -97,34 +97,35 @@ _JOURNAL_NAME_HINTS = re.compile(
 
 
 def parse_bibliography(bib_text: str) -> list:
+    """Parse bibliography section into BibEntry objects.
+
+    Two-pass approach so that invalid keys like [vaswani2017] or [X] are
+    captured AND can receive completeness issues, and mid-entry newlines
+    (which appear in real student PDFs) are handled correctly.
+    """
+    if not bib_text or not bib_text.strip():
+        return []
+
+    # Broad key: any [something] at start of a logical line (valid OR invalid).
+    ANY_KEY = re.compile(r'(?:^|\n)\s*\[([^\]\n]{1,30})\]', re.MULTILINE)
+    positions = [(m.start(), m.group(1), m.end()) for m in ANY_KEY.finditer(bib_text)]
+    if not positions:
+        return []
+
     entries = []
-    entry_pattern = re.compile(
-        r'\[(\d+|[A-Za-z]{2,6}\d{2}[a-z]?)\]\s+(.*?)(?=\n?\[|$)',
-        re.DOTALL | re.MULTILINE,
-    )
-    for match in entry_pattern.finditer(bib_text):
-        key = match.group(1)
-        raw = re.sub(r'\s+', ' ', match.group(2).strip().replace('\n', ' '))
+    for i, (chunk_start, key, body_start) in enumerate(positions):
+        body_end = positions[i + 1][0] if i + 1 < len(positions) else len(bib_text)
+        raw_body = bib_text[body_start:body_end]
+        # Collapse ALL whitespace (including mid-entry newlines) to single spaces
+        raw = re.sub(r'\s+', ' ', raw_body).strip()
+        if not raw:
+            continue
         entry = BibEntry(key=key, raw_text=raw)
         _classify_and_parse(entry, raw)
         _check_completeness(entry)
         _validate_key_vs_metadata(entry)
         entries.append(entry)
-    
-    # FALLBACK: If no entries found, try splitting by newlines
-    if not entries and bib_text.strip():
-        lines = bib_text.strip().split('\n')
-        for line in lines:
-            match = re.match(r'\[(\d+|[A-Za-z]{2,6}\d{2}[a-z]?)\]\s+(.+)', line.strip())
-            if match:
-                key = match.group(1)
-                raw = match.group(2).strip()
-                entry = BibEntry(key=key, raw_text=raw)
-                _classify_and_parse(entry, raw)
-                _check_completeness(entry)
-                _validate_key_vs_metadata(entry)
-                entries.append(entry)
-    
+
     return entries
 
 
@@ -278,11 +279,13 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
             candidates.append(first_period)
 
         if candidates:
-            # Keep the longest candidate that doesn't exceed 85% of rest length
+            # Keep the SHORTEST valid candidate — earlier stop = cleaner title boundary.
+            # A longer candidate almost always means a stop pattern was missed and
+            # journal/venue text leaked into the title.
             max_len = int(len(rest) * 0.85)
             valid = [c for c in candidates if 5 < len(c) <= max_len]
             if valid:
-                title_text = max(valid, key=len)
+                title_text = min(valid, key=len)
             else:
                 title_text = min(candidates, key=len)  # very short rest
         else:
@@ -394,6 +397,19 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
 
         if surnames:
             n = len(surnames)
+
+            def _norm_surname(s: str) -> str:
+                """Normalise a surname for initial comparison: lowercase + map umlauts."""
+                s = s.lower()
+                # Map German umlauts and common transliterations
+                for bad, good in [('ä','ae'),('ö','oe'),('ü','ue'),('ß','ss'),
+                                   ('é','e'),('è','e'),('ê','e'),('à','a'),
+                                   ('â','a'),('î','i'),('ô','o'),('û','u')]:
+                    s = s.replace(bad, good)
+                return s
+
+            normed = [_norm_surname(s) for s in surnames]
+
             # Build the set of ALL valid expected initials for this author list.
             # LNI allows some variation in practice, so we accept any valid form:
             #   1 author:   first 2 letters of surname         → "ez" for Ezkiri
@@ -404,10 +420,17 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
             # for any count to avoid false positives.
             valid_forms = set()
             # Always accept first-2-letters of first surname (covers 1-author + common mistake)
-            valid_forms.add(surnames[0][:2].lower())
+            valid_forms.add(normed[0][:2])
+            # Also accept 1-letter prefix alone (e.g. key "M" vs surname "Mueller")
+            valid_forms.add(normed[0][:1])
             if n >= 2:
                 # Accept per-surname initials form (strict LNI for 2–3 authors)
-                valid_forms.add(''.join(s[0].lower() for s in surnames[:min(n, 3)]))
+                valid_forms.add(''.join(s[0] for s in normed[:min(n, 3)]))
+                # Accept 4+-author style (2-letter prefix of first surname)
+                valid_forms.add(normed[0][:2])
+            if n >= 4:
+                # Accept first letter of each of first 4 surnames
+                valid_forms.add(''.join(s[0] for s in normed[:4]))
 
             initials_ok = any(
                 key_initials.startswith(form) or form.startswith(key_initials)
@@ -465,42 +488,20 @@ def _check_completeness(entry: BibEntry) -> None:
                 "(e.g. S. 12--34)."
             )
 
-    # LNI author format: MUST be "Lastname, Firstname" (or "Lastname, F.")
-    # Flag 'Firstname Lastname', 'F. Lastname', and 'F.Lastname' patterns explicitly
+    # LNI author order: must be "Lastname, Firstname"
     if entry.authors:
         for name in entry.authors.split(';'):
             name = name.strip()
-            if not name:
-                continue
-            # Pattern 1: "Firstname Lastname" — two TitleCase words, no comma
-            if re.match(r'^[A-ZÄÖÜ][a-zäöüß]{2,}\s+[A-ZÄÖÜ][a-zäöüß]{2,}$', name) and ',' not in name:
-                parts = name.split()
-                suggested = f"{parts[-1]}, {parts[0]}"
+            # Pattern: TitleCaseWord SPACE TitleCaseWord with no comma
+            # Require that neither word is a short particle (von, de, van…)
+            if re.match(
+                r'^[A-ZÄÖÜ][a-zäöüß]{2,}\s+[A-ZÄÖÜ][a-zäöüß]{2,}$', name
+            ) and ',' not in name:
                 entry.completeness_issues.append(
-                    f"Author '{name}' uses 'Firstname Lastname' order — "
-                    f"LNI requires 'Lastname, Firstname' (e.g. '{suggested}')."
+                    f"Author '{name}' appears to be 'Firstname Lastname' — "
+                    "LNI requires 'Lastname, Firstname'."
                 )
                 break
-            # Pattern 2: "F. Lastname" or "F.Lastname" — initial before surname, no comma
-            if re.match(r'^[A-ZÄÖÜ]\.?\s+[A-ZÄÖÜ][a-zäöüß]{2,}$', name) and ',' not in name:
-                parts = name.split()
-                suggested = f"{parts[-1]}, {parts[0]}"
-                entry.completeness_issues.append(
-                    f"Author '{name}' uses 'Initial Lastname' order — "
-                    f"LNI requires 'Lastname, Firstname' (e.g. '{suggested}')."
-                )
-                break
-            # Pattern 3: Multiple initials before surname e.g. "A.B. Lastname"
-            if re.match(r'^(?:[A-ZÄÖÜ]\.){1,3}\s*[A-ZÄÖÜ][a-zäöüß]{2,}$', name) and ',' not in name:
-                surname = re.search(r'[A-ZÄÖÜ][a-zäöüß]{2,}', name)
-                initials = re.findall(r'[A-ZÄÖÜ]\.', name)
-                if surname and initials:
-                    suggested = f"{surname.group()}, {''.join(initials)}"
-                    entry.completeness_issues.append(
-                        f"Author '{name}' uses initials-before-surname order — "
-                        f"LNI requires 'Lastname, Initials' (e.g. '{suggested}')."
-                    )
-                    break
 
     # Future-year check
     if entry.year:
