@@ -1574,25 +1574,31 @@ def verify_all_references(bib_entries: dict) -> list:
 
 def extract_citations_from_body(body_text: str) -> set:
     keys = set()
-
-    # LNI single key pattern (reused below)
     _LNI_KEY = r'[A-Za-z]{2,6}\d{2}[a-z]?'
 
-    # 1. LNI format — single: [ABC01] OR multi-key with comma OR semicolon:
-    #    [OB23; SHS24]  or  [ABC01, DEF02]  (professor confirmed both exist)
+    # Strip "e.g. [KEY]" / "z.B. [KEY]" / "cf. [KEY]" illustrative references
+    # so they are not counted as real in-text citations.
+    filtered = re.sub(
+        r'(?:e\.?g\.?|z\.?[Bb]\.?|cf\.?|i\.?e\.?|for example|e\.g\.,|z\.B\.,|vgl\.|see e\.g\.)' +
+        r'\s*[\(\[]?' + _LNI_KEY + r'(?:[;,]\s*' + _LNI_KEY + r')*[\)\]]?',
+        '[EXAMPLE_REF]', body_text, flags=re.IGNORECASE
+    )
+    # Also collapse regex-like bracket contexts: "{2,6}" near "[ABC01]"
+    filtered = re.sub(r'\{\d+,?\d*\}[^\[]*(?=\[)', ' ', filtered)
+
+    # 1. LNI format — single [ABC01] or multi-key [OB23; SHS24] / [A01, B02]
     lni_bracket_matches = re.findall(
         r'\[(' + _LNI_KEY + r'(?:[;,]\s*' + _LNI_KEY + r')*)\]',
-        body_text,
+        filtered,
     )
     for match in lni_bracket_matches:
-        # Split on either comma or semicolon
         for key in re.split(r'[;,]\s*', match):
             key = key.strip()
             if re.match(r'^' + _LNI_KEY + r'$', key):
                 keys.add(key)
 
-    # 2. Numeric format — single [1] and multi [1, 2, 3] or [1; 2; 3]
-    numeric_bracket_matches = re.findall(r'\[(\d{1,3}(?:[;,]\s*\d{1,3})*)\]', body_text)
+    # 2. Numeric format — [1] / [1, 2] / [1; 2]
+    numeric_bracket_matches = re.findall(r'\[(\d{1,3}(?:[;,]\s*\d{1,3})*)\]', filtered)
     if numeric_bracket_matches:
         keys.add('__numeric_citations__')
         for match in numeric_bracket_matches:
@@ -1602,7 +1608,6 @@ def extract_citations_from_body(body_text: str) -> set:
                     keys.add(f'__NUM_{num}__')
 
     return keys
-
 
 def extract_citation_contexts(body_text: str) -> dict:
     contexts = {}
@@ -1690,26 +1695,30 @@ def cross_check(bib_entries: dict, cited_keys: set) -> CrossCheckResult:
         r.in_bib_not_cited = sorted(bib_numeric_keys - numeric_cited_numbers)
         r.correctly_used = sorted(numeric_cited_numbers & bib_numeric_keys)
 
-    elif has_numeric and not bib_numeric_keys:
-        # Body uses numeric [1][2] but bib uses LNI keys — count-only validation.
-        # We cannot do per-key matching, so we only flag count mismatches.
+    elif has_numeric and not bib_numeric_keys and not lni_cited:
+        # Body uses ONLY numeric [1][2] but bib uses LNI keys — count-only validation.
         n_cited = len(numeric_cited_numbers)
         n_bib = len(bib_lni_keys)
-        r.cited_not_in_bib = []   # cannot determine which specific key is missing
+        r.cited_not_in_bib = []
         r.in_bib_not_cited = []
-        r.correctly_used = list(bib_lni_keys)  # treat all bib entries as matched
+        r.correctly_used = list(bib_lni_keys)
         if n_cited > n_bib:
-            # More citations than bib entries — surface as a single synthetic warning
             r.cited_not_in_bib = [f"__NUMERIC_OVERFLOW__ ({n_cited} citations > {n_bib} bib entries)"]
         elif n_bib > n_cited + 2:
-            # Noticeably more bib entries than citations
             r.in_bib_not_cited = [f"__NUMERIC_UNDERREF__ ({n_bib} bib entries, only {n_cited} numeric citations)"]
 
     else:
-        # Standard LNI author-year matching
+        # Standard LNI author-year matching — always do per-key check.
+        # If numeric refs also appear alongside LNI keys, flag them as a note
+        # but do NOT suppress the LNI per-key accuracy.
         r.cited_not_in_bib = sorted(lni_cited - bib_lni_keys)
         r.in_bib_not_cited = sorted(bib_lni_keys - lni_cited)
         r.correctly_used = sorted(lni_cited & bib_lni_keys)
+        if has_numeric and numeric_cited_numbers:
+            r.cited_not_in_bib.append(
+                f"__NUMERIC_IN_LNI_DOC__ (numeric [{', '.join(sorted(numeric_cited_numbers))}] "
+                f"found alongside LNI keys — check if intentional)"
+            )
 
     return r
 

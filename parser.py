@@ -335,10 +335,12 @@ def validate_lni_key(key: str) -> list:
     if key.isdigit():
         return errors
     
-    match = re.match(r'^([A-Za-z]+)(\d{2})([a-z])?$', key)
+    # LNI keys: initials must be UPPERCASE (first letter of surname)
+    match = re.match(r'^([A-Z][A-Za-z]*)(\d{2})([a-z])?$', key)
     if not match:
         errors.append(
-            f"Key '{key}' does not follow LNI format (e.g. Ez10, ABC01)."
+            f"Key '{key}' does not follow LNI format (e.g. Ez10, ABC01). "
+            f"Initials must start with an uppercase letter."
         )
     else:
         letters = match.group(1)
@@ -368,7 +370,7 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     if entry.key.isdigit():
         entry.key_consistent = True
         return
-    match = re.match(r'^([A-Za-z]+)(\d{2})([a-z])?$', entry.key)
+    match = re.match(r'^([A-Z][A-Za-z]*)(\d{2})([a-z])?$', entry.key)
     if not match:
         entry.key_consistent = None
         return

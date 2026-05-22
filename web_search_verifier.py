@@ -2,28 +2,19 @@
 Web Search Verifier - RefChecker-style hallucination detection
 Performs LLM-powered web search for references not found in APIs
 """
-from pathlib import Path
-import os
-
-# Try to load .env file
-try:
-    from dotenv import load_dotenv
-    env_path = Path(__file__).parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-        print(f"Loaded .env from {env_path}")
-    else:
-        # Try current working directory
-        load_dotenv()
-        print("Loaded .env from current directory")
-except Exception as e:
-    print(f"Could not load .env: {e}")
-    
 import json
 import re
 import os
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
+
+# Load .env silently — keys set here are picked up by the rest of the app too
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / '.env', override=False)
+except ImportError:
+    pass  # python-dotenv not installed; keys must be set in the environment directly
 
 # Web search library (NEW: ddgs instead of duckduckgo-search)
 from ddgs import DDGS

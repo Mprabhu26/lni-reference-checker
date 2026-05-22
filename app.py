@@ -12,6 +12,7 @@ IMPROVEMENTS in v6.1:
 import os
 import re
 import sys
+from typing import Optional
 
 # Load .env file if present (for local development)
 try:

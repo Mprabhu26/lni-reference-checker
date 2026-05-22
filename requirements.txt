@@ -10,6 +10,9 @@ rapidfuzz>=3.0.0
 gunicorn>=21.2.0
 python-magic>=0.4.27
 
+
+
+
 # For web search (free, no API key needed)
 ddgs>=9.0.0
 beautifulsoup4>=4.12.0
