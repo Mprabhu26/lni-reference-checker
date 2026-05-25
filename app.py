@@ -56,6 +56,15 @@ app = Flask(__name__, static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 app.config["TIMEOUT"] = 180  # 3 minutes timeout for long operations
 
+# Ensure both databases are initialized at startup
+from local_db import init_cache_db
+from review_queue import init_review_db
+try:
+    init_cache_db()
+    init_review_db()
+except Exception as _db_init_err:
+    print(f"Warning: DB init error (non-fatal): {_db_init_err}")
+
 
 # ---------------------------------------------------------------------------
 # Timeout decorator for long-running operations
@@ -743,6 +752,10 @@ def _run_full_check(main_path: str, bib_path: str = None,
         is_scanned=bool(sections.get("is_scanned")),
     )
 
+@app.route("/check-stream", methods=["POST"])
+def check_stream():
+    """Alias for streaming check endpoint."""
+    return check()
 
 @app.route("/check-sync", methods=["POST"])
 def check_sync():
@@ -1032,6 +1045,48 @@ def review_stats():
         "stats": get_review_stats(),
         "pending": get_pending_reviews(10)
     })
+
+
+@app.route("/api/inject_paper", methods=["POST"])
+def inject_paper():
+    """
+    Professor manually injects a confirmed-real paper into the local SQLite DB.
+    Only verified/real papers should be injected — suspicious entries are NOT stored
+    automatically; the professor must explicitly call this after confirming.
+    """
+    from local_db import inject_confirmed_paper, get_cache_stats
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    title   = (data.get("title") or "").strip()
+    authors = (data.get("authors") or "").strip()
+    year    = (data.get("year") or "").strip()
+    doi     = (data.get("doi") or "").strip()
+    url     = (data.get("url") or "").strip()
+
+    if not title:
+        return jsonify({"error": "Title is required"}), 400
+
+    ok = inject_confirmed_paper(title=title, authors=authors,
+                                 year=year, doi=doi, url=url)
+    if not ok:
+        return jsonify({"error": "Failed to save to database"}), 500
+
+    stats = get_cache_stats()
+    return jsonify({
+        "success": True,
+        "message": f"'{title[:60]}' saved to local DB.",
+        "db_total": stats["total_papers"],
+        "db_size_kb": stats["db_size_kb"],
+    })
+
+
+@app.route("/api/db_stats", methods=["GET"])
+def db_stats():
+    """Return local SQLite DB statistics."""
+    from local_db import get_cache_stats
+    return jsonify(get_cache_stats())
 
 
 @app.route("/export", methods=["POST"])

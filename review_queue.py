@@ -240,8 +240,15 @@ def add_review_decision(title: str, authors: str, decision: str, note: str = "",
         return False
 
 
+def _ensure_db():
+    """Initialize the review DB if it does not exist yet."""
+    if not REVIEW_DB.exists():
+        init_review_db()
+
+
 def get_review_decision(title: str, authors: str = "") -> Optional[Dict]:
     """Get professor's review decision for a paper"""
+    _ensure_db()
     conn = sqlite3.connect(str(REVIEW_DB))
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -270,6 +277,7 @@ def is_venue_whitelisted(venue: str) -> Dict:
     if not venue:
         return {"whitelisted": False, "trust": None}
     
+    _ensure_db()
     conn = sqlite3.connect(str(REVIEW_DB))
     cursor = conn.cursor()
     
@@ -290,6 +298,7 @@ def is_venue_whitelisted(venue: str) -> Dict:
 
 def add_false_positive(title: str, authors: str, ai_verdict: str, notes: str = ""):
     """Record a false positive (paper AI flagged as fake but actually real)"""
+    _ensure_db()
     conn = sqlite3.connect(str(REVIEW_DB))
     cursor = conn.cursor()
     
