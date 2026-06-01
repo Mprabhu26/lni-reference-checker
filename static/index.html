@@ -3,10 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LNI Reference Checker - Academic Bibliography Validation Tool</title>
+<title>LNI Reference Checker</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-/* Same CSS as before - keeping it concise */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
   --bg: #f8fafc; --surface: #ffffff; --surface-secondary: #f1f5f9;
@@ -18,177 +17,219 @@
   --radius-sm: 6px; --radius: 10px; --radius-lg: 16px;
   --shadow: 0 1px 3px rgba(0,0,0,0.05); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
 }
-body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
-.app { display: flex; min-height: 100vh; }
-.sidebar { width: 320px; background: var(--surface); border-right: 1px solid var(--border); padding: 24px 20px; display: flex; flex-direction: column; gap: 20px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
-.logo { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600; color: var(--primary); padding-bottom: 8px; border-bottom: 2px solid var(--primary-bg); }
-.logo span { color: var(--text-muted); font-weight: 400; font-size: 12px; }
-.upload-zone { border: 2px dashed var(--border-strong); border-radius: var(--radius); padding: 28px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--surface-secondary); }
+body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; overflow: hidden; }
+.app { display: flex; height: 100vh; overflow: hidden; }
+
+/* Sidebar */
+.sidebar { width: 300px; background: var(--surface); border-right: 1px solid var(--border); padding: 20px 16px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; flex-shrink: 0; }
+.logo { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: var(--primary); padding-bottom: 8px; border-bottom: 2px solid var(--primary-bg); display: flex; align-items: center; justify-content: space-between; }
+.logo .ver { color: var(--text-muted); font-weight: 400; font-size: 11px; }
+.upload-zone { border: 2px dashed var(--border-strong); border-radius: var(--radius); padding: 22px 16px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--surface-secondary); }
 .upload-zone:hover, .upload-zone.dragover { border-color: var(--primary); background: var(--primary-bg); }
-.upload-icon { font-size: 36px; margin-bottom: 12px; }
-.upload-zone strong { display: block; font-size: 14px; margin-bottom: 4px; color: var(--text); }
-.upload-zone p { font-size: 12px; color: var(--text-muted); }
-.file-chip { background: var(--primary-bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; }
-.file-chip .name { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-chip button { background: none; border: none; font-size: 18px; cursor: pointer; color: var(--text-muted); padding: 0 4px; }
+.upload-icon { font-size: 30px; margin-bottom: 8px; }
+.upload-zone strong { display: block; font-size: 13px; margin-bottom: 3px; }
+.upload-zone p { font-size: 11px; color: var(--text-muted); }
+.file-chip { background: var(--primary-bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; }
+.file-chip .name { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+.file-chip button { background: none; border: none; font-size: 16px; cursor: pointer; color: var(--text-muted); }
 .file-chip button:hover { color: var(--error); }
-.toggle-wrapper { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.toggle-label { display: flex; flex-direction: column; gap: 2px; }
-.toggle-label .label { font-weight: 500; font-size: 13px; color: var(--text); }
-.toggle-label .hint { font-size: 11px; color: var(--text-muted); }
-.toggle-switch { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+.toggle-wrapper { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.toggle-label .label { font-weight: 500; font-size: 12px; }
+.toggle-label .hint { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+.toggle-switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
 .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
-.toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--border-strong); transition: 0.2s; border-radius: 24px; }
-.toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: 0.2s; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
-input:checked + .toggle-slider { background-color: var(--primary); }
-input:checked + .toggle-slider:before { transform: translateX(20px); }
-.btn-run { background: var(--primary); color: white; border: none; padding: 12px 20px; border-radius: var(--radius); font-size: 14px; font-weight: 600; width: 100%; cursor: pointer; transition: background 0.2s; }
+.toggle-slider { position: absolute; cursor: pointer; inset: 0; background: var(--border-strong); transition: 0.2s; border-radius: 22px; }
+.toggle-slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background: white; transition: 0.2s; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.15); }
+input:checked + .toggle-slider { background: var(--primary); }
+input:checked + .toggle-slider:before { transform: translateX(18px); }
+.btn-run { background: var(--primary); color: white; border: none; padding: 11px 18px; border-radius: var(--radius); font-size: 13px; font-weight: 600; width: 100%; cursor: pointer; transition: background 0.2s; }
 .btn-run:hover { background: var(--primary-dark); }
-.btn-run:disabled { background: var(--border-strong); cursor: not-allowed; opacity: 0.6; }
-.progress-box { background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; display: none; max-height: 300px; overflow-y: auto; }
-.progress-box.show { display: block; }
-.progress-log { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); }
-.progress-log .line { padding: 3px 0; border-bottom: 1px solid var(--border); }
-.progress-log .line.warn { color: var(--warning); }
-.progress-log .line.error { color: var(--error); }
-.db-badge { background: var(--success-bg); border: 1px solid #c8e6d9; border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12px; display: flex; align-items: center; gap: 10px; color: var(--success); }
-.db-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; }
-.main { flex: 1; display: flex; flex-direction: column; }
-.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 28px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
-.topbar-title { font-size: 13px; color: var(--text-muted); }
-.topbar-title strong { color: var(--text); font-weight: 600; }
-.topbar-actions { display: flex; gap: 10px; }
-.btn-ghost, .btn-primary { padding: 8px 16px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 6px; }
+.btn-run:disabled { background: var(--border-strong); cursor: not-allowed; }
+.btn-start-over { background: transparent; color: var(--text-muted); border: 1px solid var(--border); padding: 8px 18px; border-radius: var(--radius); font-size: 12px; width: 100%; cursor: pointer; margin-top: 6px; transition: all 0.2s; }
+.btn-start-over:hover { border-color: var(--error); color: var(--error); background: var(--error-bg); }
+.db-badge { background: var(--success-bg); border: 1px solid #c8e6d9; border-radius: var(--radius-sm); padding: 8px 10px; font-size: 11px; display: flex; align-items: center; gap: 8px; color: var(--success); cursor: pointer; transition: background 0.15s; }
+.db-badge:hover { background: #d4f0e2; }
+.db-dot { width: 7px; height: 7px; background: var(--success); border-radius: 50%; flex-shrink: 0; }
+
+/* Main Content Area */
+.main-content { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 12px; }
+.topbar-title { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar-title strong { color: var(--text); }
+.topbar-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.btn-sm { padding: 6px 14px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
 .btn-ghost:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-bg); }
-.btn-primary { background: var(--primary); border: none; color: white; }
-.btn-primary:hover { background: var(--primary-dark); }
-.btn-ghost:disabled, .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.main-progress { padding: 28px; flex: 1; }
-.welcome-screen { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
-.welcome-title { font-size: 28px; font-weight: 700; color: var(--primary); margin-bottom: 16px; text-align: center; }
-.welcome-subtitle { text-align: center; color: var(--text-muted); margin-bottom: 40px; font-size: 16px; }
-.steps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 40px; }
-.step-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; text-align: center; transition: transform 0.2s; }
-.step-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
-.step-number { width: 40px; height: 40px; background: var(--primary-bg); color: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px; margin: 0 auto 16px; }
-.step-icon { font-size: 32px; margin-bottom: 12px; }
-.step-title { font-weight: 600; margin-bottom: 8px; }
-.step-desc { font-size: 13px; color: var(--text-muted); }
-.feature-list { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
-.feature-list h3 { margin-bottom: 16px; font-size: 16px; }
-.feature-list ul { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-.feature-list li { padding-left: 24px; position: relative; font-size: 13px; color: var(--text-muted); }
+.btn-primary-sm { background: var(--primary); border: none; color: white; }
+.btn-primary-sm:hover { background: var(--primary-dark); }
+
+/* Results Area */
+.results-area { flex: 1; overflow-y: auto; padding: 0 20px 20px 20px; }
+
+/* Tabs */
+.tabs-wrap { border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 40; display: none; margin-bottom: 16px; }
+.tabs-wrap.show { display: block; }
+.tabs { display: flex; gap: 2px; overflow-x: auto; }
+.tab-btn { background: none; border: none; border-bottom: 3px solid transparent; padding: 10px 16px; font-size: 12px; font-weight: 500; color: var(--text-muted); cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.tab-badge { background: var(--border); border-radius: 20px; padding: 1px 7px; font-size: 10px; font-weight: 700; }
+.tab-badge.red { background: var(--error-bg); color: var(--error); }
+.tab-badge.orange { background: var(--warning-bg); color: var(--warning); }
+.tab-badge.green { background: var(--success-bg); color: var(--success); }
+
+.content { display: none; }
+.content.active { display: block; }
+
+/* Welcome Screen */
+.welcome-screen { max-width: 780px; margin: 0 auto; padding: 32px 20px; }
+.welcome-title { font-size: 24px; font-weight: 700; color: var(--primary); margin-bottom: 10px; text-align: center; }
+.welcome-subtitle { text-align: center; color: var(--text-muted); margin-bottom: 32px; }
+.steps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 28px; }
+.step-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px; text-align: center; }
+.step-number { width: 36px; height: 36px; background: var(--primary-bg); color: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; margin: 0 auto 12px; }
+.step-icon { font-size: 28px; margin-bottom: 8px; }
+.step-title { font-weight: 600; margin-bottom: 6px; font-size: 13px; }
+.step-desc { font-size: 12px; color: var(--text-muted); }
+.feature-list { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+.feature-list h3 { margin-bottom: 12px; font-size: 14px; }
+.feature-list ul { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.feature-list li { padding-left: 20px; position: relative; font-size: 12px; color: var(--text-muted); }
 .feature-list li:before { content: "✓"; position: absolute; left: 0; color: var(--success); font-weight: 700; }
-.progress-screen { display: none; }
-.progress-screen.show { display: block; }
-.progress-steps { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; margin-bottom: 20px; }
-.progress-step { display: flex; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border); }
-.progress-step:last-child { border-bottom: none; }
-.progress-step-icon { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; }
-.progress-step-icon.pending { background: var(--surface-secondary); color: var(--text-faint); }
-.progress-step-icon.active { background: var(--primary-bg); color: var(--primary); animation: pulse 1.5s infinite; }
-.progress-step-icon.completed { background: var(--success-bg); color: var(--success); }
-.progress-step-info { flex: 1; }
-.progress-step-name { font-weight: 600; font-size: 14px; }
-.progress-step-desc { font-size: 12px; color: var(--text-muted); }
-.progress-step-status { font-size: 12px; font-weight: 500; }
-.progress-step-status.pending { color: var(--text-faint); }
-.progress-step-status.active { color: var(--primary); }
-.progress-step-status.completed { color: var(--success); }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-.verdict-banner { padding: 0 28px; margin-top: 24px; display: none; }
+
+/* Progress Panel */
+.progress-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 20px; overflow: hidden; display: none; }
+.progress-panel.show { display: block; }
+.progress-header { background: var(--primary); color: white; padding: 12px 20px; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 10px; }
+.progress-header .spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.progress-messages { padding: 16px 20px; max-height: 300px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 12px; background: var(--surface-secondary); }
+.progress-messages .msg-line { padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 10px; }
+.progress-messages .msg-icon { flex-shrink: 0; width: 20px; text-align: center; }
+.progress-messages .msg-icon.success { color: var(--success); }
+.progress-messages .msg-icon.warning { color: var(--warning); }
+.progress-messages .msg-icon.error { color: var(--error); }
+.progress-messages .msg-icon.info { color: var(--primary); }
+.progress-messages .msg-text { flex: 1; color: var(--text); }
+.progress-stats { display: flex; gap: 20px; padding: 12px 20px; background: var(--surface); border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
+
+/* Verdict Banner */
+.verdict-banner { margin-bottom: 20px; display: none; }
 .verdict-banner.show { display: block; }
-.verdict-card { border-radius: var(--radius-lg); padding: 20px 24px; display: flex; align-items: center; gap: 16px; border: 1px solid; }
+.verdict-card { border-radius: var(--radius-lg); padding: 18px 20px; display: flex; align-items: center; gap: 14px; border: 1px solid; }
 .verdict-card.PASS { background: var(--success-bg); border-color: #c8e6d9; }
 .verdict-card.FLAG { background: var(--warning-bg); border-color: #fed7aa; }
 .verdict-card.FAIL { background: var(--error-bg); border-color: #fecaca; }
-.verdict-icon { font-size: 36px; }
+.verdict-icon { font-size: 32px; }
 .verdict-meta { flex: 1; }
-.verdict-title { font-size: 20px; font-weight: 700; }
+.verdict-title { font-size: 18px; font-weight: 700; }
 .verdict-card.PASS .verdict-title { color: var(--success); }
 .verdict-card.FLAG .verdict-title { color: var(--warning); }
 .verdict-card.FAIL .verdict-title { color: var(--error); }
-.verdict-reason { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-.verdict-score { font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 700; text-align: right; }
-.tabs-wrap { padding: 16px 28px 0; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 49px; z-index: 40; display: none; }
-.tabs-wrap.show { display: block; }
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; }
-.tab-btn { background: none; border: none; border-bottom: 3px solid transparent; padding: 10px 20px; font-size: 13px; font-weight: 500; color: var(--text-muted); cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 8px; }
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
-.tab-badge { background: var(--border); border-radius: 20px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
-.tab-badge.red { background: var(--error-bg); color: var(--error); }
-.tab-badge.orange { background: var(--warning-bg); color: var(--warning); }
-.content { padding: 24px 28px; flex: 1; display: none; }
-.content.active { display: block; }
-.stat-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
-.stat-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 18px; min-width: 90px; text-align: center; }
-.stat-box .value { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 700; line-height: 1.2; }
-.stat-box .label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.verdict-reason { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.verdict-score { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; text-align: right; }
+
+/* Stat Bar */
+.stat-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.stat-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; min-width: 80px; text-align: center; }
+.stat-box .value { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700; line-height: 1.2; }
+.stat-box .label { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
 .stat-box.red .value { color: var(--error); }
 .stat-box.orange .value { color: var(--warning); }
 .stat-box.green .value { color: var(--success); }
-.search-bar { margin-bottom: 16px; }
-.search-bar input { width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; background: var(--surface); }
+
+/* Search Bar */
+.search-bar { margin-bottom: 12px; }
+.search-bar input { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 12px; background: var(--surface); }
 .search-bar input:focus { outline: none; border-color: var(--primary); }
-.section-heading { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 20px 0 12px; display: flex; align-items: center; gap: 8px; }
+
+/* Section Headings */
+.section-heading { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin: 18px 0 10px; display: flex; align-items: center; gap: 8px; }
 .section-heading::after { content: ''; flex: 1; height: 1px; background: var(--border); }
-.entry-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; overflow: hidden; }
-.entry-header { padding: 14px 16px; display: flex; align-items: flex-start; gap: 12px; cursor: pointer; transition: background 0.15s; }
+
+/* Entry Cards */
+.entry-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; overflow: hidden; }
+.entry-header { padding: 12px 14px; display: flex; align-items: center; gap: 12px; cursor: pointer; transition: background 0.15s; flex-wrap: wrap; }
 .entry-header:hover { background: var(--surface-secondary); }
-.entry-key { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; color: var(--primary); white-space: nowrap; }
-.entry-meta { flex: 1; }
-.entry-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
-.entry-authors { font-size: 12px; color: var(--text-muted); }
-.entry-year { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-faint); margin-left: 6px; }
-.entry-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-.badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.entry-key { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; color: var(--primary); white-space: nowrap; flex-shrink: 0; }
+.entry-meta { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.entry-title { font-weight: 600; font-size: 12px; margin-bottom: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.entry-authors { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.entry-badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; flex-shrink: 0; }
+.badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 9px; border-radius: 20px; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .badge-real { background: var(--success-bg); color: var(--success); }
 .badge-fake { background: var(--error-bg); color: var(--error); }
 .badge-suspicious { background: var(--warning-bg); color: var(--warning); }
 .badge-issue { background: var(--warning-bg); color: var(--warning); }
-.badge-ok { background: var(--success-bg); color: var(--success); }
 .badge-missing { background: var(--error-bg); color: var(--error); }
 .badge-orphan { background: var(--warning-bg); color: var(--warning); }
-.confidence-pill { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: help; }
-.entry-detail { border-top: 1px solid var(--border); padding: 0 16px; max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
-.entry-detail.open { max-height: 800px; padding: 16px; }
-.detail-section { margin-bottom: 20px; }
-.detail-section-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 8px; }
-.explanation-text { font-size: 13px; line-height: 1.6; color: var(--text-muted); padding: 12px; background: var(--surface-secondary); border-radius: var(--radius-sm); border-left: 3px solid var(--primary); }
-.issue-item { padding: 10px 12px; border-radius: var(--radius-sm); margin-bottom: 8px; font-size: 13px; }
-.issue-item.error { background: var(--error-bg); border-left: 3px solid var(--error); }
-.issue-item.warning { background: var(--warning-bg); border-left: 3px solid var(--warning); }
+.conf-pill { font-family: 'JetBrains Mono', monospace; font-size: 10px; border-radius: 4px; padding: 2px 7px; border: 1px solid; cursor: help; font-weight: 600; }
+.conf-pill.high { background: var(--success-bg); color: var(--success); border-color: #c8e6d9; }
+.conf-pill.med { background: var(--warning-bg); color: var(--warning); border-color: #fed7aa; }
+.conf-pill.low { background: var(--error-bg); color: var(--error); border-color: #fecaca; }
+.entry-detail { border-top: 1px solid var(--border); max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
+.entry-detail.open { max-height: 1000px; }
+.entry-detail-inner { padding: 14px 14px; }
+.detail-section { margin-bottom: 16px; }
+.detail-section:last-child { margin-bottom: 0; }
+.detail-title { font-size: 11px; font-weight: 700; color: var(--text); margin-bottom: 8px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
+.explanation-box { font-size: 12px; line-height: 1.6; color: var(--text-muted); padding: 10px 12px; background: var(--surface-secondary); border-radius: var(--radius-sm); border-left: 3px solid var(--primary); }
+.tab-description { font-size: 12px; line-height: 1.6; color: var(--text-muted); padding: 10px 14px; background: var(--surface-secondary); border-radius: var(--radius-sm); margin-bottom: 14px; border-left: 3px solid var(--border-strong); }
+.issue-item { padding: 8px 10px; border-radius: var(--radius-sm); margin-bottom: 6px; font-size: 12px; }
+.issue-item.err { background: var(--error-bg); border-left: 3px solid var(--error); }
+.issue-item.warn { background: var(--warning-bg); border-left: 3px solid var(--warning); }
 .issue-item.info { background: var(--info-bg); border-left: 3px solid var(--info); }
-.correct-format { background: var(--success-bg); padding: 12px; border-radius: var(--radius-sm); margin-top: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; border-left: 3px solid var(--success); }
-.field-compare { display: flex; gap: 12px; padding: 8px 12px; background: var(--surface-secondary); border-radius: var(--radius-sm); margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
-.field-compare .label { font-weight: 600; min-width: 100px; color: var(--text-muted); }
-.risk-factors { list-style: none; margin-top: 6px; }
-.risk-factors li { padding: 4px 0 4px 20px; position: relative; font-size: 12px; color: var(--warning); }
-.risk-factors li::before { content: '⚠'; position: absolute; left: 0; }
-.sources-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.source-chip { font-size: 11px; font-family: 'JetBrains Mono', monospace; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; color: var(--text-muted); }
-.resource-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--primary-bg); color: var(--primary); border-radius: var(--radius-sm); text-decoration: none; font-size: 12px; font-weight: 500; transition: background 0.2s; }
+.field-row { display: flex; gap: 10px; padding: 6px 10px; background: var(--surface-secondary); border-radius: var(--radius-sm); margin-bottom: 4px; font-size: 12px; flex-wrap: wrap; }
+.field-row .fl { font-weight: 600; min-width: 90px; color: var(--text-muted); font-size: 11px; }
+.risk-list { list-style: none; margin-top: 4px; }
+.risk-list li { padding: 3px 0 3px 18px; position: relative; font-size: 11px; color: var(--warning); }
+.risk-list li::before { content: '⚠'; position: absolute; left: 0; }
+.sources-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.source-chip { font-size: 10px; font-family: 'JetBrains Mono', monospace; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; color: var(--text-muted); }
+.resource-link { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; background: var(--primary-bg); color: var(--primary); border-radius: var(--radius-sm); text-decoration: none; font-size: 11px; font-weight: 500; transition: background 0.2s; }
 .resource-link:hover { background: var(--primary); color: white; }
-.xcheck-section { margin-bottom: 24px; }
-.xcheck-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
-.xcheck-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; list-style: none; }
-.xcheck-list li { padding: 10px 12px; background: var(--surface-secondary); border-radius: var(--radius-sm); font-size: 12px; }
-.xcheck-list li.missing { background: var(--error-bg); border-left: 3px solid var(--error); }
-.xcheck-list li.orphan { background: var(--warning-bg); border-left: 3px solid var(--warning); }
-.xcheck-list li.ok { background: var(--success-bg); border-left: 3px solid var(--success); }
-.confidence-tooltip { border-bottom: 1px dashed var(--text-muted); cursor: help; }
-.empty { text-align: center; padding: 60px 20px; color: var(--text-muted); }
-.empty .icon { font-size: 48px; margin-bottom: 16px; }
-.toast { position: fixed; bottom: 24px; right: 24px; background: var(--text); color: white; border-radius: var(--radius); padding: 12px 20px; font-size: 13px; box-shadow: var(--shadow-md); transform: translateY(20px); opacity: 0; transition: all 0.25s; z-index: 1000; }
+
+/* Cross-Check */
+.xcheck-section { margin-bottom: 20px; }
+.xcheck-title { font-size: 12px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.xcheck-list-wrapper { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.xcheck-list { padding: 6px 10px; border-radius: var(--radius-sm); font-size: 12px; display: inline-block; margin-right: 8px; margin-bottom: 4px; }
+.xcheck-list.missing { background: var(--error-bg); border-left: 3px solid var(--error); }
+.xcheck-list.orphan { background: var(--warning-bg); border-left: 3px solid var(--warning); }
+
+/* Penalty Table */
+.penalty-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.penalty-table th { text-align: left; padding: 10px 12px; background: var(--surface-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 2px solid var(--border); }
+.penalty-table td { padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.penalty-table .total-row td { font-weight: 700; background: var(--surface-secondary); }
+.deduct-cell { color: var(--error); font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+
+/* Database Tab */
+.db-table-wrap { overflow-x: auto; }
+.db-table { width: 100%; border-collapse: collapse; font-size: 11px; min-width: 600px; }
+.db-table th { text-align: left; padding: 9px 12px; background: var(--primary); color: white; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.db-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db-table tr:hover td { background: var(--surface-secondary); }
+.db-table .source-badge { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 9px; font-weight: 700; background: var(--primary-bg); color: var(--primary); }
+.db-table .source-badge.manual { background: var(--success-bg); color: var(--success); }
+.db-table .del-btn { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer; }
+.db-table .del-btn:hover { border-color: var(--error); color: var(--error); }
+.db-info-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.db-info-bar .pill { font-size: 11px; padding: 4px 10px; border-radius: 20px; background: var(--surface-secondary); border: 1px solid var(--border); color: var(--text-muted); }
+.db-info-bar .pill strong { color: var(--text); }
+.db-add-form { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; }
+.db-add-form h4 { font-size: 12px; font-weight: 700; margin-bottom: 10px; color: var(--primary); }
+.db-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.db-form-grid input { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 12px; width: 100%; }
+.empty { text-align: center; padding: 48px 20px; color: var(--text-muted); }
+.empty .icon { font-size: 40px; margin-bottom: 12px; }
+.toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: white; border-radius: var(--radius); padding: 10px 16px; font-size: 12px; box-shadow: var(--shadow-md); transform: translateY(20px); opacity: 0; transition: all 0.25s; z-index: 1000; }
 .toast.show { transform: translateY(0); opacity: 1; }
 .toast.success { background: var(--success); }
 .toast.error { background: var(--error); }
-::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
-@media (max-width: 768px) { .app { flex-direction: column; } .sidebar { width: 100%; height: auto; position: relative; } .topbar { flex-direction: column; gap: 10px; align-items: stretch; } .content { padding: 20px; } }
 </style>
 </head>
 <body>
@@ -196,24 +237,24 @@ input:checked + .toggle-slider:before { transform: translateX(20px); }
 
 <!-- Sidebar -->
 <aside class="sidebar">
-  <div class="logo">LNI Reference Checker <span>v6.2</span></div>
+  <div class="logo">LNI Reference Checker <span class="ver">v6.3</span></div>
 
   <div class="upload-zone" id="dropZone" onclick="document.getElementById('mainFile').click()">
     <div class="upload-icon">📄</div>
     <strong>Upload Document</strong>
-    <p>PDF, DOCX, or TEX<br>Drop here or click to browse</p>
+    <p>PDF, DOCX, or TEX · Drop or click</p>
     <input type="file" id="mainFile" accept=".pdf,.docx,.tex,.latex" style="display:none">
   </div>
 
   <div id="fileChip" class="file-chip" style="display:none">
     <span class="name" id="fileChipName"></span>
-    <button onclick="clearFile()" title="Remove">✕</button>
+    <button onclick="clearFile()" title="Remove file">✕</button>
   </div>
 
   <div id="bibUpload" style="display:none">
-    <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 6px;">Optional .bib sidecar</div>
-    <div class="upload-zone" style="padding: 12px;" onclick="document.getElementById('bibFile').click()">
-      <p style="font-size: 12px;">📚 Click to attach .bib file</p>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:5px;">Optional .bib sidecar for LaTeX</div>
+    <div class="upload-zone" style="padding:10px;" onclick="document.getElementById('bibFile').click()">
+      <p style="font-size:11px;">📚 Attach .bib file</p>
       <input type="file" id="bibFile" accept=".bib" style="display:none">
     </div>
   </div>
@@ -221,7 +262,7 @@ input:checked + .toggle-slider:before { transform: translateX(20px); }
   <div class="toggle-wrapper">
     <div class="toggle-label">
       <span class="label">🔍 Verify references online</span>
-      <span class="hint">CrossRef · Semantic Scholar · DBLP · arXiv · IEEE · CORE</span>
+      <span class="hint">CrossRef · Semantic Scholar · DBLP · arXiv</span>
     </div>
     <label class="toggle-switch">
       <input type="checkbox" id="verifyToggle" checked>
@@ -230,81 +271,102 @@ input:checked + .toggle-slider:before { transform: translateX(20px); }
   </div>
 
   <button class="btn-run" id="runBtn" onclick="runCheck()" disabled>▶ Run Check</button>
+  <button class="btn-start-over" id="startOverBtn" style="display:none" onclick="startOver()">✕ Clear &amp; Start Over</button>
 
-  <div class="progress-box" id="progressBox">
-    <div class="progress-log" id="progressLog"></div>
-  </div>
-
-  <div class="db-badge" id="dbBadge" style="display:none">
+  <div class="db-badge" id="dbBadge" style="display:none" onclick="openDbTab()" title="Click to view database contents">
     <div class="db-dot"></div>
-    <div>Local DB: <strong id="dbCount">0</strong> papers<div style="font-size: 10px;" id="dbSize"></div></div>
+    <div>
+      <div>Local DB: <strong id="dbCount">0</strong> papers</div>
+      <div id="dbSize" style="font-size:10px;opacity:0.8;"></div>
+    </div>
+    <div style="margin-left:auto;font-size:10px;opacity:0.6;">View →</div>
   </div>
 </aside>
 
-<!-- Main Content -->
-<main class="main">
+<!-- Main Content Area -->
+<div class="main-content">
   <div class="topbar">
     <div class="topbar-title" id="topbarTitle"><strong>LNI Reference Checker</strong> — Upload a document to begin</div>
     <div class="topbar-actions">
-      <button class="btn-ghost" id="btnBib" disabled onclick="downloadBib()">📥 Download .bib</button>
-      <button class="btn-primary" id="btnExport" disabled onclick="exportResults()">📄 Export Report</button>
+      <button class="btn-sm btn-primary-sm" id="btnExport" disabled onclick="exportResults()">📊 Download Report (.xlsx)</button>
     </div>
   </div>
 
-  <div class="main-progress">
-    <!-- Welcome Screen -->
-    <div id="welcomeScreen" class="welcome-screen">
-      <div class="welcome-title">📚 LNI Bibliography Validator</div>
-      <div class="welcome-subtitle">Ensure your academic references meet LNI standards</div>
-      <div class="steps-grid">
-        <div class="step-card"><div class="step-number">1</div><div class="step-icon">📄</div><div class="step-title">Upload Document</div><div class="step-desc">PDF, DOCX, or LaTeX (.tex) file</div></div>
-        <div class="step-card"><div class="step-number">2</div><div class="step-icon">🔍</div><div class="step-title">Run Check</div><div class="step-desc">Automatic parsing &amp; verification</div></div>
-        <div class="step-card"><div class="step-number">3</div><div class="step-icon">📊</div><div class="step-title">Review Results</div><div class="step-desc">Get detailed feedback &amp; score</div></div>
-      </div>
-      <div class="feature-list">
-        <h3>What gets checked?</h3>
-        <ul><li>LNI citation key format (e.g., [ABC01], [Ez10])</li><li>Required fields per entry type (author, title, year, pages, journal, etc.)</li><li>Page range format (double dash -- vs single dash -)</li><li>Author name order (Lastname, Firstname)</li><li>Key consistency (initials + year match metadata)</li><li>Cross-check: citations vs bibliography</li><li>Online verification via academic databases</li></ul>
+  <!-- Results Area -->
+  <div class="results-area" id="resultsArea">
+    <div id="welcomeScreen" style="display:block">
+      <div class="welcome-screen">
+        <div class="welcome-title">📚 LNI Reference Checker</div>
+        <div class="welcome-subtitle">Ensure your academic references meet GI Lecture Notes in Informatics standards</div>
+        <div class="steps-grid">
+          <div class="step-card"><div class="step-number">1</div><div class="step-icon">📄</div><div class="step-title">Upload Document</div><div class="step-desc">PDF, DOCX, or LaTeX (.tex) file</div></div>
+          <div class="step-card"><div class="step-number">2</div><div class="step-icon">🔍</div><div class="step-title">Run Check</div><div class="step-desc">Automatic parsing &amp; verification</div></div>
+          <div class="step-card"><div class="step-number">3</div><div class="step-icon">📊</div><div class="step-title">Review Results</div><div class="step-desc">Get detailed feedback &amp; score</div></div>
+        </div>
+        <div class="feature-list">
+          <h3>What gets checked?</h3>
+          <ul>
+            <li>LNI key format (e.g. [ABC01], [Ez10])</li>
+            <li>Page range format (-- double dash)</li>
+            <li>Author order (Lastname, Firstname)</li>
+            <li>Key ↔ metadata consistency</li>
+            <li>Cross-check citations vs bibliography</li>
+            <li>Online verification via 8+ databases</li>
+          </ul>
+        </div>
       </div>
     </div>
 
-    <!-- Progress Screen -->
-    <div id="progressScreen" class="progress-screen">
-      <div class="progress-steps">
-        <div class="progress-step" id="step-extract"><div class="progress-step-icon pending" id="step-extract-icon">⏳</div><div class="progress-step-info"><div class="progress-step-name">Extracting Text</div><div class="progress-step-desc">Reading document and locating bibliography section</div></div><div class="progress-step-status pending" id="step-extract-status">Waiting</div></div>
-        <div class="progress-step" id="step-parse"><div class="progress-step-icon pending" id="step-parse-icon">⏳</div><div class="progress-step-info"><div class="progress-step-name">Parsing Bibliography</div><div class="progress-step-desc">Extracting entries and metadata from references</div></div><div class="progress-step-status pending" id="step-parse-status">Waiting</div></div>
-        <div class="progress-step" id="step-verify"><div class="progress-step-icon pending" id="step-verify-icon">⏳</div><div class="progress-step-info"><div class="progress-step-name">Verifying References</div><div class="progress-step-desc">Checking against academic databases (may take a moment)</div></div><div class="progress-step-status pending" id="step-verify-status">Waiting</div></div>
-        <div class="progress-step" id="step-ai"><div class="progress-step-icon pending" id="step-ai-icon">⏳</div><div class="progress-step-info"><div class="progress-step-name">AI Analysis</div><div class="progress-step-desc">Detecting potential hallucinations and suspicious entries</div></div><div class="progress-step-status pending" id="step-ai-status">Waiting</div></div>
+    <div id="progressPanel" class="progress-panel">
+      <div class="progress-header">
+        <div class="spinner"></div>
+        <span>Checking References...</span>
       </div>
-      <div id="progressMessages" style="color: var(--text-muted); font-size: 13px; padding: 12px; background: var(--surface-secondary); border-radius: var(--radius);"></div>
+      <div id="progressMessagesPanel" class="progress-messages">
+        <div class="msg-line"><span class="msg-icon info">⏳</span><span class="msg-text">Starting verification...</span></div>
+      </div>
+      <div class="progress-stats"><span id="progressStats">Ready</span></div>
     </div>
 
-    <!-- Results Container -->
-    <div id="resultsContainer" style="display: none;">
-      <div class="verdict-banner" id="verdictBanner"><div class="verdict-card" id="verdictCard"><div class="verdict-icon" id="verdictIcon"></div><div class="verdict-meta"><div class="verdict-title" id="verdictTitle"></div><div class="verdict-reason" id="verdictReason"></div></div><div class="verdict-score" id="verdictScore"></div></div></div>
-      <div class="tabs-wrap" id="tabsWrap"><div class="tabs">
-        <button class="tab-btn active" data-tab="bib" onclick="switchTab('bib', this)">📚 Bibliography <span class="tab-badge" id="tabBibBadge">0</span></button>
-        <button class="tab-btn" data-tab="xcheck" onclick="switchTab('xcheck', this)">🔀 Cross-Check <span class="tab-badge" id="tabXBadge">0</span></button>
-        <button class="tab-btn" data-tab="verify" onclick="switchTab('verify', this)">🔍 Verification <span class="tab-badge" id="tabVerBadge">0</span></button>
-        <button class="tab-btn" data-tab="score" onclick="switchTab('score', this)">📊 Score</button>
-      </div></div>
-      <div class="content active" id="tab-bib"><div id="bibContent"></div></div>
-      <div class="content" id="tab-xcheck"><div id="xcheckContent"></div></div>
-      <div class="content" id="tab-verify"><div id="verifyContent"></div></div>
-      <div class="content" id="tab-score"><div id="scoreContent"></div></div>
+    <div class="verdict-banner" id="verdictBanner">
+      <div class="verdict-card" id="verdictCard">
+        <div class="verdict-icon" id="verdictIcon"></div>
+        <div class="verdict-meta">
+          <div class="verdict-title" id="verdictTitle"></div>
+          <div class="verdict-reason" id="verdictReason"></div>
+        </div>
+        <div class="verdict-score" id="verdictScore"></div>
+      </div>
     </div>
+
+    <div class="tabs-wrap" id="tabsWrap">
+      <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('bib',this)">📚 Bibliography Format Check <span class="tab-badge" id="tabBibBadge">0</span></button>
+        <button class="tab-btn" onclick="switchTab('xcheck',this)">🔀 Citation Cross-Check <span class="tab-badge" id="tabXBadge">0</span></button>
+        <button class="tab-btn" onclick="switchTab('verify',this)">🔍 Reference Verification <span class="tab-badge" id="tabVerBadge">0</span></button>
+        <button class="tab-btn" onclick="switchTab('score',this)">📊 Score</button>
+        <button class="tab-btn" id="tabDbBtn" onclick="switchTab('db',this)">🗄 Database <span class="tab-badge green" id="tabDbBadge">0</span></button>
+      </div>
+    </div>
+
+    <div class="content active" id="tab-bib"><div id="bibContent"></div></div>
+    <div class="content" id="tab-xcheck"><div id="xcheckContent"></div></div>
+    <div class="content" id="tab-verify"><div id="verifyContent"></div></div>
+    <div class="content" id="tab-score"><div id="scoreContent"></div></div>
+    <div class="content" id="tab-db"><div id="dbContent"></div></div>
   </div>
-</main>
+</div>
 </div>
 
 <div class="toast" id="toast"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
-// State
 let result = null;
 let mainFile = null;
 let bibFile = null;
+let dbLoaded = false;
 
-// File handling
 function handleMainFile(inp) {
   mainFile = inp.files[0];
   if (!mainFile) return;
@@ -312,12 +374,11 @@ function handleMainFile(inp) {
   document.getElementById('fileChip').style.display = 'flex';
   document.getElementById('dropZone').style.display = 'none';
   document.getElementById('runBtn').disabled = false;
-  if (mainFile.name.match(/\.(tex|latex)$/i)) document.getElementById('bibUpload').style.display = 'block';
-  else document.getElementById('bibUpload').style.display = 'none';
+  document.getElementById('bibUpload').style.display = mainFile.name.match(/\.(tex|latex)$/i) ? 'block' : 'none';
 }
 
 function clearFile() {
-  mainFile = null; bibFile = null;
+  mainFile = bibFile = null;
   document.getElementById('fileChip').style.display = 'none';
   document.getElementById('dropZone').style.display = '';
   document.getElementById('bibUpload').style.display = 'none';
@@ -325,13 +386,11 @@ function clearFile() {
   document.getElementById('runBtn').disabled = true;
 }
 
-// Drag & drop
 const dz = document.getElementById('dropZone');
-dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
-dz.addEventListener('dragleave', () => { dz.classList.remove('dragover'); });
-dz.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dz.classList.remove('dragover');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('dragover');
   const f = e.dataTransfer.files[0];
   if (f && f.name.match(/\.(pdf|docx|tex|latex)$/i)) {
     document.getElementById('mainFile').files = e.dataTransfer.files;
@@ -339,420 +398,768 @@ dz.addEventListener('drop', (e) => {
   }
 });
 
+function showToast(msg, type = '') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  setTimeout(() => t.className = 'toast', 3200);
+}
+
+function addProgressMessage(icon, text, type = 'info') {
+  const container = document.getElementById('progressMessagesPanel');
+  const div = document.createElement('div');
+  div.className = 'msg-line';
+  div.innerHTML = `<span class="msg-icon ${type}">${icon}</span><span class="msg-text ${type}">${escapeHtml(text)}</span>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function updateProgressStats(stats) {
+  document.getElementById('progressStats').textContent = stats;
+}
+
+function clearProgressMessages() {
+  document.getElementById('progressMessagesPanel').innerHTML = '';
+}
+
 function switchTab(tab, btn) {
   document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   if (btn) btn.classList.add('active');
+  if (tab === 'db') loadDbTab();
 }
 
-function showToast(msg, type = '') {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast show ' + type;
-  setTimeout(() => t.className = 'toast', 3000);
+function openDbTab() {
+  document.getElementById('tabsWrap').classList.add('show');
+  switchTab('db', document.getElementById('tabDbBtn'));
+  document.getElementById('tabsWrap').scrollIntoView({behavior:'smooth'});
 }
 
-function updateProgressStep(step, status, message) {
-  const iconEl = document.getElementById(`step-${step}-icon`);
-  const statusEl = document.getElementById(`step-${step}-status`);
-  if (status === 'active') {
-    if (iconEl) { iconEl.className = 'progress-step-icon active'; iconEl.textContent = '⟳'; }
-    if (statusEl) { statusEl.className = 'progress-step-status active'; statusEl.textContent = 'In Progress'; }
-  } else if (status === 'completed') {
-    if (iconEl) { iconEl.className = 'progress-step-icon completed'; iconEl.textContent = '✓'; }
-    if (statusEl) { statusEl.className = 'progress-step-status completed'; statusEl.textContent = 'Complete'; }
-  }
-  const msgDiv = document.getElementById('progressMessages');
-  if (msgDiv && message) { msgDiv.innerHTML += `<div style="padding: 4px 0;">${escapeHtml(message)}</div>`; msgDiv.scrollTop = msgDiv.scrollHeight; }
+function startOver() {
+  result = null;
+  mainFile = null;
+  bibFile = null;
+  document.getElementById('mainFile').value = '';
+  const bibInput = document.getElementById('bibFile');
+  if (bibInput) bibInput.value = '';
+  const fileChip = document.getElementById('fileChip');
+  if (fileChip) fileChip.style.display = 'none';
+  const bibUpload = document.getElementById('bibUpload');
+  if (bibUpload) bibUpload.style.display = 'none';
+  document.getElementById('runBtn').disabled = true;
+  document.getElementById('startOverBtn').style.display = 'none';
+  document.getElementById('btnExport').disabled = true;
+  document.getElementById('tabsWrap').classList.remove('show');
+  document.getElementById('verdictBanner').classList.remove('show');
+  document.getElementById('progressPanel').classList.remove('show');
+  document.getElementById('welcomeScreen').style.display = 'block';
+  document.getElementById('bibContent').innerHTML = '';
+  document.getElementById('xcheckContent').innerHTML = '';
+  document.getElementById('verifyContent').innerHTML = '';
+  document.getElementById('scoreContent').innerHTML = '';
+  document.getElementById('topbarTitle').innerHTML = '<strong>LNI Reference Checker</strong> — Upload a document to begin';
 }
-
-async function refreshDbStats() {
-  try { const r = await fetch('/api/db_stats'); const d = await r.json();
-    if (d.total_papers > 0) { document.getElementById('dbBadge').style.display = 'flex'; document.getElementById('dbCount').textContent = d.total_papers; document.getElementById('dbSize').textContent = d.db_size_kb + ' KB'; }
-  } catch(e) {}
-}
-refreshDbStats();
 
 async function runCheck() {
   if (!mainFile) return;
   const verify = document.getElementById('verifyToggle').checked;
-  result = null;
+
   document.getElementById('welcomeScreen').style.display = 'none';
-  document.getElementById('progressScreen').classList.add('show');
-  document.getElementById('resultsContainer').style.display = 'none';
-  document.getElementById('progressMessages').innerHTML = '';
-  ['extract', 'parse', 'verify', 'ai'].forEach(step => updateProgressStep(step, 'pending'));
+  document.getElementById('tabsWrap').classList.remove('show');
+  document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-bib').classList.add('active');
+  document.getElementById('verdictBanner').classList.remove('show');
+  
+  const progressPanel = document.getElementById('progressPanel');
+  progressPanel.classList.add('show');
+  clearProgressMessages();
+  addProgressMessage('🚀', 'Starting reference check...', 'info');
+  updateProgressStats('Initializing...');
+  
   document.getElementById('runBtn').disabled = true;
-  document.getElementById('btnBib').disabled = true;
-  document.getElementById('btnExport').disabled = true;
-  document.getElementById('topbarTitle').innerHTML = `<strong>${escapeHtml(mainFile.name)}</strong> — Processing...`;
 
   const fd = new FormData();
   fd.append('file', mainFile);
   if (bibFile) fd.append('bib', bibFile);
   fd.append('verify', verify ? 'true' : 'false');
+  fd.append('stream', 'true');
 
   try {
-    const resp = await fetch('/check-stream', { method: 'POST', body: fd });
-    if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+    const resp = await fetch('/check', { method: 'POST', body: fd });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({error: resp.statusText}));
+      showError(err.error || 'Server error');
+      return;
+    }
+
     const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const dec = new TextDecoder();
+    let buf = '';
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split('\n\n');
-      buffer = parts.pop();
-      for (const chunk of parts) {
-        if (!chunk.trim()) continue;
-        const lines = chunk.split('\n');
-        let event = 'message', dataStr = '';
-        for (const line of lines) {
-          if (line.startsWith('event:')) event = line.slice(6).trim();
-          if (line.startsWith('data:')) dataStr = line.slice(5).trim();
-        }
-        if (!dataStr) continue;
-        let data;
-        try { data = JSON.parse(dataStr); } catch(e) { continue; }
-        if (event === 'progress') {
-          const msg = data.message || '';
-          if (msg.includes('Extracting')) updateProgressStep('extract', 'active', msg);
-          else if (msg.includes('Extracted')) updateProgressStep('extract', 'completed', msg);
-          else if (msg.includes('Parsing')) updateProgressStep('parse', 'active', msg);
-          else if (msg.includes('Found') && msg.includes('bibliography')) updateProgressStep('parse', 'completed', msg);
-          else if (msg.includes('Verifying')) updateProgressStep('verify', 'active', msg);
-          else if (msg.includes('Verification complete')) updateProgressStep('verify', 'completed', msg);
-          else if (msg.includes('AI')) updateProgressStep('ai', 'active', msg);
-          else if (msg.includes('verdict')) updateProgressStep('ai', 'completed', msg);
-          const logDiv = document.getElementById('progressLog');
-          if (logDiv) { const line = document.createElement('div'); line.className = 'line ' + (msg.includes('⚠') ? 'warn' : msg.includes('❌') ? 'error' : ''); line.textContent = msg; logDiv.appendChild(line); logDiv.scrollTop = logDiv.scrollHeight; }
-        } else if (event === 'done') {
-          result = data;
-          renderResult(data);
-          document.getElementById('progressScreen').classList.remove('show');
-          document.getElementById('resultsContainer').style.display = 'block';
-          document.getElementById('runBtn').disabled = false;
-          document.getElementById('btnBib').disabled = false;
-          document.getElementById('btnExport').disabled = false;
-          refreshDbStats();
-        } else if (event === 'error') {
-          updateProgressStep('extract', 'pending', '❌ Error: ' + (data.message || data.error));
-          document.getElementById('runBtn').disabled = false;
-          showToast(data.message || data.error, 'error');
+      buf += dec.decode(value, { stream: true });
+      let lines = buf.split('\n');
+      buf = lines.pop();
+      let event = '', dataStr = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) event = line.slice(7).trim();
+        else if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
+        else if (line === '') {
+          if (event && dataStr) handleSSE(event, dataStr);
+          event = dataStr = '';
         }
       }
     }
-  } catch(e) { showToast('Connection error: ' + e.message, 'error'); document.getElementById('runBtn').disabled = false; }
+  } catch(e) {
+    showError('Connection error: ' + e.message);
+  } finally {
+    document.getElementById('runBtn').disabled = false;
+  }
 }
 
-function renderResult(data) {
+function handleSSE(event, dataStr) {
+  let data;
+  try { data = JSON.parse(dataStr); } catch { return; }
+
+  if (event === 'progress') {
+    const msg = data.message || '';
+    if (msg) {
+      let icon = '📄';
+      if (msg.includes('✓')) icon = '✅';
+      else if (msg.includes('⚠')) icon = '⚠️';
+      else if (msg.includes('❌')) icon = '❌';
+      else if (msg.includes('🤖')) icon = '🤖';
+      else if (msg.includes('🔍')) icon = '🔍';
+      else if (msg.includes('📚')) icon = '📚';
+      
+      let type = 'info';
+      if (msg.includes('⚠')) type = 'warning';
+      else if (msg.includes('✓') || msg.includes('Done')) type = 'success';
+      else if (msg.includes('❌')) type = 'error';
+      
+      addProgressMessage(icon, msg, type);
+    }
+    
+    if (data.done && data.total) {
+      updateProgressStats(`Verifying: ${data.done}/${data.total} references | Verified: ${data.verified_count || 0} | Not found: ${data.not_found_count || 0}`);
+    } else if (data.step === 'extract_done') {
+      updateProgressStats('Text extraction complete');
+    } else if (data.step === 'parse_done') {
+      updateProgressStats('Bibliography parsed');
+    } else if (data.step === 'verify_done') {
+      updateProgressStats('Online verification complete');
+    } else if (data.step === 'ai_verdict') {
+      updateProgressStats('AI analysis complete');
+    }
+
+  } else if (event === 'done') {
+    result = data;
+    addProgressMessage('✅', 'Analysis complete! Rendering results...', 'success');
+    updateProgressStats('Complete!');
+    
+    setTimeout(() => {
+      document.getElementById('progressPanel').classList.remove('show');
+      renderResults(result);
+    }, 500);
+
+  } else if (event === 'error') {
+    showError(data.error || 'Unknown error');
+  }
+}
+
+function showError(msg) {
+  addProgressMessage('❌', 'Error: ' + msg, 'error');
+  updateProgressStats('Error occurred');
+  showToast('Error: ' + msg.slice(0,60), 'error');
+}
+
+function renderResults(data) {
   const sc = data.score || {};
-  const verdict = sc.verdict || 'FLAG';
-  const icons = { PASS: '✅', FLAG: '⚠️', FAIL: '❌' };
-  const card = document.getElementById('verdictCard');
-  card.className = 'verdict-card ' + verdict;
-  document.getElementById('verdictIcon').textContent = icons[verdict] || '⚠️';
-  document.getElementById('verdictTitle').textContent = verdict === 'PASS' ? 'Pass — All Good' : verdict === 'FLAG' ? 'Flag — Review Required' : 'Fail — Critical Issues';
+  const s = data.summary || {};
+
+  document.getElementById('topbarTitle').innerHTML =
+    `<strong>${escapeHtml(data.filename)}</strong> · ${data.format} · Checked ${s.bib_entry_count || 0} references`;
+
+  const icons = { PASS:'✅', FLAG:'⚠️', FAIL:'❌' };
+  const vc2 = sc.verdict || 'FLAG';
+  document.getElementById('verdictCard').className = 'verdict-card ' + vc2;
+  document.getElementById('verdictIcon').textContent = icons[vc2] || '⚠️';
+  document.getElementById('verdictTitle').textContent =
+    vc2 === 'PASS' ? 'PASS — References look good' :
+    vc2 === 'FAIL' ? 'FAIL — Critical issues found' :
+    'REVIEW — Issues need attention';
   document.getElementById('verdictReason').textContent = sc.verdict_reason || '';
-  document.getElementById('verdictScore').innerHTML = `${sc.score}/100<br><span style="font-size: 14px; font-weight: 400;">${sc.grade}</span>`;
+  document.getElementById('verdictScore').textContent = (sc.score || 0) + '/100';
   document.getElementById('verdictBanner').classList.add('show');
+
+  const missing = (data.cross_check?.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC')).length;
+  const orphan = (data.cross_check?.in_bib_not_cited || []).length;
+  const fake = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length;
+  const susp = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS').length;
+  const bib_issues = (data.bibliography || []).filter(e => e.completeness_issues?.length).length;
+
+  setBadge('tabBibBadge', bib_issues, bib_issues ? 'orange' : '');
+  setBadge('tabXBadge', missing + orphan, (missing + orphan) ? 'red' : '');
+  setBadge('tabVerBadge', fake + susp, fake ? 'red' : susp ? 'orange' : '');
+
   document.getElementById('tabsWrap').classList.add('show');
-  document.getElementById('topbarTitle').innerHTML = `<strong>${escapeHtml(data.filename)}</strong> — ${data.format} · ${data.summary.bib_entry_count} references`;
-  
-  const bibIssues = (data.bibliography || []).filter(e => (e.completeness_issues || []).length || e.key_consistent === false).length;
-  const xIssues = (data.cross_check?.cited_not_in_bib?.length || 0) + (data.cross_check?.in_bib_not_cited?.length || 0);
-  const flagged = (data.verification || []).filter(v => v.ai_verdict === 'FAKE' || v.ai_verdict === 'SUSPICIOUS').length;
-  
-  const tabBibBadge = document.getElementById('tabBibBadge');
-  tabBibBadge.textContent = bibIssues;
-  tabBibBadge.className = 'tab-badge ' + (bibIssues > 0 ? 'orange' : '');
-  const tabXBadge = document.getElementById('tabXBadge');
-  tabXBadge.textContent = xIssues;
-  tabXBadge.className = 'tab-badge ' + (xIssues > 0 ? 'red' : '');
-  const tabVerBadge = document.getElementById('tabVerBadge');
-  tabVerBadge.textContent = flagged;
-  tabVerBadge.className = 'tab-badge ' + (flagged > 0 ? 'red' : '');
-  
-  renderBibliographyTab(data);
-  renderCrossCheckTab(data);
-  renderVerificationTab(data);
+  document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-bib').classList.add('active');
+  document.querySelector('.tab-btn').classList.add('active');
+
+  document.getElementById('btnExport').disabled = false;
+  document.getElementById('startOverBtn').style.display = 'block';
+
+  renderBibTab(data);
+  renderXCheckTab(data);
+  renderVerifyTab(data);
   renderScoreTab(data);
+
+  fetch('/api/db_stats').then(r => r.ok ? r.json() : null).then(stats => {
+    if (stats) updateDbBadge(stats);
+  }).catch(() => {});
 }
 
-function renderBibliographyTab(data) {
+function setBadge(id, n, cls) {
+  const el = document.getElementById(id);
+  el.textContent = n;
+  el.className = 'tab-badge ' + (cls || '');
+}
+
+function renderBibTab(data) {
   const bib = data.bibliography || [];
-  if (!bib.length) return;
-  const container = document.getElementById('bibContent');
-  const incomplete = bib.filter(e => (e.completeness_issues || []).length);
-  const keyBad = bib.filter(e => e.key_consistent === false);
+  const issues = bib.filter(e => e.completeness_issues?.length);
+  const clean = bib.filter(e => !e.completeness_issues?.length);
+
+  let html = `<div class="tab-description">Each bibliography entry is checked against LNI formatting rules — required fields (author, title, year, pages, etc.) are validated per entry type. Entries with missing or malformed fields are flagged. <strong>Note:</strong> "Correct format" means the entry is structurally complete — it does not indicate whether the referenced paper actually exists.</div>
+  <div class="stat-bar">
+    <div class="stat-box"><div class="value">${bib.length}</div><div class="label">Total Entries</div></div>
+    <div class="stat-box ${issues.length ? 'orange' : 'green'}"><div class="value">${issues.length}</div><div class="label">With Issues</div></div>
+    <div class="stat-box green"><div class="value">${clean.length}</div><div class="label">Correct Format</div></div>
+  </div>
+  <div class="search-bar"><input type="text" placeholder="Filter entries…" oninput="filterBib(this.value)"></div>`;
+
+  if (issues.length)
+    html += `<div class="section-heading">⚠ Entries with issues (${issues.length})</div>` +
+            issues.map(e => bibCard(e)).join('');
+  if (clean.length)
+    html += `<div class="section-heading">✓ Correct format (${clean.length})</div>` +
+            clean.map(e => bibCard(e)).join('');
+
+  document.getElementById('bibContent').innerHTML = html;
+}
+
+function bibCard(e) {
+  const hasIssues = e.completeness_issues?.length;
+  const issueHtml = (e.completeness_issues || []).map(i => {
+    const cls = i.includes('Missing') ? 'err' : i.includes('dash') || i.includes('Firstname') ? 'warn' : 'info';
+    return `<div class="issue-item ${cls}">${friendlyIssue(i)}</div>`;
+  }).join('');
+
+  const badges = [];
+  if (e.type) badges.push(`<span class="badge" style="background:var(--primary-bg);color:var(--primary)">${escapeHtml(e.type)}</span>`);
+  if (hasIssues) badges.push(`<span class="badge badge-issue">⚠ ${e.completeness_issues.length} issue(s)</span>`);
+  if (e.key_consistent === false) badges.push(`<span class="badge badge-fake">⚠ Key mismatch</span>`);
+  if (e.ai_reparsed) badges.push(`<span class="badge" style="background:var(--info-bg);color:var(--info)">🤖 AI re-parsed</span>`);
   
-  let html = `<div class="stat-bar"><div class="stat-box"><div class="value">${bib.length}</div><div class="label">Total entries</div></div><div class="stat-box ${incomplete.length ? 'orange' : 'green'}"><div class="value">${incomplete.length}</div><div class="label">Format issues</div></div><div class="stat-box ${keyBad.length ? 'red' : 'green'}"><div class="value">${keyBad.length}</div><div class="label">Key mismatches</div></div></div><div class="search-bar"><input type="text" placeholder="Search bibliography..." id="bibSearch" oninput="filterBib(this.value)"></div>`;
-  
-  const issuesList = [], okList = [];
-  bib.forEach(entry => {
-    const hasIssue = (entry.completeness_issues || []).length || entry.key_consistent === false;
-    const card = `<div class="entry-card" data-key="${escapeHtml(entry.key)}" data-title="${escapeHtml(entry.title || '')}" data-authors="${escapeHtml(entry.authors || '')}">
-      <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')">
-        <span class="entry-key">${escapeHtml(entry.key)}</span>
-        <div class="entry-meta">
-          <div class="entry-title">${escapeHtml(entry.title || '(no title)')}</div>
-          <div class="entry-authors">${escapeHtml(entry.authors || '')}${entry.year ? `<span class="entry-year">${entry.year}</span>` : ''}</div>
-          <div class="entry-badges">${hasIssue ? '<span class="badge badge-issue">⚠ Has Issues</span>' : '<span class="badge badge-ok">✓ Complete</span>'}${entry.key_consistent === false ? '<span class="badge badge-fake">Key Mismatch</span>' : ''}</div>
+  let directLinks = '';
+  if (e.doi) {
+    directLinks += `<a href="https://doi.org/${escapeHtml(e.doi)}" target="_blank" class="resource-link" style="background:var(--success-bg);color:var(--success);">🔗 DOI: ${escapeHtml(e.doi)}</a>`;
+  }
+  if (e.url && !e.doi) {
+    directLinks += `<a href="${escapeHtml(e.url)}" target="_blank" class="resource-link" style="background:var(--success-bg);color:var(--success);">🔗 URL</a>`;
+  }
+  if (!hasIssues && !e.doi && !e.url && e.title) {
+    const searchQuery = encodeURIComponent(`${e.title} ${e.authors ? e.authors.split(';')[0] : ''}`);
+    directLinks += `<a href="https://scholar.google.com/scholar?q=${searchQuery}" target="_blank" class="resource-link" style="background:var(--info-bg);color:var(--info);">🔍 Google Scholar</a>`;
+  }
+
+  return `<div class="entry-card" data-key="${escapeHtml(e.key)}" data-title="${escapeHtml(e.title||'')}" data-authors="${escapeHtml(e.authors||'')}">
+    <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="entry-key">${escapeHtml(e.key)}</span>
+      <div class="entry-meta">
+        <div class="entry-title">${escapeHtml(e.title || '(no title parsed)')}</div>
+        <div class="entry-authors">${escapeHtml(e.authors || '—')}</div>
+        <div class="entry-badges">${badges.join('')}</div>
+      </div>
+    </div>
+    <div class="entry-detail">
+      <div class="entry-detail-inner">
+        ${hasIssues ? `<div class="detail-section"><div class="detail-title">⚠ Issues Found</div>${issueHtml}</div>` : ''}
+        ${directLinks ? `<div class="detail-section"><div class="detail-title">🔗 Links</div><div class="sources-row">${directLinks}</div></div>` : ''}
+        <div class="detail-section">
+          <div class="detail-title">📋 Parsed Fields</div>
+          ${fieldRow('Type', e.type)}
+          ${fieldRow('Authors', e.authors)}
+          ${fieldRow('Year', e.year)}
+          ${fieldRow('Journal', e.journal)}
+          ${fieldRow('Publisher', e.publisher)}
+          ${fieldRow('Pages', e.pages)}
+          ${fieldRow('DOI', e.doi)}
+          ${fieldRow('URL', e.url)}
+        </div>
+        <div class="detail-section"><div class="detail-title">📄 Raw Text</div>
+          <div class="explanation-box" style="font-family:JetBrains Mono,monospace;font-size:11px;">${escapeHtml(e.raw || '')}</div>
         </div>
       </div>
-      <div class="entry-detail">
-        <div class="detail-section"><div class="detail-section-title">📋 What's wrong?</div>${(entry.completeness_issues || []).map(i => `<div class="issue-item error">${explainIssue(i, entry)}</div>`).join('') || '<div class="explanation-text">✓ No issues found. This entry follows LNI format correctly.</div>'}</div>
-        ${entry.key_consistent === false ? `<div class="detail-section"><div class="detail-section-title">🔑 Key Mismatch Explanation</div><div class="explanation-text">The citation key <strong>[${escapeHtml(entry.key)}]</strong> doesn't match the paper's metadata.<br><br><strong>Expected key format:</strong> Based on authors "${escapeHtml(entry.authors || '?')}" and year "${entry.year || '?'}", the key should be something like <strong>${generateExpectedKey(entry)}</strong>.<br><br><strong>What this means:</strong> The student either typed the wrong key, copied from a different paper, or the reference might be fabricated.</div></div>` : ''}
-        <div class="detail-section"><div class="detail-section-title">📄 Raw Entry (as it appears in the paper)</div><div class="explanation-text" style="font-family: monospace; font-size: 12px;">${escapeHtml(entry.raw || 'No raw text available')}</div><div style="margin-top: 8px; font-size: 11px; color: var(--text-faint);">👆 This is exactly how the reference appears in your bibliography section</div></div>
-      </div>
-    </div>`;
-    if (hasIssue) issuesList.push(card);
-    else okList.push(card);
-  });
-  if (issuesList.length) html += `<div class="section-heading">⚠ Entries needing attention (${issuesList.length})</div>${issuesList.join('')}`;
-  if (okList.length) html += `<div class="section-heading">✓ Correct entries (${okList.length})</div>${okList.join('')}`;
-  container.innerHTML = html;
+    </div>
+  </div>`;
 }
 
-function explainIssue(issue, entry) {
-  if (issue.includes("Missing required field: 'pages'")) {
-    return `❌ <strong>Missing page range</strong> — LNI requires page numbers for articles (e.g., "S. 12--34"). Add the page range to this reference.<br><br><div class="correct-format">✓ Correct format example:<br>${entry.title || '[Title]'}. In: ${entry.journal || 'Journal Name'}, ${entry.year || '2024'}; S. 12--34.</div>`;
-  }
-  if (issue.includes("Missing required field: 'journal'")) {
-    return `❌ <strong>Missing journal name</strong> — For articles, you must specify which journal this was published in.<br><br><div class="correct-format">✓ Correct format example:<br>${entry.authors || 'Author, A.'}: ${entry.title || 'Title'}. In: Journal of Example, Vol. 10, ${entry.year || '2024'}; S. 100--110.</div>`;
-  }
-  if (issue.includes("Missing required field: 'publisher'")) {
-    return `❌ <strong>Missing publisher</strong> — For books and proceedings, specify the publisher (e.g., Springer, IEEE, ACM).<br><br><div class="correct-format">✓ Correct format example:<br>${entry.authors || 'Author, A.'}: ${entry.title || 'Title'}. Springer, ${entry.year || '2024'}.</div>`;
-  }
-  if (issue.includes("Missing required field: 'year'")) {
-    return `❌ <strong>Missing publication year</strong> — Every reference needs a year.<br><br><div class="correct-format">✓ Correct format example:<br>${entry.authors || 'Author, A.'}: ${entry.title || 'Title'}. Publisher, 2024.</div>`;
-  }
-  if (issue.includes("Missing required field: 'authors'")) {
-    return `❌ <strong>Missing authors</strong> — Add author names in format "Lastname, Firstname".<br><br><div class="correct-format">✓ Correct format example:<br>Schmidt, Hans; Müller, Anna: ${entry.title || 'Title'}. Publisher, ${entry.year || '2024'}.</div>`;
-  }
-  if (issue.includes("Missing required field: 'title'")) {
-    return `❌ <strong>Missing title</strong> — Every reference needs a title.<br><br><div class="correct-format">✓ Correct format example:<br>${entry.authors || 'Author, A.'}: Complete Title of the Paper. Publisher, ${entry.year || '2024'}.</div>`;
-  }
-  if (issue.includes("author appears to be 'Firstname Lastname'")) {
-    const name = issue.match(/'([^']+)'/)?.[1] || '';
-    return `⚠️ <strong>Wrong author name order</strong> — LNI requires "Lastname, Firstname".<br><br><div class="correct-format">✓ Instead of "${name}", write:<br>${name.split(' ').reverse().join(', ')}</div>`;
-  }
-  if (issue.includes("Page range uses single dash")) {
-    return `⚠️ <strong>Wrong page dash format</strong> — LNI requires double dash " -- " not single dash " - ".<br><br><div class="correct-format">✓ Instead of "S. 12-34", write:<br>S. 12--34</div>`;
-  }
-  if (issue.includes("future")) {
-    return `⚠️ <strong>Future publication year</strong> — The year ${entry.year} is in the future. This is likely a typo.<br><br><div class="correct-format">✓ If the paper is from 2024, write:<br>${entry.year?.replace(/2099/, '2024') || '2024'}</div>`;
-  }
-  if (issue.includes("Invalid key format")) {
-    return `❌ <strong>Invalid citation key format</strong> — LNI keys must follow pattern like [ABC01] or [Ez10] (2-6 letters + 2 digits + optional letter).<br><br><div class="correct-format">✓ Valid examples: [AB24], [ABC01], [Ez10a], [Schmidt24]</div>`;
-  }
-  return issue;
+function fieldRow(label, val) {
+  if (!val) return '';
+  return `<div class="field-row"><span class="fl">${escapeHtml(label)}</span><span>${escapeHtml(String(val))}</span></div>`;
 }
 
-function generateExpectedKey(entry) {
-  if (!entry.authors) return '??24';
-  const surnames = entry.authors.split(';').map(a => a.split(',')[0].trim().replace(/[^A-Za-zÄÖÜäöüß]/g, ''));
-  const initials = surnames.slice(0, 3).map(n => n[0] || '').join('').toUpperCase();
-  const yr = (entry.year || '24').toString().slice(-2);
-  return (initials.slice(0, 6) + yr).toUpperCase();
-}
-
-function renderCrossCheckTab(data) {
-  const xc = data.cross_check || {};
-  let missing = (xc.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC'));
-  let orphan = xc.in_bib_not_cited || [];
-  let numericWarning = (xc.cited_not_in_bib || []).find(k => k.includes('__NUMERIC'));
-  
-  let html = `<div class="stat-bar"><div class="stat-box ${missing.length ? 'red' : 'green'}"><div class="value">${missing.length}</div><div class="label">Cited but missing</div></div><div class="stat-box ${orphan.length ? 'orange' : 'green'}"><div class="value">${orphan.length}</div><div class="label">Never cited</div></div><div class="stat-box green"><div class="value">${xc.correctly_used?.length || 0}</div><div class="label">Correctly used</div></div></div>`;
-  
-  if (numericWarning) {
-    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-warning">⚠ Mixed Citation Styles Detected</span></div><div class="explanation-text"><strong>What does this mean?</strong><br><br>The paper uses both LNI author-year keys [ABC01] AND numeric citations [1], [2], [3] in the same document.<br><br>LNI standard requires using ONLY author-year citation keys like [Sch24] or [ABC01]. Numeric citations like [1], [2] are NOT allowed in LNI format.<br><br><strong>How to fix:</strong> Replace all numeric citations [1], [2], [3] with proper LNI author-year keys.</div></div>`;
-  }
-  
-  if (missing.length) {
-    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-missing">❌ Missing from bibliography (${missing.length})</span></div><div class="explanation-text" style="margin-bottom: 12px;">These citation keys appear in the text but have no matching entry in the bibliography. Each in-text citation must have a corresponding bibliography entry.</div><ul class="xcheck-list">${missing.map(k => `<li class="missing">📖 Citation [${escapeHtml(k)}] appears in text but is not in your bibliography</li>`).join('')}</ul></div>`;
-  }
-  
-  if (orphan.length) {
-    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-orphan">⚠ Never cited (${orphan.length})</span></div><div class="explanation-text" style="margin-bottom: 12px;">These bibliography entries exist but are never referenced in the paper text. Remove them or add citations.</div><ul class="xcheck-list">${orphan.map(k => `<li class="orphan">📚 Entry [${escapeHtml(k)}] is in your bibliography but never cited in the text</li>`).join('')}</ul></div>`;
-  }
-  
-  if (!missing.length && !orphan.length && !numericWarning) {
-    html += `<div class="empty"><div class="icon">✅</div><h3>Perfect!</h3><p>Every citation has a matching bibliography entry, and every bibliography entry is cited.</p></div>`;
-  }
-  document.getElementById('xcheckContent').innerHTML = html;
-}
-
-function renderVerificationTab(data) {
-  const ver = data.verification || [];
-  if (!ver.length) return;
-  
-  const fake = ver.filter(v => v.ai_verdict === 'FAKE');
-  const suspicious = ver.filter(v => v.ai_verdict === 'SUSPICIOUS');
-  const real = ver.filter(v => v.ai_verdict === 'REAL');
-  
-  let html = `<div class="stat-bar"><div class="stat-box green"><div class="value">${real.length}</div><div class="label">Verified Real</div></div><div class="stat-box ${fake.length ? 'red' : 'green'}"><div class="value">${fake.length}</div><div class="label">Likely Fake</div></div><div class="stat-box ${suspicious.length ? 'orange' : 'green'}"><div class="value">${suspicious.length}</div><div class="label">Suspicious</div></div></div><div class="search-bar"><input type="text" placeholder="Search verification results..." id="verSearch" oninput="filterVerify(this.value)"></div>`;
-  
-  // Confidence explanation tooltip
-  const confidenceHelp = `<span class="confidence-tooltip" title="Confidence score from 0-100% indicates how certain the AI is that this reference exists in academic databases. 100% = confirmed by multiple sources. 0% = no evidence found.">ⓘ</span>`;
-  
-  const flaggedList = [], realList = [];
-  [...fake, ...suspicious].forEach(v => {
-    const verdictClass = v.ai_verdict === 'FAKE' ? 'badge-fake' : 'badge-suspicious';
-    const verdictLabel = v.ai_verdict === 'FAKE' ? '✕ FAKE - Likely Hallucinated' : '? SUSPICIOUS - Needs Review';
-    let confidenceExplanation = '';
-    if (v.confidence >= 0.9) confidenceExplanation = 'This reference was found in multiple academic databases with high title match.';
-    else if (v.confidence >= 0.7) confidenceExplanation = 'This reference was found in at least one database with good title match.';
-    else if (v.confidence >= 0.5) confidenceExplanation = 'Partial match found - title similar but not identical to a known paper.';
-    else if (v.confidence >= 0.3) confidenceExplanation = 'Weak evidence - may be a real paper not well-indexed or a hallucination.';
-    else confidenceExplanation = 'No evidence found in any database - likely fabricated or very obscure.';
-    
-    const resourceLinks = [];
-    if (v.doi) resourceLinks.push(`<a href="https://doi.org/${escapeHtml(v.doi)}" target="_blank" class="resource-link">🔗 View on DOI.org</a>`);
-    if (v.open_access_url) resourceLinks.push(`<a href="${escapeHtml(v.open_access_url)}" target="_blank" class="resource-link">📄 Open Access PDF</a>`);
-    
-    flaggedList.push(`<div class="entry-card" data-key="${escapeHtml(v.key)}" data-title="${escapeHtml(v.title || '')}">
-      <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')">
-        <span class="entry-key">${escapeHtml(v.key)}</span>
-        <div class="entry-meta">
-          <div class="entry-title">${escapeHtml(v.title || '(no title)')}</div>
-          <div class="entry-badges"><span class="badge ${verdictClass}">${verdictLabel}</span><span class="confidence-pill" title="${escapeHtml(confidenceExplanation)}">${Math.round((v.confidence || 0) * 100)}% confidence ${confidenceHelp}</span></div>
-        </div>
-      </div>
-      <div class="entry-detail">
-        <div class="detail-section"><div class="detail-section-title">🤖 AI Analysis</div><div class="explanation-text">${escapeHtml(v.ai_reasoning || 'No reasoning provided')}</div></div>
-        ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-section-title">⚠ Red Flags Detected</div><ul class="risk-factors">${v.ai_risk_factors.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
-        ${resourceLinks.length ? `<div class="detail-section"><div class="detail-section-title">🔗 Resources & Links</div><div class="sources-row">${resourceLinks.join('')}</div></div>` : ''}
-        ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-section-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s => `<span class="source-chip">${escapeHtml(s)}</span>`).join('')}</div></div>` : ''}
-      </div>
-    </div>`);
-  });
-  
-  real.forEach(v => {
-    let confidenceExplanation = '';
-    if (v.confidence >= 0.9) confidenceExplanation = 'This reference was found in multiple academic databases with high title match.';
-    else if (v.confidence >= 0.7) confidenceExplanation = 'This reference was found in at least one database with good title match.';
-    else confidenceExplanation = 'This reference was verified but with lower confidence.';
-    
-    const resourceLinks = [];
-    if (v.doi) resourceLinks.push(`<a href="https://doi.org/${escapeHtml(v.doi)}" target="_blank" class="resource-link">🔗 View on DOI.org</a>`);
-    if (v.open_access_url) resourceLinks.push(`<a href="${escapeHtml(v.open_access_url)}" target="_blank" class="resource-link">📄 Open Access PDF</a>`);
-    if (v.matched_title && v.matched_title !== v.title) resourceLinks.push(`<span class="resource-link" style="background: var(--surface-secondary);">📖 Matched as: "${escapeHtml(v.matched_title)}"</span>`);
-    
-    realList.push(`<div class="entry-card" data-key="${escapeHtml(v.key)}" data-title="${escapeHtml(v.title || '')}">
-      <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')">
-        <span class="entry-key">${escapeHtml(v.key)}</span>
-        <div class="entry-meta">
-          <div class="entry-title">${escapeHtml(v.title || '(no title)')}</div>
-          <div class="entry-badges"><span class="badge badge-real">✓ REAL - Verified</span><span class="confidence-pill" title="${escapeHtml(confidenceExplanation)}">${Math.round((v.confidence || 0) * 100)}% confidence ${confidenceHelp}</span></div>
-        </div>
-      </div>
-      <div class="entry-detail">
-        ${v.version_note ? `<div class="detail-section"><div class="detail-section-title">📋 Note</div><div class="explanation-text">${escapeHtml(v.version_note)}</div></div>` : ''}
-        ${resourceLinks.length ? `<div class="detail-section"><div class="detail-section-title">🔗 Resources & Links</div><div class="sources-row">${resourceLinks.join('')}</div></div>` : ''}
-        ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-section-title">📚 Verified by</div><div class="sources-row">${v.sources_checked.map(s => `<span class="source-chip">${escapeHtml(s)}</span>`).join('')}</div></div>` : ''}
-      </div>
-    </div>`);
-  });
-  
-  if (flaggedList.length) html += `<div class="section-heading">⚠ Flagged references (${flaggedList.length})</div>${flaggedList.join('')}`;
-  if (realList.length) html += `<div class="section-heading">✓ Verified references (${realList.length})</div>${realList.join('')}`;
-  document.getElementById('verifyContent').innerHTML = html;
-}
-
-function renderScoreTab(data) {
-  const sc = data.score || {};
-  const penalties = sc.penalties || [];
-  let html = `<div class="stat-bar"><div class="stat-box ${sc.score >= 75 ? 'green' : sc.score >= 50 ? 'orange' : 'red'}"><div class="value">${sc.score}/100</div><div class="label">Final Score · ${sc.grade}</div></div></div>
-    <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
-      <div style="padding: 16px 20px; background: var(--surface-secondary); font-weight: 700;">📊 Score Breakdown</div>
-      <table class="penalty-table"><thead><tr><th>Category</th><th>Count</th><th>Deduction</th><th>Why it matters</th></tr></thead><tbody>
-      ${penalties.map(p => `<tr><td>${escapeHtml(p.category)}</td><td>${p.count}</td><td class="deduct-cell">-${p.deduction}</td><td style="color: var(--text-muted); font-size: 12px;">${explainPenalty(p.category)}</td></tr>`).join('')}
-      <tr class="total-row"><td colspan="2"><strong>Total Score</strong></td><td><strong>${sc.score}/100</strong></td><td></td></tr>
-      </tbody></table></div>
-    <div style="margin-top: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px;">
-      <div style="font-weight: 700; margin-bottom: 8px;">🎓 Grade Interpretation</div>
-      <div style="font-size: 13px; color: var(--text-muted);">${sc.score >= 90 ? 'A/A+ — Excellent. References are near perfect.' : sc.score >= 80 ? 'B — Good. Minor issues, easily fixed.' : sc.score >= 70 ? 'C — Satisfactory. Several issues need attention.' : sc.score >= 60 ? 'D — Passable. Significant problems to fix.' : 'F — Failing. Critical issues, bibliography needs revision.'}</div>
-    </div>`;
-  document.getElementById('scoreContent').innerHTML = html;
-}
-
-function explainPenalty(category) {
-  const explanations = {
-    'Retracted papers cited': 'Citing retracted papers is a serious academic integrity issue. These papers have been officially retracted.',
-    'Missing from bibliography': 'Every in-text citation needs a matching bibliography entry. Add these references.',
-    'Likely fabricated references': 'These references could not be verified and may be AI hallucinations. Verify each one manually.',
-    'Year mismatch (>1 yr off)': 'Cited year differs from the actual publication year by more than 1 year.',
-    'Author mismatch': 'Author names don\'t match the verified source. Check for correct spelling.',
-    'Cited nowhere in text': 'Bibliography entries that are never cited should be removed from the bibliography.',
-    'Incomplete LNI entries': 'Missing required fields like authors, title, year, or pages. Add the missing information.',
-    'Duplicate entries': 'Same paper listed multiple times in bibliography. Remove duplicates.',
-    'LNI style violations': 'Formatting issues like wrong author order (Firstname Lastname instead of Lastname, Firstname) or incorrect page dash (single - instead of --).'
-  };
-  return explanations[category] || 'Affects LNI compliance and overall quality.';
+function friendlyIssue(issue) {
+  if (issue.includes("Missing required field: 'authors'"))
+    return `❌ <strong>Authors missing</strong> — Every LNI entry must list the author(s) in <em>Lastname, Firstname</em> format.`;
+  if (issue.includes("Missing required field: 'title'"))
+    return `❌ <strong>Title missing</strong> — The title of the work is required.`;
+  if (issue.includes("Missing required field: 'year'"))
+    return `❌ <strong>Year missing</strong> — The publication year is required.`;
+  if (issue.includes("Missing required field: 'pages'"))
+    return `⚠ <strong>Pages missing</strong> — Article/proceedings entries require a page range (e.g. S.&nbsp;12--34).`;
+  if (issue.includes("Missing required field: 'journal'"))
+    return `⚠ <strong>Journal name missing</strong> — Article entries require the journal or volume title.`;
+  if (issue.includes("Missing required field: 'publisher'"))
+    return `⚠ <strong>Publisher missing</strong> — Book entries require the publisher name.`;
+  if (issue.includes("Missing required field: 'booktitle'"))
+    return `⚠ <strong>Booktitle missing</strong> — Proceedings entries require the conference or book title.`;
+  if (issue.includes("single dash '-'"))
+    return `⚠ <strong>Wrong page dash</strong> — LNI requires a double dash: <code>S.&nbsp;12--34</code> (not <code>S.&nbsp;12-34</code>).`;
+  if (issue.includes("Firstname Lastname"))
+    return `⚠ <strong>Wrong author order</strong> — LNI requires <em>Lastname, Firstname</em> (comma between them).`;
+  if (issue.includes("LNI key inconsistency"))
+    return `⚠ <strong>Key doesn't match metadata</strong> — ${escapeHtml(issue.replace('LNI key inconsistency:', '').trim())}`;
+  if (issue.includes("Invalid key format"))
+    return `❌ <strong>Invalid key format</strong> — LNI keys must look like [ABC01] or [Ez10].<div class="correct-format">✓ Examples: [LBH15], [VSP17], [Ez10a]</div>`;
+  if (issue.includes("future"))
+    return `⚠ <strong>Year in the future</strong> — Check the publication year.`;
+  return escapeHtml(issue);
 }
 
 function filterBib(q) {
   q = q.toLowerCase();
-  document.querySelectorAll('#bibContent .entry-card').forEach(card => {
-    const key = card.dataset.key || '';
-    const title = card.dataset.title || '';
-    const authors = card.dataset.authors || '';
-    card.style.display = (!q || key.toLowerCase().includes(q) || title.toLowerCase().includes(q) || authors.toLowerCase().includes(q)) ? '' : 'none';
+  document.querySelectorAll('#bibContent .entry-card').forEach(c => {
+    const match = !q || (c.dataset.key||'').toLowerCase().includes(q) ||
+                  (c.dataset.title||'').toLowerCase().includes(q) ||
+                  (c.dataset.authors||'').toLowerCase().includes(q);
+    c.style.display = match ? '' : 'none';
   });
+}
+
+function renderXCheckTab(data) {
+  const xc = data.cross_check || {};
+  const missing = (xc.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC'));
+  const orphan = xc.in_bib_not_cited || [];
+  const numWarn = (xc.cited_not_in_bib || []).find(k => k.includes('__NUMERIC'));
+
+  let html = `<div class="tab-description">Every citation key used in the paper body is cross-referenced against the bibliography, and vice versa. <strong>Cited but missing</strong> means a [Key] appears in the text but has no bibliography entry — these must be added. <strong>Never cited</strong> means a bibliography entry exists but is never referenced in the text — these should be removed.</div>
+  <div class="stat-bar">
+    <div class="stat-box ${missing.length ? 'red' : 'green'}"><div class="value">${missing.length}</div><div class="label">Cited but missing</div></div>
+    <div class="stat-box ${orphan.length ? 'orange' : 'green'}"><div class="value">${orphan.length}</div><div class="label">Never cited</div></div>
+    <div class="stat-box green"><div class="value">${xc.correctly_used?.length || 0}</div><div class="label">Correctly used</div></div>
+  </div>`;
+
+  if (numWarn) {
+    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-issue">⚠ Mixed citation styles</span></div>
+      <div class="explanation-box">This paper mixes LNI author-year keys with numeric citations. LNI only allows author-year keys. Replace all numeric citations with proper LNI keys.</div></div>`;
+  }
+
+  if (missing.length) {
+    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-missing">❌ Cited but not in bibliography (${missing.length})</span></div>
+      <div class="explanation-box" style="margin-bottom:10px;">These keys appear in the paper text but have <strong>no matching entry in the bibliography</strong>. You must either add the missing entries or remove the citations from the text.</div>
+      <div class="xcheck-list-wrapper">${missing.map(k => `<span class="xcheck-list missing">📖 <strong>[${escapeHtml(k)}]</strong> used in text, missing from bibliography</span>`).join('')}</div></div>`;
+  }
+
+  if (orphan.length) {
+    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-orphan">⚠ In bibliography but never cited (${orphan.length})</span></div>
+      <div class="explanation-box" style="margin-bottom:10px;">These bibliography entries exist but are <strong>never referenced in the text</strong>. Remove them from the bibliography, or add citations to the text.</div>
+      <div class="xcheck-list-wrapper">${orphan.map(k => `<span class="xcheck-list orphan">📚 <strong>[${escapeHtml(k)}]</strong> in bibliography but never cited</span>`).join('')}</div></div>`;
+  }
+
+  if (!missing.length && !orphan.length && !numWarn) {
+    html += `<div class="empty"><div class="icon">✅</div><h3>Perfect!</h3><p>Every citation has a matching bibliography entry and every entry is cited.</p></div>`;
+  }
+  document.getElementById('xcheckContent').innerHTML = html;
+}
+
+function renderVerifyTab(data) {
+  const ver = data.verification || [];
+  if (!ver.length) {
+    document.getElementById('verifyContent').innerHTML = `<div class="tab-description">Each bibliography entry is looked up against CrossRef, Semantic Scholar, OpenAlex, arXiv, and a local database. If no API match is found, an AI-assisted web search is used as a fallback. Entries that cannot be found in any source are flagged as potentially fabricated.</div><div class="empty"><div class="icon">ℹ️</div><p>Verification was not run (toggle was off).</p></div>`;
+    return;
+  }
+
+  const fake = ver.filter(v => v.ai_verdict === 'FAKE');
+  const susp = ver.filter(v => v.ai_verdict === 'SUSPICIOUS');
+  const real = ver.filter(v => v.ai_verdict === 'REAL');
+
+  let html = `<div class="tab-description">Each bibliography entry is looked up against CrossRef, Semantic Scholar, OpenAlex, arXiv, and a local database. If no API match is found, an AI-assisted web search is used as a fallback. Entries that cannot be found in any source are flagged as potentially fabricated.</div>
+  <div class="stat-bar">
+    <div class="stat-box green"><div class="value">${real.length}</div><div class="label">Verified Real</div></div>
+    <div class="stat-box ${fake.length ? 'red' : 'green'}"><div class="value">${fake.length}</div><div class="label">Likely Fake</div></div>
+    <div class="stat-box ${susp.length ? 'orange' : 'green'}"><div class="value">${susp.length}</div><div class="label">Suspicious</div></div>
+  </div>`;
+
+  html += `<div class="explanation-box" style="margin-bottom:14px;">
+    <strong>Understanding the confidence score:</strong><br>
+    For <span style="color:var(--success);font-weight:600">✓ REAL</span> references: higher % means stronger evidence it <em>exists</em>.<br>
+    For <span style="color:var(--error);font-weight:600">✕ FAKE</span> references: higher % means stronger evidence it is <em>fabricated</em>.<br>
+    For <span style="color:var(--warning);font-weight:600">? SUSPICIOUS</span>: evidence was partial or ambiguous — manual review recommended.
+  </div>`;
+
+  html += `<div class="search-bar"><input type="text" placeholder="Search references…" oninput="filterVerify(this.value)"></div>`;
+
+  if (fake.length + susp.length > 0)
+    html += `<div class="section-heading">⚠ Flagged references (${fake.length + susp.length})</div>`;
+  html += [...fake, ...susp].map(v => verifyCard(v)).join('');
+
+  if (real.length)
+    html += `<div class="section-heading">✓ Verified references (${real.length})</div>`;
+  html += real.map(v => verifyCard(v)).join('');
+
+  document.getElementById('verifyContent').innerHTML = html;
+}
+
+function verifyCard(v) {
+  const verdict = v.ai_verdict || 'SUSPICIOUS';
+  const conf = Math.round((v.confidence || 0) * 100);
+  const badgeCls = verdict === 'REAL' ? 'badge-real' : verdict === 'FAKE' ? 'badge-fake' : 'badge-suspicious';
+  const badgeLabel = verdict === 'REAL' ? '✓ REAL — Verified' : verdict === 'FAKE' ? '✕ FAKE — Likely Fabricated' : '? SUSPICIOUS — Manual Review Needed';
+  let confCls, confLabel, confTip;
+  if (verdict === 'REAL') {
+    confCls = conf >= 80 ? 'high' : conf >= 50 ? 'med' : 'low';
+    confLabel = conf >= 80 ? `${conf}% confident it's real` : conf >= 50 ? `${conf}% — likely real` : `${conf}% — weak evidence`;
+    confTip = `Found in ${v.sources_checked?.length || 0} database(s).`;
+  } else if (verdict === 'FAKE') {
+    confCls = conf >= 80 ? 'low' : conf >= 50 ? 'med' : 'high';
+    confLabel = conf >= 80 ? `${conf}% — strong evidence of fabrication` : conf >= 50 ? `${conf}% — no database found this` : `${conf}% — uncertain`;
+    confTip = `Searched ${v.sources_checked?.length || 0} database(s), no matching paper found.`;
+  } else {
+    confCls = 'med';
+    confLabel = `${conf}% — partial evidence`;
+    confTip = `Partial or ambiguous match. Manual review recommended.`;
+  }
+  const links = [];
+  if (v.doi) links.push(`<a href="https://doi.org/${escapeHtml(v.doi)}" target="_blank" class="resource-link">🔗 DOI</a>`);
+  if (v.open_access_url) links.push(`<a href="${escapeHtml(v.open_access_url)}" target="_blank" class="resource-link">📄 Open Access PDF</a>`);
+  if (v.matched_title && v.matched_title !== v.title) { const q = encodeURIComponent(v.matched_title); links.push(`<a href="https://scholar.google.com/scholar?q=${q}" target="_blank" class="resource-link" style="background:var(--surface-secondary);">📖 Matched: "${escapeHtml(v.matched_title.slice(0,50))}"</a>`); }
+
+  return `<div class="entry-card" data-key="${escapeHtml(v.key)}" data-title="${escapeHtml(v.title||'')}">
+    <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="entry-key">${escapeHtml(v.key)}</span>
+      <div class="entry-meta">
+        <div class="entry-title">${escapeHtml(v.title || '(no title)')}</div>
+        <div class="entry-badges"><span class="badge ${badgeCls}">${badgeLabel}</span><span class="conf-pill ${confCls}" title="${escapeHtml(confTip)}">${confLabel}</span></div>
+      </div>
+    </div>
+    <div class="entry-detail">
+      <div class="entry-detail-inner">
+        ${v.ai_reasoning ? `<div class="detail-section"><div class="detail-title">🤖 AI Reasoning</div><div class="explanation-box">${escapeHtml(v.ai_reasoning)}</div></div>` : ''}
+        ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-title">⚠ Red Flags</div><ul class="risk-list">${v.ai_risk_factors.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
+        ${links.length ? `<div class="detail-section"><div class="detail-title">🔗 Links & Resources</div><div class="sources-row">${links.join('')}</div></div>` : ''}
+        ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s=>`<span class="source-chip">${escapeHtml(s)}</span>`).join('')}</div></div>` : ''}
+        ${verdict === 'FAKE' || verdict === 'SUSPICIOUS' ? `<div class="detail-section"><div class="detail-title">➕ Add to Verified Database</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, you can save it to the local database so it won't be flagged again.</div><button onclick="saveToDb(${JSON.stringify(escapeHtml(v.title||''))}, ${JSON.stringify(escapeHtml(v.ai_reasoning||''))}, '${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;">✓ Confirm as Real — Save to DB</button></div>` : ''}
+        ${v.raw ? `<div class="detail-section"><div class="detail-title">📄 Raw Entry</div><div class="explanation-box" style="font-family:JetBrains Mono,monospace;font-size:11px;">${escapeHtml(v.raw)}</div></div>` : ''}
+      </div>
+    </div>
+  </div>`;
 }
 
 function filterVerify(q) {
   q = q.toLowerCase();
-  document.querySelectorAll('#verifyContent .entry-card').forEach(card => {
-    const key = card.dataset.key || '';
-    const title = card.dataset.title || '';
-    card.style.display = (!q || key.toLowerCase().includes(q) || title.toLowerCase().includes(q)) ? '' : 'none';
+  document.querySelectorAll('#verifyContent .entry-card').forEach(c => {
+    const match = !q || (c.dataset.key||'').toLowerCase().includes(q) || (c.dataset.title||'').toLowerCase().includes(q);
+    c.style.display = match ? '' : 'none';
   });
 }
+
+async function saveToDb(title, reason, key) {
+  const bib = (result?.bibliography || []).find(e => e.key === key) || {};
+  const payload = { title: title, authors: bib.authors || '', year: bib.year || '', doi: bib.doi || '', url: bib.url || '' };
+  try {
+    const r = await fetch('/api/inject_paper', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    const d = await r.json();
+    if (d.success) {
+      showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success');
+      updateDbBadge(d);
+    } else { showToast('Failed: ' + (d.error || 'Unknown error'), 'error'); }
+  } catch(e) { showToast('Network error: ' + e.message, 'error'); }
+}
+
+function renderScoreTab(data) {
+  const sc = data.score || {};
+  const s = data.summary || {};
+  const penalties = sc.penalties || [];
+  const verificationFakeCount = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length;
+  const verificationSuspCount = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS').length;
+  const verificationRealCount = (data.verification || []).filter(v => v.ai_verdict === 'REAL').length;
+  let actualScore = sc.score;
+  if (actualScore === 0 && sc.max_score) actualScore = sc.max_score;
+  const gradeColor = actualScore >= 75 ? 'green' : actualScore >= 50 ? 'orange' : 'red';
+  let html = `<div class="stat-bar"><div class="stat-box ${gradeColor}"><div class="value">${actualScore}/100</div><div class="label">Final Score · ${sc.grade || 'F'}</div></div><div class="stat-box ${verificationFakeCount ? 'red' : 'green'}"><div class="value">${verificationFakeCount}</div><div class="label">Fake References</div></div><div class="stat-box ${verificationSuspCount ? 'orange' : 'green'}"><div class="value">${verificationSuspCount}</div><div class="label">Suspicious References</div></div><div class="stat-box green"><div class="value">${verificationRealCount}</div><div class="label">Verified Real</div></div><div class="stat-box ${s.missing_from_bib ? 'red' : 'green'}"><div class="value">${s.missing_from_bib || 0}</div><div class="label">Missing from Bib</div></div></div>`;
+  if (sc.verdict_reason) html += `<div class="explanation-box" style="margin-bottom:14px;">🤖 <strong>AI Verdict:</strong> ${escapeHtml(sc.verdict_reason)}</div>`;
+  html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:14px;"><div style="padding:12px 16px;background:var(--surface-secondary);font-weight:700;font-size:13px;">📊 Score Breakdown</div><table class="penalty-table"><thead><tr><th>Issue Category</th><th>Count</th><th>Deduction</th><th>Why it matters</th></tr></thead><tbody>${penalties.map(p => `<tr><td style="font-weight:600;">${escapeHtml(p.category)}</td><td>${p.count}</td><td class="deduct-cell">-${p.deduction}</td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml(explainPenalty(p.category))}</td></tr>`).join('')}${penalties.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--success);">✓ No deductions — perfect score!</td></tr>' : ''}<tr class="total-row"><td colspan="2"><strong>Final Score</strong></td><td><strong>${actualScore}/100 (${sc.grade || 'F'})</strong></td><td></td></tr></tbody></table></div>`;
+  if (sc.professor_note) { let cleanNote = sc.professor_note; cleanNote = cleanNote.replace(/^I will manually review\s+/, ''); html += `<div class="explanation-box"><strong>📝 Note:</strong> ${escapeHtml(cleanNote)}</div>`; }
+  document.getElementById('scoreContent').innerHTML = html;
+}
+
+function explainPenalty(cat) {
+  const explanations = { 'Retracted papers cited': 'Citing retracted papers is a serious academic integrity violation.', 'Missing from bibliography': 'Every in-text citation [Key] must have a matching bibliography entry.', 'Likely fabricated references': 'These references could not be found in any academic database — possible AI hallucinations.', 'Year mismatch (>1 yr off)': 'Cited year differs from the actual publication year by more than 1 year.', 'Author mismatch': 'Author names don\'t match the verified source.', 'Cited nowhere in text': 'Bibliography entries never cited in the text should be removed.', 'Incomplete LNI entries': 'Missing required fields (author, title, year, pages, etc.).', 'Duplicate entries': 'Same paper listed multiple times — remove duplicates.', 'LNI style violations': 'Wrong author order, single-dash page ranges, or forbidden macros.' };
+  return explanations[cat] || 'Affects LNI compliance and quality.';
+}
+
+async function loadDbTab() {
+  const search = document.getElementById('dbSearchInput')?.value || '';
+  const el = document.getElementById('dbContent');
+  el.innerHTML = '<div class="empty"><div class="icon">⏳</div><p>Loading database…</p></div>';
+  try {
+    const response = await fetch(`/api/db_contents?limit=200&search=${encodeURIComponent(search)}`);
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) throw new Error('Server returned HTML instead of JSON');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const d = await response.json();
+    renderDbTab(d);
+    dbLoaded = true;
+  } catch(e) { el.innerHTML = `<div class="empty"><div class="icon">❌</div><h3>Failed to load database</h3><p>${escapeHtml(e.message)}</p><button onclick="loadDbTab()" class="btn-sm btn-primary-sm" style="margin-top:12px;">⟳ Retry</button></div>`; }
+}
+
+function renderDbTab(d) {
+  const papers = d.papers || [];
+  const total = d.total || 0;
+  const bySource = d.by_source || {};
+  document.getElementById('tabDbBadge').textContent = total;
+  const bySourceHtml = Object.entries(bySource).map(([s,n]) => `<span class="pill"><strong>${n}</strong> via ${escapeHtml(s)}</span>`).join('');
+  let html = `<div class="db-info-bar"><span class="pill"><strong>${total}</strong> total verified papers</span><span class="pill"><strong>${d.db_size_kb || 0} KB</strong> database size</span>${bySourceHtml}</div><div class="db-add-form"><h4>➕ Manually add a verified paper</h4><div class="db-form-grid"><input class="required" id="dbaTitle" placeholder="Title (required)" type="text"><input id="dbaAuthors" placeholder="Authors (Lastname, F; ...)" type="text"><input id="dbaYear" placeholder="Year (e.g. 2024)" type="text" style="max-width:120px"><input id="dbaDoi" placeholder="DOI (optional)" type="text"><input id="dbaUrl" placeholder="URL (optional)" type="text"></div><button onclick="dbAddPaper()" class="btn-sm btn-primary-sm">✓ Save to Database</button><span style="font-size:11px;color:var(--text-muted);margin-left:10px;">Only confirmed-real papers should be added.</span></div><div class="search-bar" style="display:flex;gap:8px;"><input type="text" id="dbSearchInput" placeholder="Search database by title…" value="${escapeHtml(d.search||'')}" style="flex:1"><button onclick="loadDbTab()" class="btn-sm btn-ghost">🔍 Search</button><button onclick="document.getElementById('dbSearchInput').value='';loadDbTab();" class="btn-sm btn-ghost">✕ Clear</button></div>`;
+  if (!papers.length) { html += `<div class="empty"><div class="icon">📭</div><h3>Database is empty</h3><p>The local database grows automatically as references are verified.<br>You can also add papers manually using the form above.</p></div>`; } else { html += `<div class="db-table-wrap"><table class="db-table"><thead><tr><th style="min-width:240px">Title</th><th>Authors</th><th>Year</th><th>Source</th><th>Confidence</th><th>DOI / URL</th><th>Added</th><th></th></tr></thead><tbody>${papers.map(p => dbRow(p)).join('')}</tbody></table></div>`; }
+  document.getElementById('dbContent').innerHTML = html;
+  const si = document.getElementById('dbSearchInput');
+  if (si) si.addEventListener('keydown', e => { if (e.key === 'Enter') loadDbTab(); });
+}
+
+function dbRow(p) {
+  const confPct = Math.round(p.confidence * 100);
+  const confCls = confPct >= 90 ? 'high' : confPct >= 70 ? 'med' : 'low';
+  const srcCls = p.source === 'manual' ? 'manual' : '';
+  const link = p.doi ? `<a href="https://doi.org/${escapeHtml(p.doi)}" target="_blank" class="resource-link" style="font-size:10px;">DOI ↗</a>` : (p.url ? `<a href="${escapeHtml(p.url)}" target="_blank" class="resource-link" style="font-size:10px;">URL ↗</a>` : '—');
+  
+  // Store the original title for the delete function
+  const originalTitle = p.title;
+  const escapedTitleForAttr = escapeHtml(originalTitle).replace(/"/g, '&quot;');
+  
+  return `<tr>
+    <td title="${escapeHtml(originalTitle)}">${escapeHtml(originalTitle.length > 55 ? originalTitle.slice(0,55)+'…' : originalTitle)}</td>
+    <td title="${escapeHtml(p.authors)}">${escapeHtml(p.authors.length > 35 ? p.authors.slice(0,35)+'…' : (p.authors||'—'))}</td>
+    <td>${escapeHtml(p.year||'—')}</td>
+    <td><span class="source-badge ${srcCls}">${escapeHtml(p.source)}</span></td>
+    <td><span class="conf-pill ${confCls}" title="Confidence score">${confPct}%</span></td>
+    <td>${link}</td>
+    <td>${escapeHtml(p.added_date||'—')}</td>
+    <td><button class="del-btn" data-title="${escapedTitleForAttr}" onclick="dbDeletePaper(this)" title="Delete from database">🗑 Delete</button></td>
+  </tr>`;
+}
+
+async function dbDeletePaper(btnEl) {
+  const title = btnEl ? btnEl.getAttribute('data-title') : '';
+  if (!title) {
+    showToast('Error: No title specified', 'error');
+    return;
+  }
+  
+  if (!confirm(`Remove "${title.slice(0,60)}" from the database?`)) return;
+  
+  const clickedBtn = btnEl;
+  if (clickedBtn) {
+    clickedBtn.textContent = '⏳ Deleting...';
+    clickedBtn.disabled = true;
+  }
+  
+  try {
+    const response = await fetch('/api/db_delete', { 
+      method: 'POST', 
+      headers: {'Content-Type': 'application/json'}, 
+      body: JSON.stringify({title: unescapeHtml(title)}) 
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorText.slice(0,100)}`);
+    }
+    
+    const d = await response.json();
+    
+    if (d.success) {
+      showToast('✓ Paper removed from database', 'success');
+      // Refresh the database tab
+      await loadDbTab();
+      // Update the badge counts
+      const statsRes = await fetch('/api/db_stats');
+      if (statsRes.ok) {
+        const stats = await statsRes.json();
+        updateDbBadge(stats);
+      }
+    } else {
+      showToast('Failed to remove: ' + (d.error || 'Unknown error'), 'error');
+      if (clickedBtn) {
+        clickedBtn.textContent = '🗑 Delete';
+        clickedBtn.disabled = false;
+      }
+    }
+  } catch(e) {
+    console.error('Delete error:', e);
+    showToast('Error deleting: ' + e.message, 'error');
+    if (clickedBtn) {
+      clickedBtn.textContent = '🗑 Delete';
+      clickedBtn.disabled = false;
+    }
+  }
+}
+ 
+   
+
+function updateDbBadge(stats) {
+  const n = stats.db_total !== undefined ? stats.db_total : (stats.total_papers || 0);
+  document.getElementById('dbCount').textContent = n;
+  document.getElementById('dbBadge').style.display = 'flex';
+  document.getElementById('tabDbBadge').textContent = n;
+  if (stats.db_size_kb) document.getElementById('dbSize').textContent = stats.db_size_kb + ' KB';
+}
+
+fetch('/api/db_stats').then(r => r.ok ? r.json() : null).then(stats => { if (stats) updateDbBadge(stats); }).catch(() => {});
 
 async function downloadBib() {
   if (!result) return;
   try {
-    const r = await fetch('/api/export-bibtex', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result) });
+    const r = await fetch('/api/export-bibtex', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(result)});
     if (!r.ok) { showToast('No corrected entries to export', 'error'); return; }
     const blob = await r.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'corrected_references.bib';
-    a.click();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'corrected_references.bib'; a.click();
     showToast('✓ Bibliography exported', 'success');
   } catch(e) { showToast('Export failed', 'error'); }
 }
 
 async function exportResults() {
   if (!result) return;
-  const html = generateHTMLReport(result);
-  const blob = new Blob([html], { type: 'text/html' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (result.filename || 'report').replace(/\.[^.]+$/, '') + '_report.html';
-  a.click();
-  showToast('✓ Report downloaded', 'success');
+  try {
+    const wb = buildXLSXReport(result);
+    const baseName = (result.filename || 'report').replace(/\.[^.]+$/, '');
+    XLSX.writeFile(wb, baseName + '_lni_report.xlsx');
+    showToast('✓ Excel report downloaded', 'success');
+  } catch(e) {
+    showToast('Export failed: ' + e.message, 'error');
+  }
 }
 
-function generateHTMLReport(data) {
+function buildXLSXReport(data) {
+  const wb = XLSX.utils.book_new();
   const sc = data.score || {};
   const s = data.summary || {};
-  const verdict = sc.verdict || 'FLAG';
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>LNI Report - ${data.filename}</title><style>body{font-family:system-ui,sans-serif;max-width:1000px;margin:0 auto;padding:40px 20px;line-height:1.5;}h1{color:#1e3a5f;}.score{font-size:48px;font-weight:bold;}.verdict-PASS{background:#e6f7ed;padding:20px;border-radius:10px;margin:20px 0;}.verdict-FLAG{background:#fff7ed;padding:20px;border-radius:10px;margin:20px 0;}.verdict-FAIL{background:#fef2f2;padding:20px;border-radius:10px;margin:20px 0;}table{width:100%;border-collapse:collapse;margin:20px 0;}th,td{padding:10px;text-align:left;border-bottom:1px solid #ddd;}.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px;}.badge-real{background:#e6f7ed;color:#0f7b3a;}.badge-fake{background:#fef2f2;color:#b91c1c;}.badge-suspicious{background:#fff7ed;color:#b45309;}</style></head><body><h1>📚 LNI Reference Checker Report</h1><p><strong>File:</strong> ${escapeHtml(data.filename)} | <strong>Format:</strong> ${data.format} | <strong>Date:</strong> ${new Date().toLocaleString()}</p><div class="verdict-${verdict}"><div class="score">${sc.score}/100 - ${sc.grade}</div><div><strong>Verdict:</strong> ${verdict}</div><div>${sc.verdict_reason || ''}</div></div><h2>Summary</h2><table><tr><th>Metric</th><th>Count</th></tr><tr><td>Bibliography entries</td><td>${s.bib_entry_count || 0}</td></tr><tr><td>Missing from bibliography</td><td>${s.missing_from_bib || 0}</td></tr><tr><td>Never cited</td><td>${s.uncited_entries || 0}</td></tr><tr><td>Likely FAKE</td><td>${s.fake_candidates || 0}</td></tr><tr><td>SUSPICIOUS</td><td>${s.suspicious || 0}</td></tr><tr><td>Verified REAL</td><td>${s.verified || 0}</td></tr></table><h2>Penalties</h2><table><tr><th>Category</th><th>Count</th><th>Deduction</th></tr>${(sc.penalties || []).map(p => `<tr><td>${p.category}</td><td>${p.count}</td><td>-${p.deduction}</td></tr>`).join('')}</table><p style="margin-top:40px;font-size:12px;color:#666;">Generated by LNI Reference Checker v6.2</p></body></html>`;
+  const now = new Date().toLocaleString();
+
+  // ── Sheet 1: Summary ──────────────────────────────────────────────────────
+  const summaryRows = [
+    ['LNI Reference Checker — Report'],
+    ['File', data.filename || ''],
+    ['Format', data.format || ''],
+    ['Date', now],
+    [],
+    ['OVERALL SCORE', `${sc.score}/100 (${sc.grade || ''})`],
+    ['Verdict', sc.verdict || ''],
+    ['Verdict Reason', sc.verdict_reason || ''],
+    [],
+    ['SUMMARY', 'Count'],
+    ['Bibliography entries', s.bib_entry_count || 0],
+    ['Citation count', s.citation_count || 0],
+    ['Cited but missing from bibliography', s.missing_from_bib || 0],
+    ['Never cited (orphaned entries)', s.uncited_entries || 0],
+    ['Incomplete LNI entries', s.incomplete_entries || 0],
+    ['Duplicate entries', s.duplicates || 0],
+    ['Likely FAKE references', s.fake_candidates || 0],
+    ['SUSPICIOUS references', s.suspicious || 0],
+    ['Verified REAL references', s.verified || 0],
+    ['Retracted papers cited', s.retracted || 0],
+    ['Open-access links found', s.open_access || 0],
+    [],
+    ['SCORE BREAKDOWN', 'Count', 'Deduction'],
+    ...(sc.penalties || []).map(p => [p.category, p.count, `-${p.deduction}`]),
+    ['Final Score', '', `${sc.score}/100`],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = [{wch: 40}, {wch: 20}, {wch: 14}];
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+
+  // ── Sheet 2: Bibliography Format Check ───────────────────────────────────
+  const bibHeaders = ['Key', 'Type', 'Authors', 'Title', 'Year', 'Journal/Publisher', 'Pages', 'DOI', 'Format Issues'];
+  const bibRows = (data.bibliography || []).map(e => [
+    e.key || '',
+    e.type || '',
+    e.authors || '',
+    e.title || '',
+    e.year || '',
+    e.journal || e.publisher || '',
+    e.pages || '',
+    e.doi || '',
+    (e.completeness_issues || []).join('; '),
+  ]);
+  const wsBib = XLSX.utils.aoa_to_sheet([bibHeaders, ...bibRows]);
+  wsBib['!cols'] = [{wch:10},{wch:14},{wch:30},{wch:50},{wch:6},{wch:28},{wch:10},{wch:22},{wch:50}];
+  XLSX.utils.book_append_sheet(wb, wsBib, 'Bibliography Format Check');
+
+  // ── Sheet 3: Citation Cross-Check ─────────────────────────────────────────
+  const xc = data.cross_check || {};
+  const xcRows = [
+    ['Citation Cross-Check'],
+    [],
+    ['CITED IN TEXT BUT MISSING FROM BIBLIOGRAPHY'],
+    ['Key'],
+    ...(xc.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC')).map(k => [k]),
+    [],
+    ['IN BIBLIOGRAPHY BUT NEVER CITED IN TEXT'],
+    ['Key'],
+    ...(xc.in_bib_not_cited || []).map(k => [k]),
+    [],
+    ['CORRECTLY USED'],
+    ['Key'],
+    ...(xc.correctly_used || []).map(k => [k]),
+  ];
+  const wsXC = XLSX.utils.aoa_to_sheet(xcRows);
+  wsXC['!cols'] = [{wch: 16}];
+  XLSX.utils.book_append_sheet(wb, wsXC, 'Citation Cross-Check');
+
+  // ── Sheet 4: Reference Verification ──────────────────────────────────────
+  const verHeaders = ['Key', 'Title', 'Verdict', 'Confidence %', 'Matched Title', 'DOI', 'Open Access URL', 'Sources Checked', 'AI Reasoning', 'Risk Factors', 'Raw Entry'];
+  const verRows = (data.verification || []).map(v => [
+    v.key || '',
+    v.title || '',
+    v.ai_verdict || '',
+    Math.round((v.confidence || 0) * 100),
+    v.matched_title || '',
+    v.doi || '',
+    v.open_access_url || '',
+    (v.sources_checked || []).join(', '),
+    v.ai_reasoning || '',
+    (v.ai_risk_factors || []).join('; '),
+    v.raw || '',
+  ]);
+  const wsVer = XLSX.utils.aoa_to_sheet([verHeaders, ...verRows]);
+  wsVer['!cols'] = [{wch:10},{wch:50},{wch:12},{wch:14},{wch:50},{wch:22},{wch:30},{wch:30},{wch:60},{wch:40},{wch:60}];
+  XLSX.utils.book_append_sheet(wb, wsVer, 'Reference Verification');
+
+  return wb;
 }
 
-function escapeHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
-document.getElementById('mainFile').addEventListener('change', (e) => handleMainFile(e.target));
-document.getElementById('bibFile').addEventListener('change', (e) => { bibFile = e.target.files[0]; if (bibFile) showToast(`📚 ${bibFile.name} attached`, 'success'); });
+function escapeHtml(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function unescapeHtml(s) { if (!s) return ''; const t = document.createElement('textarea'); t.innerHTML = s; return t.value; }
+
+document.getElementById('mainFile').addEventListener('change', e => handleMainFile(e.target));
+document.getElementById('bibFile').addEventListener('change', e => { bibFile = e.target.files[0]; if (bibFile) showToast(`📚 ${bibFile.name} attached`, 'success'); });
 </script>
 </body>
 </html>

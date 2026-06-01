@@ -64,7 +64,7 @@ REQUIRED_FIELDS = {
     "article":       ["authors", "title", "journal", "year", "pages"],
     "proceedings":   ["authors", "title", "booktitle", "year", "pages"],
     "inproceedings": ["authors", "title", "booktitle", "year", "pages"],
-    "website":       ["title", "url", "urldate"],
+    "website":       ["title", "url"],   # urldate optional
     "misc":          ["title", "year"],
     "unknown":       ["authors", "title", "year"],
 }
@@ -91,7 +91,9 @@ _JOURNAL_WORDS = re.compile(
 # German/English journal title fragments — used to fall back to "article" type
 _JOURNAL_NAME_HINTS = re.compile(
     r'\b(?:Journal|Zeitschrift|Magazin|Review|Transactions|Letters|'
-    r'Bulletin|Annals|Communications|Informatik|Computing)\b',
+    r'Bulletin|Annals|Communications|Informatik|Computing|'
+    r'Quarterly|Professional|Magazine|Publication|Proceedings|'
+    r'Systems|Research|Reports?|Science|Technology|Management)\b',
     re.IGNORECASE,
 )
 
@@ -151,18 +153,57 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         entry.isbn = re.sub(r'[\s-]', '', isbn_match.group(1))
 
     # ── Website detection ─────────────────────────────────────────────────────
-    url_match = re.search(r'(https?://\S+|www\.\S+)', raw)
+    # Also catches PDF artefact "https: //domain" (space after colon)
+    url_match = re.search(r'(https?://\S+|https?:\s+//\S+|www\.\S+)', raw)
     if url_match:
         entry.entry_type = "website"
-        entry.url = url_match.group(1).rstrip('.,;)')
+        # Fix "https: //..." space artefact, strip ",Stand:..." suffix
+        raw_url = re.sub(r'^(https?):\s+//', r'\1://', url_match.group(1))
+        raw_url = re.sub(r',?\s*Stand:.*$', '', raw_url, flags=re.IGNORECASE)
+        entry.url = raw_url.rstrip('.,;)')
+
         date_match = re.search(
             r'(?:Stand:|Abruf:|abgerufen am|accessed|besucht am)[:\s]*([\d./-]+)',
             raw, re.IGNORECASE,
         )
         if date_match:
             entry.urldate = date_match.group(1)
-        title_part = raw[:url_match.start()].strip().rstrip(',.')
-        entry.title = title_part if title_part else None
+
+        # Extract authors and clean title from text before the URL
+        pre_url = raw[:url_match.start()].strip().rstrip(',')
+
+        # Pattern 1: "Lastname[ Lastname2], Firstname[ and ...]: Title"
+        author_m = re.match(
+            r'^((?:[A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+)*'
+            r'(?:,\s*[A-Za-zÄÖÜäöüß.\s\-]+)?'
+            r'(?:\s+and\s+|\s*;\s*)?)+):\s*(.*)',
+            pre_url,
+        )
+        if author_m:
+            cand = author_m.group(1).strip()
+            if len(cand) < 150 and not re.search(r'\b(19|20)\d{2}\b', cand):
+                entry.authors = cand
+                pre_url = author_m.group(2).strip()
+
+        # Pattern 2: Organisation name "Flexera Inc.: Title" or "Bitkom: Title"
+        if not entry.authors:
+            org_m = re.match(r'^([A-ZÄÖÜ][A-Za-z0-9äöüÄÖÜ\s\.\-]{1,50}?):\s*(.*)', pre_url)
+            if org_m:
+                org_cand = org_m.group(1).strip().rstrip(',.')
+                rest_after = org_m.group(2).strip()
+                if 2 < len(org_cand) < 80 and not re.search(r'\b(19|20)\d{2}\b', org_cand) and rest_after:
+                    entry.authors = org_cand
+                    pre_url = rest_after
+
+        # Extract year from pre-URL region
+        year_m = re.search(r'\b(19|20)\d{2}\b', raw[:url_match.start()])
+        if year_m:
+            entry.year = year_m.group(0)
+
+        # Clean title: strip leading/trailing year
+        title_text = re.sub(r'^\s*\b(19|20)\d{2}\b\s*', '', pre_url).strip()
+        title_text = re.sub(r',?\s*\b(19|20)\d{2}\b\s*$', '', title_text).strip().rstrip(',.')
+        entry.title = title_text if title_text else None
         if not entry.title:
             entry.needs_ai_parsing = True
         return
@@ -321,6 +362,18 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         )
         if j_match:
             entry.journal = j_match.group(1).strip()
+        else:
+            # Fallback: "Title. Journal Name 53(4)" — volume number after journal name
+            j_match2 = re.search(
+                r'[.:]\s+([A-Za-zäöüÄÖÜ][A-Za-zäöüÄÖÜ\s]{4,60})\s+\d+\s*[\s(,]',
+                rest,
+            )
+            if j_match2:
+                candidate = j_match2.group(1).strip().rstrip(',.')  
+                if (not re.match(r'^(19|20)\d{2}$', candidate)
+                        and len(candidate) > 4
+                        and not candidate.lower().startswith('s.')):
+                    entry.journal = candidate
 
 
 # ---------------------------------------------------------------------------
@@ -491,7 +544,8 @@ def _check_completeness(entry: BibEntry) -> None:
             )
 
     # LNI author order: must be "Lastname, Firstname"
-    if entry.authors:
+    # Skip for website/misc — author may be an organisation name
+    if entry.authors and entry.entry_type not in ("website", "misc", "online"):
         for name in entry.authors.split(';'):
             name = name.strip()
             # Pattern: TitleCaseWord SPACE TitleCaseWord with no comma

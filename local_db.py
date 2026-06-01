@@ -268,3 +268,67 @@ def clear_old_entries(days: int = 730):
         return cur.rowcount
     finally:
         conn.close()
+
+def get_all_papers(limit: int = 500, offset: int = 0, search: str = "") -> list:
+    """
+    Retrieve all papers from the DB for the Database browser tab.
+    Supports pagination and optional search filter.
+    """
+    _ensure_db()
+    conn = sqlite3.connect(str(CACHE_DB))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.row_factory = sqlite3.Row
+    try:
+        if search:
+            norm_search = normalize_title(search)
+            rows = conn.execute("""
+                SELECT title_blob, authors_blob, year, doi, url, source, confidence, last_seen, added_date
+                FROM verified_papers
+                WHERE title_norm LIKE ? AND confirmed_real = 1
+                ORDER BY added_date DESC
+                LIMIT ? OFFSET ?
+            """, (f"%{norm_search}%", limit, offset)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT title_blob, authors_blob, year, doi, url, source, confidence, last_seen, added_date
+                FROM verified_papers
+                WHERE confirmed_real = 1
+                ORDER BY added_date DESC
+                LIMIT ? OFFSET ?
+            """, (limit, offset)).fetchall()
+        
+        results = []
+        for row in rows:
+            results.append({
+                "title": _decompress(row["title_blob"]),
+                "authors": _decompress(row["authors_blob"]) if row["authors_blob"] else "",
+                "year": str(row["year"]) if row["year"] else "",
+                "doi": row["doi"] or "",
+                "url": row["url"] or "",
+                "source": row["source"],
+                "confidence": round(row["confidence"], 2),
+                "last_seen": row["last_seen"][:10] if row["last_seen"] else "",
+                "added_date": row["added_date"][:10] if row["added_date"] else "",
+            })
+        return results
+    finally:
+        conn.close()
+
+
+def delete_paper(title: str) -> bool:
+    """Delete a paper from the DB by title (for the DB browser tab)."""
+    if not title:
+        return False
+    _ensure_db()
+    norm = normalize_title(title)
+    conn = sqlite3.connect(str(CACHE_DB))
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        cur = conn.execute("DELETE FROM verified_papers WHERE title_norm = ?", (norm,))
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        print(f"Delete error: {e}")
+        return False
+    finally:
+        conn.close()

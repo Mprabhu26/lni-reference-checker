@@ -129,6 +129,60 @@ def split_body_bib(full_text: str, format_hint: str = None) -> dict:
 # PDF Extraction - IMPROVED with multiple fallbacks
 # ---------------------------------------------------------------------------
 
+def _reconstruct_page_text_from_chars(page) -> str:
+    """
+    Rebuild page text from character-level position data.
+
+    Many PDFs (especially those exported from LaTeX/Word with certain fonts)
+    encode glyphs without space characters, causing pdfplumber's extract_text()
+    to produce merged runs like "Aviewofcloudcomputing".  By measuring the
+    horizontal gap between consecutive glyphs and inserting a space whenever
+    the gap exceeds ~18 % of the font size, we recover correct word boundaries.
+    Falls back to extract_text() when no char data is available.
+    """
+    try:
+        chars = page.chars
+    except Exception:
+        chars = []
+
+    if not chars:
+        return page.extract_text() or ""
+
+    # Bucket characters into lines using 3-point y-buckets
+    lines: dict = {}
+    for c in chars:
+        txt = c.get("text", "")
+        if not txt:
+            continue
+        key = round(c["top"] / 3) * 3
+        lines.setdefault(key, []).append(c)
+
+    result_lines = []
+    for y in sorted(lines):
+        row = sorted(lines[y], key=lambda c: c["x0"])
+        if not row:
+            continue
+        line_text = row[0]["text"]
+        for i in range(1, len(row)):
+            prev, curr = row[i - 1], row[i]
+            gap = curr["x0"] - prev["x1"]
+            avg_size = (prev.get("size", 10) + curr.get("size", 10)) / 2
+            # Insert space when gap is > 18 % of the font size
+            if gap > avg_size * 0.18:
+                line_text += " "
+            line_text += curr["text"]
+        result_lines.append(line_text)
+
+    reconstructed = "\n".join(result_lines)
+
+    # Sanity check: if char reconstruction produced substantially less text
+    # than extract_text(), prefer the latter (unusual PDFs with no char data).
+    fallback = page.extract_text() or ""
+    if len(reconstructed.strip()) < len(fallback.strip()) * 0.5:
+        return fallback
+    return reconstructed
+
+
 def extract_pdf(path: str) -> dict:
     """
     Extract text from PDF with multiple fallback methods.
@@ -153,7 +207,9 @@ def extract_pdf(path: str) -> dict:
             extracted_pages = []
             
             for i, page in enumerate(pdf.pages):
-                t = page.extract_text()
+                # Use char-gap reconstruction as primary method — fixes PDFs
+                # where font encoding produces merged words (no space glyphs).
+                t = _reconstruct_page_text_from_chars(page)
                 if t and len(t.strip()) > 50:  # Substantial text on page
                     extracted_pages.append(t)
                     pages_with_text += 1
@@ -236,10 +292,7 @@ def extract_pdf(path: str) -> dict:
         except:
             pass
     
-    # Rejoin hard-hyphenated line-breaks ("algo-\nrithm" → "algorithm")
-    text = re.sub(r'-\n(\S)', r'\1', text)
-    
-    # Collapse multiple spaces
+    # Collapse multiple spaces (don't rejoin hyphens globally — URLs get corrupted)
     text = re.sub(r' +', ' ', text)
     
     # Find bibliography FIRST so line-rejoining never corrupts bib entries
@@ -273,10 +326,19 @@ def extract_pdf(path: str) -> dict:
     if current:
         rejoined.append(current)
     body_raw = "\n".join(rejoined)
+    # Rejoin hard-hyphenated line-breaks in body only ("algo-\nrithm" → "algorithm")
+    body_raw = re.sub(r'-(\n)(\S)', r'\2', body_raw)
 
     if bib_pos >= 0:
         body_part = body_raw
         bib_part  = bib_raw
+        # ── URL repair: fix line-break artefacts inside URLs BEFORE collapsing newlines ──
+        # Case 1: 'bitkom-\nReport.pdf' → 'bitkom-Report.pdf'  (PDF hyphen line-break)
+        bib_part = re.sub(r'([A-Za-z0-9%_\-])-\n\s*([A-Za-z0-9%_\-/])', r'\1\2', bib_part)
+        # Case 2: 'https:\n//domain.com' or 'https: //domain' → 'https://domain.com'
+        bib_part = re.sub(r'(https?):\s*\n?\s*//', r'\1://', bib_part)
+        # Case 3: URL continues on next line without hyphen
+        bib_part = re.sub(r'(https?://\S+)\n\s*([A-Za-z0-9%_\-/\.?=&])', r'\1\2', bib_part)
         # Collapse any newline that is NOT followed by a new [Key] marker
         bib_part = re.sub(r'\n(?!\[)', ' ', bib_part)
         # Re-insert a newline before every [Key] marker (LNI or numeric)

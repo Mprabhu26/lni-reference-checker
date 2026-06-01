@@ -239,9 +239,13 @@ def _assemble_result(
         ai = ai_verdicts_by_key.get(vr.key, {})
         ai_verdict = ai.get("verdict", "SUSPICIOUS")
         status = "verified" if ai_verdict == "REAL" else "not_found" if ai_verdict == "FAKE" else "partial_match"
+        _raw = (bib_dict.get(vr.key) and bib_dict[vr.key].raw_text or "")[:300]
+        # Use vr.title if set; fall back to the parsed bib entry title
+        _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""
         verification_output.append({
             "key": vr.key,
-            "title": vr.title,
+            "title": _vr_title,
+            "raw": _raw,
             "status": status,
             "confidence": round(ai.get("confidence", vr.confidence), 2),
             "matched_title": vr.matched_title,
@@ -270,10 +274,12 @@ def _assemble_result(
     for entry in _bib_to_dicts(bib_list):
         if entry["key"] not in api_keys:
             ai = ai_verdicts_by_key.get(entry["key"], {})
-            ai_verdict = ai.get("verdict", "SUSPICIOUS")
+            # Default to REAL (not SUSPICIOUS) when there's no AI verdict and entry looks OK
+            ai_verdict = ai.get("verdict") or ("REAL" if entry.get("title") else "SUSPICIOUS")
             verification_output.append({
                 "key": entry["key"],
                 "title": entry.get("title") or "",
+                "raw": entry.get("raw") or "",
                 "status": "verified" if ai_verdict == "REAL" else "not_found" if ai_verdict == "FAKE" else "partial_match",
                 "confidence": ai.get("confidence", 0.5),
                 "matched_title": None,
@@ -527,7 +533,7 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                     try:
                         vr = future.result()
                     except Exception as e:
-                        vr = VerificationResult(key=key, title="", status="error",
+                        vr = VerificationResult(key=key, title=bib_dict[key].title or "", status="error",
                             confidence=0.0, note=f"Crashed: {e}", sources_checked=[])
                     api_results_raw.append(vr)
                     done_count += 1
@@ -1228,6 +1234,56 @@ def export_report():
     fname = re.sub(r'[^\w\-.]', '_', data.get("filename", "report")) + "_lni_report.txt"
     return Response(report, mimetype="text/plain",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@app.route("/api/confirm_paper", methods=["POST"])
+def confirm_paper():
+    """Alias for inject_paper — used by the UI's 'Confirm as Real' button."""
+    return inject_paper()
+
+
+@app.route("/api/db_contents", methods=["GET"])
+def db_contents():
+    """
+    Return paginated list of all papers in the local SQLite DB.
+    Query params: limit (default 100), offset (default 0), search (optional).
+    """
+    from local_db import get_all_papers, get_cache_stats
+    limit  = min(int(request.args.get("limit",  100)), 500)
+    offset = int(request.args.get("offset", 0))
+    search = request.args.get("search", "").strip()
+    papers = get_all_papers(limit=limit, offset=offset, search=search)
+    stats  = get_cache_stats()
+    return jsonify({
+        "papers": papers,
+        "total":  stats["total_papers"],
+        "limit":  limit,
+        "offset": offset,
+        "search": search,
+        "by_source": stats.get("by_source", {}),
+        "db_size_kb": stats.get("db_size_kb", 0),
+    })
+
+
+@app.route("/api/db_delete", methods=["POST"])
+def db_delete():
+    """Delete a paper from the local DB by title."""
+    from local_db import delete_paper, get_cache_stats
+    data = request.get_json() or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "Title required", "success": False}), 400
+    try:
+        ok = delete_paper(title)
+        stats = get_cache_stats()
+        return jsonify({
+            "success": ok, 
+            "db_total": stats["total_papers"],
+            "db_size_kb": stats.get("db_size_kb", 0),
+            "message": "Paper deleted successfully" if ok else "Paper not found"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "success": False}), 500
 
 
 if __name__ == "__main__":
