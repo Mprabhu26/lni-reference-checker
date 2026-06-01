@@ -709,7 +709,341 @@ def _search_springer(entry: BibEntry) -> Optional[VerificationResult]:
     return None
 
 
-def _search_google_scholar(entry: BibEntry) -> Optional[VerificationResult]:
+def _search_opengrey(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search OpenGrey for European grey literature (reports, theses, conference proceedings)."""
+    if not entry.title:
+        return None
+    _rate_limit("opengrey.eu", 0.5)
+    try:
+        # OpenGrey simple search
+        query = entry.title
+        if entry.authors:
+            first_author = entry.authors.split(';')[0].split(',')[0].strip()
+            query += f" {first_author}"
+        
+        resp = requests.get(
+            "https://www.opengrey.eu/search/index.php",
+            params={
+                "q": query,
+                "l": "en",
+                "document_type": "",
+                "sm": "all"
+            },
+            timeout=8,
+            headers={"User-Agent": "LNI-Checker/6.3"}
+        )
+        
+        if resp.status_code == 200:
+            # Parse HTML response for results
+            import re as regex_module
+            titles = regex_module.findall(r'<h4[^>]*>([^<]+)</h4>', resp.text)
+            for title in titles[:2]:
+                title_clean = regex_module.sub(r'<[^>]+>', '', title).strip()
+                sim = _title_similarity(entry.title, title_clean)
+                if sim >= 0.65:
+                    return VerificationResult(
+                        key=entry.key, title=entry.title,
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim, matched_title=title_clean,
+                        note=f"Found on OpenGrey (European grey literature, match: {int(sim*100)}%)",
+                        sources_checked=["OpenGrey (grey literature)"],
+                    )
+    except Exception:
+        pass
+    return None
+
+
+def _search_open_library(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search Open Library for books and published works."""
+    if not entry.title:
+        return None
+    _rate_limit("openlibrary.org", 0.5)
+    try:
+        resp = requests.get(
+            "https://openlibrary.org/search.json",
+            params={
+                "title": entry.title,
+                "limit": 5
+            },
+            timeout=8,
+            headers={"User-Agent": "LNI-Checker/6.3"}
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            for doc in data.get("docs", [])[:3]:
+                title = doc.get("title", "")
+                sim = _title_similarity(entry.title, title)
+                if sim >= 0.65:
+                    author = doc.get("author_name", [""])[0] if doc.get("author_name") else ""
+                    year = str(doc.get("first_publish_year", ""))
+                    
+                    return VerificationResult(
+                        key=entry.key, title=entry.title,
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim, matched_title=title,
+                        note=f"Found on Open Library (published book, match: {int(sim*100)}%)",
+                        sources_checked=["Open Library"],
+                        correct_authors=author or None,
+                        corrected_year=year if year != "0" else None,
+                    )
+    except Exception:
+        pass
+    return None
+
+
+def _search_internet_archive(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search Internet Archive for digitized books, texts, and documents."""
+    if not entry.title:
+        return None
+    _rate_limit("archive.org", 0.5)
+    try:
+        resp = requests.get(
+            "https://archive.org/advancedsearch.php",
+            params={
+                "q": f'title:"{entry.title}"',
+                "fl": "identifier,title,creator,date",
+                "output": "json",
+                "rows": 5
+            },
+            timeout=8,
+            headers={"User-Agent": "LNI-Checker/6.3"}
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            for doc in data.get("response", {}).get("docs", [])[:3]:
+                title = doc.get("title", "")
+                sim = _title_similarity(entry.title, title)
+                if sim >= 0.65:
+                    creator = doc.get("creator", [""])[0] if isinstance(doc.get("creator"), list) else doc.get("creator", "")
+                    year = doc.get("date", "")[:4] if doc.get("date") else ""
+                    identifier = doc.get("identifier", "")
+                    url = f"https://archive.org/details/{identifier}" if identifier else None
+                    
+                    return VerificationResult(
+                        key=entry.key, title=entry.title,
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim, matched_title=title,
+                        open_access_url=url,
+                        note=f"Found on Internet Archive (digitized, match: {int(sim*100)}%)",
+                        sources_checked=["Internet Archive"],
+                        correct_authors=creator or None,
+                        corrected_year=year if year else None,
+                    )
+    except Exception:
+        pass
+    return None
+
+
+def _search_dnb(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search Deutsche Nationalbibliothek (German National Library) for German literature."""
+    if not entry.title:
+        return None
+    _rate_limit("dnb.de", 0.5)
+    try:
+        # DNB uses SRU protocol
+        resp = requests.get(
+            "https://services.dnb.de/sru/",
+            params={
+                "version": "1.1",
+                "operation": "searchRetrieve",
+                "query": f'tit="{entry.title}"',
+                "recordSchema": "MARC21-xml",
+                "maximumRecords": 5
+            },
+            timeout=8,
+            headers={"User-Agent": "LNI-Checker/6.3"}
+        )
+        
+        if resp.status_code == 200 and b"numberOfRecords" in resp.content:
+            # Parse response for record count and title
+            import re as regex_module
+            records = regex_module.findall(rb'<datafield tag="245"[^>]*>.*?<subfield[^>]*>([^<]+)</subfield>', resp.content)
+            
+            if records:
+                title_match = records[0].decode('utf-8', errors='ignore')
+                sim = _title_similarity(entry.title, title_match)
+                if sim >= 0.65:
+                    return VerificationResult(
+                        key=entry.key, title=entry.title,
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim, matched_title=title_match,
+                        note=f"Found on Deutsche Nationalbibliothek (German National Library, match: {int(sim*100)}%)",
+                        sources_checked=["Deutsche Nationalbibliothek"],
+                    )
+    except Exception:
+        pass
+    return None
+
+
+def _search_google_books(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search Google Books for published books and book previews."""
+    if not entry.title:
+        return None
+    _rate_limit("googleapis.com", 1.0)
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/books/v1/volumes",
+            params={
+                "q": entry.title,
+                "maxResults": 5,
+                "key": "AIzaSyA7Nk3PJs6VlP1pqBj3S7bpJNMsKWrCUIs"  # Free tier key
+            },
+            timeout=8,
+            headers={"User-Agent": "LNI-Checker/6.3"}
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get("items", [])[:3]:
+                vol_info = item.get("volumeInfo", {})
+                title = vol_info.get("title", "")
+                sim = _title_similarity(entry.title, title)
+                if sim >= 0.65:
+                    authors = "; ".join(vol_info.get("authors", [])[:3]) if vol_info.get("authors") else None
+                    year = vol_info.get("publishedDate", "")[:4] if vol_info.get("publishedDate") else None
+                    preview_url = item.get("volumeInfo", {}).get("previewLink")
+                    
+                    return VerificationResult(
+                        key=entry.key, title=entry.title,
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim, matched_title=title,
+                        open_access_url=preview_url,
+                        note=f"Found on Google Books (match: {int(sim*100)}%)",
+                        sources_checked=["Google Books"],
+                        correct_authors=authors,
+                        corrected_year=year,
+                    )
+    except Exception:
+        pass
+    return None
+
+
+def _search_pubmed(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search PubMed Central for biomedical and life sciences literature."""
+    if not entry.title:
+        return None
+    _rate_limit("ncbi.nlm.nih.gov", 0.5)
+    try:
+        # Search via NCBI E-utils
+        resp = requests.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            params={
+                "db": "pmc",
+                "term": entry.title,
+                "retmax": 5,
+                "rettype": "json"
+            },
+            timeout=8,
+            headers={"User-Agent": "LNI-Checker/6.3", "Email": "reference-checker@research.org"}
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            ids = data.get("esearchresult", {}).get("idlist", [])
+            
+            if ids:
+                # Get details for first result
+                details_resp = requests.get(
+                    "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+                    params={
+                        "db": "pmc",
+                        "id": ids[0],
+                        "rettype": "json"
+                    },
+                    timeout=8,
+                    headers={"User-Agent": "LNI-Checker/6.3"}
+                )
+                
+                if details_resp.status_code == 200:
+                    detail_data = details_resp.json()
+                    doc = detail_data.get("result", {}).get(ids[0], {})
+                    title = doc.get("title", "")
+                    sim = _title_similarity(entry.title, title)
+                    
+                    if sim >= 0.65:
+                        authors = doc.get("authors", [])
+                        author_str = "; ".join([a.get("name", "") for a in authors[:3]]) if authors else None
+                        year = doc.get("epublish_date", doc.get("pdate", ""))[:4] if doc.get("epublish_date") or doc.get("pdate") else None
+                        
+                        return VerificationResult(
+                            key=entry.key, title=entry.title,
+                            status="verified" if sim >= 0.78 else "partial_match",
+                            confidence=sim, matched_title=title,
+                            note=f"Found on PubMed Central (biomedical, match: {int(sim*100)}%)",
+                            sources_checked=["PubMed Central"],
+                            correct_authors=author_str,
+                            corrected_year=year,
+                        )
+    except Exception:
+        pass
+    return None
+
+
+
+    """Search Zenodo for grey literature, reports, and preprints."""
+    if not entry.title:
+        return None
+    _rate_limit("zenodo.org", 0.5)
+    try:
+        # Search Zenodo API
+        query = entry.title
+        if entry.authors:
+            first_author = entry.authors.split(';')[0].split(',')[0].strip()
+            query += f" {first_author}"
+        
+        resp = requests.get(
+            "https://zenodo.org/api/records/",
+            params={
+                "q": query,
+                "size": 5,
+                "sort": "-mostrecent"
+            },
+            timeout=8,
+            headers={"User-Agent": "LNI-Checker/6.3"}
+        )
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            for record in data.get("hits", {}).get("hits", []):
+                title = record.get("metadata", {}).get("title", "")
+                sim = _title_similarity(entry.title, title)
+                if sim >= 0.65:
+                    year = record.get("metadata", {}).get("publication_date", "")[:4]
+                    doi = record.get("metadata", {}).get("doi")
+                    url = record.get("links", {}).get("html") or record.get("links", {}).get("self")
+                    
+                    return VerificationResult(
+                        key=entry.key, title=entry.title, 
+                        status="verified" if sim >= 0.78 else "partial_match",
+                        confidence=sim, matched_title=title,
+                        doi=doi, open_access_url=url,
+                        note=f"Found on Zenodo (grey literature archive, match: {int(sim*100)}%)",
+                        sources_checked=["Zenodo (grey literature)"],
+                        corrected_year=year or None,
+                    )
+    except Exception:
+        pass
+    return None
+
+
+def _search_opengrey(entry: BibEntry) -> Optional[VerificationResult]:
+    """Search OpenGrey for European grey literature (technical reports, etc.)."""
+    if not entry.title:
+        return None
+    _rate_limit("opengrey.eu", 0.5)
+    try:
+        # OpenGrey doesn't have a public API, but we can check if it exists via web search
+        # For now, return None to avoid rate limiting
+        # In future: could implement web scraping or use their search interface
+        pass
+    except Exception:
+        pass
+    return None
+
+
+
     if not entry.title:
         return None
     _rate_limit("scholar.google.com", 2.0)
@@ -824,20 +1158,18 @@ def _verify_website(entry: BibEntry) -> VerificationResult:
                 sources_checked=["url_check"],
             )
         elif resp.status_code in (403, 401):
-            # Access restricted — but for trusted publishers (Bitkom, Flexera, etc.),
-            # this typically means the page requires auth/JS, NOT that it doesn't exist.
-            # Treat as verified grey literature.
+            # Access restricted — we can't confirm it exists
             if is_trusted:
                 return VerificationResult(
-                    key=entry.key, title=title or url, status="verified",
-                    confidence=0.88, open_access_url=url,
-                    note=f"Publisher '{domain}' is trusted (URL access restricted but exists)",
-                    sources_checked=["url_check", "trusted_publisher"],
+                    key=entry.key, title=title or url, status="partial_match",
+                    confidence=0.55, open_access_url=url,
+                    note=f"URL access restricted (HTTP {resp.status_code}) — couldn't be validated",
+                    sources_checked=["url_check"],
                 )
-            # Unknown domain with access restriction — safer to mark as partial
+            # Unknown domain with access restriction
             return VerificationResult(
                 key=entry.key, title=title or url, status="partial_match",
-                confidence=0.5, note=f"URL access restricted (HTTP {resp.status_code})",
+                confidence=0.3, note=f"URL access restricted (HTTP {resp.status_code}) — couldn't be validated",
                 sources_checked=["url_check"],
             )
         elif resp.status_code in (404, 410):
@@ -1053,13 +1385,21 @@ def _run_api_checks(entry: BibEntry) -> VerificationResult:
             except Exception:
                 pass
     
-    # PHASE 2: Title/author search
+    # PHASE 2: Title/author search (academic databases)
     if not any(r.status == "verified" for r in all_results):
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = [executor.submit(_search_crossref, entry), executor.submit(_search_semantic_scholar, entry),
-                       executor.submit(_search_openalex, entry), executor.submit(_search_dblp, entry),
-                       executor.submit(_search_acl, entry), executor.submit(_search_ieee, entry),
-                       executor.submit(_search_core, entry), executor.submit(_search_springer, entry)]
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(_search_crossref, entry), 
+                executor.submit(_search_semantic_scholar, entry),
+                executor.submit(_search_openalex, entry), 
+                executor.submit(_search_dblp, entry),
+                executor.submit(_search_acl, entry), 
+                executor.submit(_search_ieee, entry),
+                executor.submit(_search_core, entry), 
+                executor.submit(_search_springer, entry),
+                executor.submit(_search_pubmed, entry),  # ← NEW: Biomedical
+                executor.submit(_search_open_library, entry),  # ← NEW: Books
+            ]
             for future in as_completed(futures, timeout=10):
                 try:
                     r = future.result()
@@ -1068,13 +1408,22 @@ def _run_api_checks(entry: BibEntry) -> VerificationResult:
                 except Exception:
                     pass
     
-    # PHASE 3: Deep search
+    # PHASE 3: Deep search (including grey literature)
     best_so_far = max(all_results, key=lambda r: r.confidence, default=None) if all_results else None
     if not best_so_far or best_so_far.confidence < 0.6:
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(_search_arxiv_fallback, entry), executor.submit(_search_openreview, entry),
-                       executor.submit(_search_google_scholar, entry), executor.submit(_search_duckduckgo, entry)]
-            for future in as_completed(futures, timeout=12):
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [
+                executor.submit(_search_arxiv_fallback, entry), 
+                executor.submit(_search_openreview, entry),
+                executor.submit(_search_google_scholar, entry), 
+                executor.submit(_search_zenodo, entry),  # ← Grey literature
+                executor.submit(_search_opengrey, entry),  # ← European grey lit
+                executor.submit(_search_internet_archive, entry),  # ← Digitized books
+                executor.submit(_search_dnb, entry),  # ← German National Library
+                executor.submit(_search_google_books, entry),  # ← Published books
+                executor.submit(_search_duckduckgo, entry)
+            ]
+            for future in as_completed(futures, timeout=15):
                 try:
                     r = future.result()
                     if r:
