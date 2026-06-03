@@ -493,21 +493,52 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     # Grey literature: industry/org reports not in academic DBs → SUSPICIOUS, never FAKE
     is_grey, grey_reason = _is_grey_literature(entry)
     api_status_raw = api_result.get("status", "not_checked")
-    if is_grey and api_status_raw in ("not_found", "not_checked", "error", "partial_match"):
+    if is_grey:
+        sources = api_result.get("sources_checked", [])
+        url_confirmed = (
+            api_status_raw == "verified"
+            or "url_check" in sources
+            or "trusted_publisher" in sources
+        )
+        has_url = bool(entry.get("url"))
+        api_confidence = api_result.get("confidence", 0.0)
+
+        if url_confirmed and api_confidence >= 0.60:
+            # URL reachable (or trusted publisher domain confirmed) → REAL
+            return {
+                "verdict": "REAL",
+                "confidence": min(api_confidence + 0.05, 0.92),
+                "composite_risk": 0.10,
+                "risk_factors": [],
+            }
+        if api_status_raw == "verified":
+            # Found in some academic database too
+            return {
+                "verdict": "REAL",
+                "confidence": 0.88,
+                "composite_risk": 0.12,
+                "risk_factors": [],
+            }
+        if has_url and api_status_raw in ("partial_match",):
+            # URL present + partial evidence (e.g. trusted domain 404) → lean REAL
+            return {
+                "verdict": "REAL",
+                "confidence": 0.72,
+                "composite_risk": 0.28,
+                "risk_factors": [
+                    f"Grey/industry literature ({grey_reason}) — URL present but could not be fully verified. "
+                    "Recommend checking the link manually."
+                ],
+            }
+        # No URL and not found anywhere → SUSPICIOUS (manual review needed)
         return {
             "verdict": "SUSPICIOUS",
             "confidence": 0.55,
             "composite_risk": 0.55,
             "risk_factors": [
-                f"Grey/industry literature ({grey_reason}) — not indexed in academic databases. Verify URL manually."
+                f"Grey/industry literature ({grey_reason}) — not indexed in academic databases. "
+                "Verify URL manually."
             ],
-        }
-    if is_grey and api_status_raw == "verified":
-        return {
-            "verdict": "REAL",
-            "confidence": 0.88,
-            "composite_risk": 0.12,
-            "risk_factors": [],
         }
 
     signals = []
@@ -663,9 +694,11 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
     correct_authors = (api_result.get("correct_authors") or
                        api_result.get("corrected_authors") or "").strip()
     if not cited_authors or not correct_authors:
-        if api_status == "verified" and confidence >= 0.82:
+        # Only short-circuit as REAL when database verification is solid AND
+        # we have at least one concrete artifact (DOI or OA URL) to anchor the claim.
+        if api_status == "verified" and confidence >= 0.82 and (has_doi or has_oa_url):
             return {"verdict": "REAL", "confidence": confidence,
-                    "reasoning": f"Verified in database — no author data to cross-check",
+                    "reasoning": "Verified in database with DOI/URL — no author data to cross-check",
                     "risk_factors": []}
         return None
     
@@ -781,6 +814,16 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 composite["reasoning"] = f"Venue is whitelisted ({whitelist_check.get('venue')})"
             
             if composite["verdict"] != "SUSPICIOUS" and composite["confidence"] >= 0.75:
+                # Extra guard: don't auto-REAL when the database found nothing and we have
+                # no concrete artefact (DOI / OA URL) to back the claim.
+                vr_status = vr.get("status", "not_checked")
+                vr_doi = vr.get("doi") or vr.get("open_access_url")
+                if (composite["verdict"] == "REAL"
+                        and vr_status in ("not_found", "error", "not_checked")
+                        and not vr_doi):
+                    # Downgrade to SUSPICIOUS so the LLM / AI layer gets a look
+                    needs_ai.append((entry, vr, title_sim, composite))
+                    continue
                 pre_screen_cache[entry["key"]] = {
                     "verdict": composite["verdict"],
                     "confidence": composite["confidence"],
