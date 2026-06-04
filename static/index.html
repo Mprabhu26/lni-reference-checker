@@ -353,7 +353,7 @@ input:checked + .toggle-slider:before { transform: translateX(18px); }
     <div class="content" id="tab-xcheck"><div id="xcheckContent"></div></div>
     <div class="content" id="tab-verify"><div id="verifyContent"></div></div>
     <div class="content" id="tab-score"><div id="scoreContent"></div></div>
-    <div class="content" id="tab-db"><div id="dbContent"></div></div>
+    <div class="content" id="tab-db"><div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 14px 0;border-bottom:1px solid var(--border);margin-bottom:14px;"><span style="font-size:13px;font-weight:700;color:var(--primary);">🗄 Local Verified Papers Database</span><button onclick="closeDbTab()" title="Close database panel" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-muted);" onmouseover="this.style.borderColor='var(--error)';this.style.color='var(--error)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">✕ Close</button></div><div id="dbContent"></div></div>
   </div>
 </div>
 </div>
@@ -436,6 +436,18 @@ function openDbTab() {
   document.getElementById('tabsWrap').scrollIntoView({behavior:'smooth'});
 }
 
+function closeDbTab() {
+  if (result) {
+    // Results exist — switch back to score tab, keep tabs visible
+    switchTab("score", document.querySelector(".tab-btn:nth-child(4)"));
+  } else {
+    // No results — hide the entire tab bar completely
+    document.getElementById("tabsWrap").classList.remove("show");
+    document.querySelectorAll(".content").forEach(c => c.classList.remove("active"));
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  }
+}
+
 function startOver() {
   result = null;
   mainFile = null;
@@ -447,6 +459,8 @@ function startOver() {
   if (fileChip) fileChip.style.display = 'none';
   const bibUpload = document.getElementById('bibUpload');
   if (bibUpload) bibUpload.style.display = 'none';
+  // Show the upload zone again
+  document.getElementById('dropZone').style.display = '';
   document.getElementById('runBtn').disabled = true;
   document.getElementById('startOverBtn').style.display = 'none';
   document.getElementById('btnExport').disabled = true;
@@ -827,6 +841,34 @@ function renderVerifyTab(data) {
   document.getElementById('verifyContent').innerHTML = html;
 }
 
+function friendlyApiNote(note, sources) {
+  if (!note) return '';
+  let friendly = note;
+  // Inline source names where note says "2 independent sources" etc. without naming them
+  if (sources && sources.length > 0 && friendly.includes('independent sources')) {
+    const sourceNames = sources
+      .filter(s => !['url_check','content_title_match','local_db'].includes(s))
+      .join(', ');
+    if (sourceNames) {
+      friendly = friendly.replace(
+        /Confirmed by (\d+) independent sources\./,
+        `Confirmed by $1 independent sources (${ sourceNames }).`
+      );
+    }
+  }
+  // Explain url_check in plain language
+  if (sources && sources.includes('url_check')) {
+    friendly = friendly.replace(/url_check/g, 'URL check');
+    if (!friendly.startsWith('The URL')) {
+      friendly = 'The referenced URL was fetched directly: ' + friendly;
+    }
+  }
+  if (sources && sources.includes('content_title_match')) {
+    friendly = friendly + ' The page title was compared against the cited title to confirm it leads to the correct source.';
+  }
+  return friendly;
+}
+
 function verifyCard(v) {
   const verdict = v.ai_verdict || 'SUSPICIOUS';
   const conf = Math.round((v.confidence || 0) * 100);
@@ -848,23 +890,65 @@ function verifyCard(v) {
   }
   const links = [];
   if (v.doi) links.push(`<a href="https://doi.org/${escapeHtml(v.doi)}" target="_blank" class="resource-link">🔗 DOI</a>`);
-  if (v.open_access_url) links.push(`<a href="${escapeHtml(v.open_access_url)}" target="_blank" class="resource-link">📄 Open Access PDF</a>`);
+  if (v.open_access_url) links.push(`<a href="${escapeHtml(v.open_access_url)}" target="_blank" class="resource-link">🌐 Open Source ↗</a>`);
   if (v.matched_title && v.matched_title !== v.title) { const q = encodeURIComponent(v.matched_title); links.push(`<a href="https://scholar.google.com/scholar?q=${q}" target="_blank" class="resource-link" style="background:var(--surface-secondary);">📖 Matched: "${escapeHtml(v.matched_title.slice(0,50))}"</a>`); }
 
+  // Determine primary launch URL for REAL sources
+  const launchUrl = v.open_access_url || (v.doi ? `https://doi.org/${v.doi}` : null);
+  const launchBtn = (verdict === 'REAL' && launchUrl)
+    ? `<a href="${escapeHtml(launchUrl)}" target="_blank" rel="noopener"
+         onclick="event.stopPropagation()"
+         style="display:inline-flex;align-items:center;gap:4px;padding:4px 11px;background:var(--primary);color:white;border-radius:var(--radius-sm);font-size:11px;font-weight:600;text-decoration:none;flex-shrink:0;transition:background 0.15s;"
+         onmouseover="this.style.background='var(--primary-dark)'" onmouseout="this.style.background='var(--primary)'">
+         🔗 Open Source ↗
+       </a>`
+    : '';
+
+  const apiNoteText = friendlyApiNote(v.api_note, v.sources_checked);
+
   return `<div class="entry-card" data-key="${escapeHtml(v.key)}" data-title="${escapeHtml(v.title||'')}">
-    <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')">
+    <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')" style="cursor:pointer;">
       <span class="entry-key">${escapeHtml(v.key)}</span>
       <div class="entry-meta">
         <div class="entry-title">${escapeHtml(v.title || '(no title)')}</div>
-        <div class="entry-badges"><span class="badge ${badgeCls}">${badgeLabel}</span><span class="conf-pill ${confCls}" title="${escapeHtml(confTip)}">${confLabel}</span></div>
+        <div class="entry-badges">
+          <span class="badge ${badgeCls}">${badgeLabel}</span>
+          <span class="conf-pill ${confCls}" title="${escapeHtml(confTip)}">${confLabel}</span>
+          ${(()=>{
+            if (!v.matched_title || v.matched_title === v.title) return '';
+            const cN = (v.title||'').toLowerCase().trim();
+            const fN = v.matched_title.toLowerCase().trim();
+            if (cN === fN) return '<span class="conf-pill med" style="background:#eef9ff;color:#0e6f9e;border-color:#bae6fd;cursor:help;" title="Titles are identical except for capitalisation — not an error. LNI uses sentence case.">ℹ Case difference</span>';
+            if (cN.replace(/[^a-z0-9]/g,'') === fN.replace(/[^a-z0-9]/g,'')) return '<span class="conf-pill med" style="cursor:help;" title="Titles match except for punctuation or spacing — likely the same publication.">⚠ Minor difference</span>';
+            return '<span class="conf-pill low" style="cursor:help;" title="The cited title and the database title differ in wording — confirm it is the correct publication.">⚠ Title differs</span>';
+          })()}
+        </div>
       </div>
+      ${launchBtn}
     </div>
     <div class="entry-detail">
       <div class="entry-detail-inner">
+        ${apiNoteText ? `<div class="detail-section"><div class="detail-title">🔍 Verification Detail</div><div class="explanation-box" style="border-left-color:${verdict==='REAL'?'var(--success)':verdict==='FAKE'?'var(--error)':'var(--warning)'};">${escapeHtml(apiNoteText)}</div></div>` : ''}
+        ${(()=>{
+          if (!v.matched_title || v.matched_title === v.title) return '';
+          const citedN = (v.title||'').toLowerCase().trim();
+          const foundN = v.matched_title.toLowerCase().trim();
+          const isCaseOnly = citedN === foundN;
+          const isMinorDiff = !isCaseOnly && citedN.replace(/[^a-z0-9]/g,'') === foundN.replace(/[^a-z0-9]/g,'');
+          let flag = '';
+          if (isCaseOnly) {
+            flag = `<div class="issue-item info" style="margin-top:6px;">ℹ <strong>Capitalisation difference only</strong> — The cited and database titles are identical except for upper/lower case. This is not an error; LNI style requires sentence case for most titles.</div>`;
+          } else if (isMinorDiff) {
+            flag = `<div class="issue-item warn" style="margin-top:6px;">⚠ <strong>Minor punctuation / spacing difference</strong> — The titles match when punctuation is removed. Likely the same publication; verify it is correct.</div>`;
+          } else {
+            flag = `<div class="issue-item warn" style="margin-top:6px;">⚠ <strong>Title wording differs</strong> — The titles are similar but not identical. Confirm this is the correct publication.</div>`;
+          }
+          return `<div class="detail-section"><div class="detail-title">📌 Database Match</div><div class="explanation-box" style="border-left-color:var(--primary);"><strong>Cited as:</strong> ${escapeHtml(v.title||'')}<br><strong>Found as:</strong> ${escapeHtml(v.matched_title)}</div>${flag}</div>`;
+        })()}
         ${v.ai_reasoning ? `<div class="detail-section"><div class="detail-title">🤖 AI Reasoning</div><div class="explanation-box">${escapeHtml(v.ai_reasoning)}</div></div>` : ''}
         ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-title">⚠ Red Flags</div><ul class="risk-list">${v.ai_risk_factors.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
         ${links.length ? `<div class="detail-section"><div class="detail-title">🔗 Links & Resources</div><div class="sources-row">${links.join('')}</div></div>` : ''}
-        ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s=>`<span class="source-chip">${escapeHtml(s)}</span>`).join('')}</div></div>` : ''}
+        ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s => { const label = s === 'url_check' ? 'URL Check (direct fetch)' : s === 'content_title_match' ? 'Title Match (page content)' : s; return `<span class="source-chip" title="${s === 'url_check' ? 'The cited URL was fetched and the page title was compared to the cited title' : s === 'content_title_match' ? 'The page content title matched the cited title' : ''}">${escapeHtml(label)}</span>`; }).join('')}</div></div>` : ''}
         ${verdict === 'FAKE' || verdict === 'SUSPICIOUS' ? `<div class="detail-section"><div class="detail-title">➕ Add to Verified Database</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, you can save it to the local database so it won't be flagged again.</div><button onclick="saveToDb(${JSON.stringify(escapeHtml(v.title||''))}, ${JSON.stringify(escapeHtml(v.ai_reasoning||''))}, '${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;">✓ Confirm as Real — Save to DB</button></div>` : ''}
         ${v.raw ? `<div class="detail-section"><div class="detail-title">📄 Raw Entry</div><div class="explanation-box" style="font-family:JetBrains Mono,monospace;font-size:11px;">${escapeHtml(v.raw)}</div></div>` : ''}
       </div>

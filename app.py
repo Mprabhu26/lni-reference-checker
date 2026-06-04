@@ -113,9 +113,9 @@ def status():
     llm_stats = get_llm_cache_stats()
     
     # Check API availability
-    groq_available = bool(os.environ.get("GROQ_API_KEY"))
-    gemini_available = bool(os.environ.get("GEMINI_API_KEY"))
-    semantic_available = bool(os.environ.get("SEMANTIC_SCHOLAR_API_KEY"))
+    groq_available = bool(os.environ.get("AI_API_KEY"))
+    gemini_available = bool(os.environ.get("AI_API_KEY_GEMINI", ""))
+    semantic_available = False  # removed
     
     return jsonify({
         "status": "ok",
@@ -130,7 +130,7 @@ def status():
         "apis": {
             "groq": groq_available,
             "gemini": gemini_available,
-            "semantic_scholar": semantic_available,
+            "semantic_scholar": False,
             "github": bool(os.environ.get("GITHUB_TOKEN")),
             "unpaywall": bool(os.environ.get("UNPAYWALL_EMAIL")),
         },
@@ -252,6 +252,7 @@ def _assemble_result(
             "doi": vr.doi or ai.get("open_access_url"),
             "open_access_url": ai.get("open_access_url") or vr.open_access_url,
             "note": vr.note,
+            "api_note": vr.note,   # exposed as api_note for frontend transparency
             "sources_checked": vr.sources_checked,
             "web_evidence": vr.web_evidence,
             "ai_verdict": ai_verdict,
@@ -286,7 +287,7 @@ def _assemble_result(
                 "doi": entry.get("doi"),
                 "open_access_url": ai.get("open_access_url") or entry.get("url"),
                 "note": ai.get("reasoning", ""),
-                "sources_checked": [],
+                "api_note": ai.get("reasoning", ""),
                 "web_evidence": None,
                 "ai_verdict": ai_verdict,
                 "ai_reasoning": ai.get("reasoning", ""),
@@ -852,8 +853,8 @@ SELF-CITATIONS: {chr(10).join(f"  [{s_['key']}] {s_['matched_author']}" for s_ i
 
 Return JSON with verdict and reasoning."""
 
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    groq_key = os.environ.get("AI_API_KEY", "")
+    gemini_key = os.environ.get("AI_API_KEY_GEMINI", "")
     ai_text = ai_source = None
 
     if groq_key:
@@ -884,7 +885,7 @@ Return JSON with verdict and reasoning."""
             pass
 
     if not ai_text:
-        missing = [k for k, v in [("GROQ_API_KEY", groq_key), ("GEMINI_API_KEY", gemini_key)] if not v]
+        missing = [k for k, v in [("AI_API_KEY", groq_key)] if not v]
         if missing:
             return jsonify({"error": f"Set {' or '.join(missing)} as env vars.",
                              "hint": "Groq: console.groq.com | Gemini: aistudio.google.com"}), 503

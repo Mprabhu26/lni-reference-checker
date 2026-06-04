@@ -82,7 +82,7 @@ def _call_llm_for_verification(prompt: str) -> dict:
         
         import requests
         
-        groq_key = os.environ.get("GROQ_API_KEY", "")
+        groq_key = os.environ.get("AI_API_KEY", "")
         if groq_key:
             try:
                 resp = requests.post(
@@ -108,7 +108,7 @@ def _call_llm_for_verification(prompt: str) -> dict:
                 print(f"Groq fallback failed: {groq_err}")
         
         # Fallback to Gemini
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        gemini_key = os.environ.get("AI_API_KEY_GEMINI", "")
         if gemini_key:
             try:
                 resp = requests.post(

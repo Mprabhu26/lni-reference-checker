@@ -405,7 +405,7 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
         return None
     _rate_limit("api.semanticscholar.org", 0.2)
     try:
-        api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+        api_key = ""
         headers = {"User-Agent": "LNI-Checker/6.2"}
         if api_key:
             headers["x-api-key"] = api_key
@@ -1307,13 +1307,31 @@ def _search_duckduckgo(entry: BibEntry) -> Optional[VerificationResult]:
     return None
 
 
+def _extract_page_title(html_content: str) -> Optional[str]:
+    """Extract the <title> tag text from an HTML page."""
+    m = re.search(r'<title[^>]*>([^<]{3,200})</title>', html_content, re.IGNORECASE | re.DOTALL)
+    if m:
+        return re.sub(r'\s+', ' ', m.group(1)).strip()
+    # Try og:title as fallback
+    m2 = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']{3,200})["\']', html_content, re.IGNORECASE)
+    if m2:
+        return re.sub(r'\s+', ' ', m2.group(1)).strip()
+    return None
+
+
 def _verify_website(entry: BibEntry) -> VerificationResult:
-    """Verify a website/grey-literature reference by checking URL reachability."""
+    """
+    Verify a website/grey-literature reference.
+    Steps:
+      1. Fetch the URL (GET, not just HEAD) so we can read page content.
+      2. Extract the page <title> and check similarity to the cited title.
+      3. Give transparent note explaining exactly what was and wasn't validated.
+    """
     url = entry.url or ""
     title = entry.title or ""
-    
+
     if not url:
-        # No URL but we have a title — try to classify as grey literature by title/publisher
+        # No URL — classify by publisher/title keywords
         if entry.publisher or title:
             grey_indicators = [
                 "bitkom", "flexera", "gartner", "forrester", "statista", "idc",
@@ -1324,26 +1342,27 @@ def _verify_website(entry: BibEntry) -> VerificationResult:
             if any(g in combined for g in grey_indicators):
                 return VerificationResult(
                     key=entry.key, title=title or "(grey literature)",
-                    status="partial_match", confidence=0.6,
-                    note="Grey literature source — no URL to verify. Recommend manual check.",
+                    status="partial_match", confidence=0.55,
+                    note=(
+                        "Grey/industry literature — no URL provided in citation. "
+                        "Content not verified. Recommend adding URL and checking manually."
+                    ),
                     sources_checked=["grey_lit_classification"],
                 )
         return VerificationResult(
             key=entry.key, title=title or "(website)", status="error",
-            confidence=0.0, note="No URL provided for website",
+            confidence=0.0, note="No URL provided — cannot verify this reference.",
             sources_checked=[],
         )
-    
+
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    
-    # Extract domain for rate limiting
+
     try:
         domain = url.split("/")[2]
     except IndexError:
         domain = url
-    
-    # Known trustworthy grey-literature domains — give high confidence even without live check
+
     trusted_grey_domains = {
         "bitkom.org", "flexera.com", "info.flexera.com", "gartner.com",
         "forrester.com", "mckinsey.com", "deloitte.com", "statista.com",
@@ -1351,86 +1370,163 @@ def _verify_website(entry: BibEntry) -> VerificationResult:
         "bsi.bund.de", "ec.europa.eu", "nist.gov", "basecamp.com",
     }
     is_trusted = any(td in domain for td in trusted_grey_domains)
-    
+
     try:
         _rate_limit(domain, 0.5)
-        # Try HEAD first (faster), fallback to GET
+        # Fetch full page content (capped at 64KB) so we can read the title
+        page_text = None
+        page_title = None
+        resp = None
         try:
-            resp = requests.head(url, timeout=8, allow_redirects=True,
-                                  headers={"User-Agent": "Mozilla/5.0 (LNI Reference Checker)"})
-        except Exception:
-            resp = None
-        
-        if resp is None or resp.status_code in (405, 403, 401):
-            # HEAD not allowed — try GET with a range request
-            resp = requests.get(url, timeout=10, allow_redirects=True, stream=True,
-                                 headers={"User-Agent": "Mozilla/5.0 (LNI Reference Checker)",
-                                          "Range": "bytes=0-1023"})
-        
-        if resp.status_code < 400:
-            return VerificationResult(
-                key=entry.key, title=title or url, status="verified",
-                confidence=0.92, open_access_url=url,
-                note=f"URL reachable (HTTP {resp.status_code})",
-                sources_checked=["url_check"],
+            resp = requests.get(
+                url, timeout=12, allow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 (LNI Reference Checker)"},
+                stream=True,
             )
-        elif resp.status_code in (403, 401):
-            # Access restricted — we can't confirm it exists
+            if resp.status_code < 400:
+                # Read first 64KB — enough for <title> and meta tags
+                raw_bytes = b""
+                for chunk in resp.iter_content(chunk_size=8192):
+                    raw_bytes += chunk
+                    if len(raw_bytes) >= 65536:
+                        break
+                page_text = raw_bytes.decode("utf-8", errors="replace")
+                page_title = _extract_page_title(page_text)
+        except Exception:
+            pass
+
+        if resp is not None and resp.status_code < 400:
+            # We got a live page — now check if the title matches
+            if page_title and title:
+                sim = _title_similarity(title, page_title)
+                if sim >= 0.55:
+                    return VerificationResult(
+                        key=entry.key, title=title, status="verified",
+                        confidence=round(0.75 + sim * 0.20, 2),
+                        open_access_url=url,
+                        note=(
+                            f"URL reachable (HTTP {resp.status_code}) and page title matches "
+                            f"cited title ({int(sim*100)}% similarity). "
+                            f"Page title: \"{page_title[:100]}\""
+                        ),
+                        sources_checked=["url_check", "content_title_match"],
+                    )
+                else:
+                    # Page exists but title doesn't match well — suspicious redirect or wrong URL
+                    return VerificationResult(
+                        key=entry.key, title=title, status="partial_match",
+                        confidence=0.45,
+                        open_access_url=url,
+                        note=(
+                            f"URL reachable (HTTP {resp.status_code}) but page title does NOT match "
+                            f"cited title (only {int(sim*100)}% similarity). "
+                            f"Page title found: \"{page_title[:100]}\". "
+                            "Possible wrong URL, paywall redirect, or changed content. Manual check required."
+                        ),
+                        sources_checked=["url_check"],
+                    )
+            else:
+                # Page reachable but couldn't extract a title to verify against
+                # (e.g. PDF, paywalled, or no <title> tag)
+                content_type = (resp.headers.get("content-type", "") or "").lower()
+                is_pdf = "pdf" in content_type or url.lower().endswith(".pdf")
+                if is_pdf and title:
+                    reason = "URL points to a PDF — title content not verifiable from headers alone."
+                elif not page_title:
+                    reason = "URL reachable but page title could not be extracted (may be paywalled or dynamically rendered)."
+                else:
+                    reason = f"URL reachable (HTTP {resp.status_code}) but no cited title to compare against."
+
+                confidence = 0.70 if is_trusted else 0.55
+                return VerificationResult(
+                    key=entry.key, title=title or url, status="partial_match",
+                    confidence=confidence, open_access_url=url,
+                    note=(
+                        f"URL reachable (HTTP {resp.status_code}). {reason} "
+                        "Reference content not fully verified — manual check recommended."
+                    ),
+                    sources_checked=["url_check"],
+                )
+        elif resp is not None and resp.status_code in (403, 401):
+            # Access restricted — cannot read content to verify title
             if is_trusted:
                 return VerificationResult(
                     key=entry.key, title=title or url, status="partial_match",
                     confidence=0.55, open_access_url=url,
-                    note=f"URL access restricted (HTTP {resp.status_code}) — couldn't be validated",
+                    note=(
+                        f"URL access restricted (HTTP {resp.status_code}). "
+                        f"Domain '{domain}' is a known publisher, so the reference likely exists, "
+                        "but title content could NOT be verified. Manual check required."
+                    ),
                     sources_checked=["url_check"],
                 )
-            # Unknown domain with access restriction
             return VerificationResult(
                 key=entry.key, title=title or url, status="partial_match",
-                confidence=0.3, note=f"URL access restricted (HTTP {resp.status_code}) — couldn't be validated",
+                confidence=0.3,
+                note=(
+                    f"URL access restricted (HTTP {resp.status_code}). "
+                    "Cannot confirm whether this content exists or matches the cited title."
+                ),
                 sources_checked=["url_check"],
             )
-        elif resp.status_code in (404, 410):
-            note = f"URL not found (HTTP {resp.status_code}) — may have moved or expired"
-            # For trusted domains, still give partial credit — report may have moved
+        elif resp is not None and resp.status_code in (404, 410):
+            note = f"URL returned HTTP {resp.status_code} (not found / gone)"
             if is_trusted:
                 return VerificationResult(
                     key=entry.key, title=title or url, status="partial_match",
-                    confidence=0.65, note=note + f" (trusted publisher: {domain})",
+                    confidence=0.45,
+                    note=(
+                        note + f". Domain '{domain}' is a known publisher — "
+                        "the report likely exists but the URL may have changed. "
+                        "Please check the publisher's website manually."
+                    ),
                     sources_checked=["url_check", "trusted_publisher"],
                 )
             return VerificationResult(
                 key=entry.key, title=title or url, status="not_found",
-                confidence=0.1, note=note, sources_checked=["url_check"],
+                confidence=0.1,
+                note=note + ". The URL no longer resolves — reference cannot be verified.",
+                sources_checked=["url_check"],
             )
         else:
-            confidence = 0.6 if is_trusted else 0.2
+            confidence = 0.5 if is_trusted else 0.2
             return VerificationResult(
                 key=entry.key, title=title or url, status="partial_match",
                 confidence=confidence,
-                note=f"URL returned HTTP {resp.status_code}",
+                note=(
+                    f"URL returned HTTP {resp.status_code if resp is not None else 'N/A'}. "
+                    "Reference content could not be retrieved or verified."
+                ),
                 sources_checked=["url_check"],
             )
     except requests.exceptions.SSLError:
-        # SSL errors on known domains still indicate the domain exists
-        confidence = 0.65 if is_trusted else 0.3
+        confidence = 0.55 if is_trusted else 0.25
         return VerificationResult(
             key=entry.key, title=title or url, status="partial_match",
             confidence=confidence, open_access_url=url,
-            note="URL has SSL issue but domain is reachable",
+            note=(
+                "URL has an SSL/TLS certificate error — content could not be retrieved. "
+                f"{'Domain is a known publisher, so reference may still be valid.' if is_trusted else 'Cannot verify reference.'} "
+                "Manual check required."
+            ),
             sources_checked=["url_check"],
         )
     except Exception as e:
-        # Network error — for trusted publishers, give benefit of the doubt
         if is_trusted:
             return VerificationResult(
                 key=entry.key, title=title or url, status="partial_match",
-                confidence=0.65, open_access_url=url,
-                note=f"URL check failed (network error) but publisher '{domain}' is trusted",
+                confidence=0.50, open_access_url=url,
+                note=(
+                    f"URL check failed (network error: {str(e)[:80]}). "
+                    f"Domain '{domain}' is a known publisher — reference may still exist. "
+                    "Manual check required."
+                ),
                 sources_checked=["url_check", "trusted_publisher"],
             )
         return VerificationResult(
             key=entry.key, title=title or url, status="error",
-            confidence=0.0, note=f"URL check failed: {str(e)[:100]}",
+            confidence=0.0,
+            note=f"URL check failed — could not connect to '{domain}': {str(e)[:80]}",
             sources_checked=["url_check"],
         )
 
@@ -1493,7 +1589,18 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     # Route website entries and any entry that has a URL (grey literature)
     # to the URL-based verifier. Also run API checks in parallel for academic sources.
     if entry.entry_type == "website":
-        return _verify_website(entry)
+        result = _verify_website(entry)
+        if result.status in ("verified", "partial_match") and result.confidence >= 0.7:
+            try:
+                save_to_cache(
+                    title=entry.title or "", authors=entry.authors or "",
+                    year=entry.year or "", doi=entry.doi or "",
+                    url=result.open_access_url or entry.url or "",
+                    source="url_check", confidence=result.confidence,
+                )
+            except Exception:
+                pass
+        return result
     
     # For non-website entries that have a URL, run URL check in parallel with APIs
     has_url = bool(entry.url)
@@ -1514,7 +1621,18 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     cached = _get_cached(entry)
     if cached:
         result = copy.copy(cached)
-        result.note = (result.note or "") + " [cached]"
+        result.note = result.note or ""
+        # Also persist to local_db if this is a verified result not yet there
+        if result.status == "verified" and result.confidence >= 0.7:
+            try:
+                save_to_cache(
+                    title=entry.title or "", authors=entry.authors or "",
+                    year=entry.year or "", doi=result.doi or "",
+                    url=result.open_access_url or entry.url or "",
+                    source="api_verified", confidence=result.confidence,
+                )
+            except Exception:
+                pass
         return result
     
     # STEP 3: Check professor review decisions (manual override)

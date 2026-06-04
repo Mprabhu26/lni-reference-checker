@@ -52,8 +52,8 @@ def get_llm_cache_stats() -> dict:
 def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
     """Call AI backend with automatic retry + exponential backoff."""
     import time
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    groq_key = os.environ.get("AI_API_KEY", "")
+    gemini_key = os.environ.get("AI_API_KEY_GEMINI", "")
     model_tag = f"groq:{GROQ_MODEL}" if groq_key else "gemini:1.5-flash"
     cached = _llm_cache_get(model_tag, system, prompt)
     if cached is not None:
@@ -110,9 +110,8 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
             return result
         if attempt < MAX_RETRIES:
             time.sleep(1.5 ** attempt)
-    missing = [k for k, v in [("GROQ_API_KEY", groq_key), ("GEMINI_API_KEY", gemini_key)] if not v]
-    raise RuntimeError(f"No AI API key configured. Set {' or '.join(missing)}. "
-                       "Groq: console.groq.com (free) | Gemini: aistudio.google.com (free)")
+    missing = [k for k, v in [("AI_API_KEY", groq_key), ("AI_API_KEY_GEMINI", gemini_key)] if not v]
+    raise RuntimeError("No AI API key configured. Set AI_API_KEY in your .env file. ")
 
 
 def _call_ai_json(prompt: str, max_tokens: int = 2000, system: str = "") -> dict:
@@ -143,7 +142,7 @@ def _chunk(lst: list, size: int) -> list:
 
 
 def _ai_available() -> bool:
-    return bool(os.environ.get("GROQ_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+    return bool(os.environ.get("AI_API_KEY"))
 
 
 # ---------------------------------------------------------------------------
@@ -422,19 +421,19 @@ def _check_conference_plausibility(booktitle: str) -> tuple:
 def _get_user_friendly_message(status: str, details: str = "") -> str:
     """Convert technical status to user-friendly message."""
     if status == "verified":
-        return "Found in academic database"
+        return "Title match confirmed in academic database"
     elif status == "partial_match":
-        return "Partial match found - verify manually"
+        return "Partial/approximate match found — review the matched title"
     elif status == "not_found":
-        return "Not found in any database"
+        return "Not found in any searched database"
     elif status == "error":
-        return "Could not complete verification"
+        return "Verification could not complete (network/API error)"
     elif status == "retracted":
-        return "⚠️ PAPER HAS BEEN RETRACTED"
+        return "⚠️ PAPER HAS BEEN RETRACTED — do not cite"
     elif "DOI" in details:
-        return "DOI format issue - check the DOI"
+        return "DOI format issue — check the DOI value"
     elif "year" in details.lower():
-        return "Year seems incorrect"
+        return "Year appears incorrect or implausible"
     else:
         return "Verification attempted"
 
@@ -509,7 +508,10 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
                 "verdict": "REAL",
                 "confidence": min(api_confidence + 0.05, 0.92),
                 "composite_risk": 0.10,
-                "risk_factors": [],
+                "risk_factors": [
+                    f"Grey/industry literature ({grey_reason}). "
+                    "URL was checked and content verified. Not indexed in academic databases — this is normal for this source type."
+                ],
             }
         if api_status_raw == "verified":
             # Found in some academic database too
@@ -536,8 +538,10 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             "confidence": 0.55,
             "composite_risk": 0.55,
             "risk_factors": [
-                f"Grey/industry literature ({grey_reason}) — not indexed in academic databases. "
-                "Verify URL manually."
+                f"Grey/industry literature ({grey_reason}). "
+                "Not indexed in academic databases (expected for this source type) "
+                "and no URL provided in the citation to verify against. "
+                "Please add a URL or manually confirm the source exists."
             ],
         }
 
