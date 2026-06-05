@@ -122,11 +122,18 @@ def parse_bibliography(bib_text: str) -> list:
         raw = re.sub(r'\s+', ' ', raw_body).strip()
         if not raw:
             continue
-        entry = BibEntry(key=key, raw_text=raw)
-        _classify_and_parse(entry, raw)
-        _check_completeness(entry)
-        _validate_key_vs_metadata(entry)
-        entries.append(entry)
+
+        # Handle compound numeric keys like "1,2" or "1, 2" — split into
+        # individual entries that each share the same raw body text.
+        sub_keys = [k.strip() for k in key.split(',') if k.strip()] \
+            if ',' in key else [key]
+
+        for sub_key in sub_keys:
+            entry = BibEntry(key=sub_key, raw_text=raw)
+            _classify_and_parse(entry, raw)
+            _check_completeness(entry)
+            _validate_key_vs_metadata(entry)
+            entries.append(entry)
 
     return entries
 
@@ -213,9 +220,18 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     # journal-like words (e.g. "Informatik", "Jg.") that would falsely trigger
     # the article branch. "In: Proceedings" is an unambiguous proceedings signal
     # and must take priority over any journal name hints.
-    if _PROCEEDINGS_WORDS.search(raw):
+    # A volume marker (Vol./Jg./Nr.) is a strong article signal — it overrides
+    # the bare 'In:' proceedings heuristic (which also fires for 'In: Nature, Vol.').
+    # Exception: explicit conference/proceedings words always win.
+    _has_volume = bool(re.search(r'(?:Jg\.|Vol\.|Nr\.|Band)\s*\d', raw, re.IGNORECASE))
+    _has_explicit_conf = bool(re.search(
+        r'\bProc\.|\bProceedings\b|\bConference\b|\bWorkshop\b|\bSymposium\b'
+        r'|\bTagung\b|\bKonferenz\b|\bHrsg\b|\bEds?\.\B',
+        raw, re.IGNORECASE))
+
+    if _PROCEEDINGS_WORDS.search(raw) and (_has_explicit_conf or not _has_volume):
         entry.entry_type = "proceedings"
-    elif _JOURNAL_WORDS.search(raw) or _JOURNAL_NAME_HINTS.search(raw):
+    elif _JOURNAL_WORDS.search(raw) or _JOURNAL_NAME_HINTS.search(raw) or _has_volume:
         entry.entry_type = "article"
     elif _PUBLISHER_WORDS.search(raw):
         entry.entry_type = "book"
@@ -259,8 +275,16 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         entry.year = year_match.group(0)
 
     # ── Pages ─────────────────────────────────────────────────────────────────
+    # Matches: digit ranges (S. 12--34), roman numeral ranges (S. xiii–xxiii),
+    # and single page numbers (S. 292) — all valid LNI page field values.
+    _roman = r'[ivxlcdmIVXLCDM]+'
     pages_match = re.search(
-        r'(?:S\.|pp?\.)\s*(\d+\s*[-–—]{1,2}\s*\d+)',
+        r'(?:S\.|pp?\.)\s*'
+        r'((?:\d+\s*[-–—]{{1,2}}\s*\d+|'   # digit range: 12--34
+        r'\d+|'                             # single digit page: 292
+        r'{_roman}\s*[-–—]{{1,2}}\s*{_roman}|'  # roman range: xiii–xxiii
+        r'{_roman}))'                       # single roman: xiv
+        .format(_roman=_roman),
         rest, re.IGNORECASE,
     )
     if pages_match:
@@ -357,7 +381,7 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     # ── Journal name for articles ─────────────────────────────────────────────
     if entry.entry_type == "article":
         j_match = re.search(
-            r'\.\s+([A-ZÄÖÜ][^,\.]+?),\s*(?:Jg|Vol|Nr|Band|No)',
+            r'(?:\.\s+In:\s+|\.\s+)([A-Za-zäöüÄÖÜ][^,\.]{2,60}?),\s*(?:Jg\.|Vol\.|Nr\.|Band|No\.)',
             rest, re.IGNORECASE,
         )
         if j_match:
@@ -374,6 +398,18 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
                         and len(candidate) > 4
                         and not candidate.lower().startswith('s.')):
                     entry.journal = candidate
+            if not entry.journal:
+                # Fallback 3: "Title. Journal Name, S. <pages>" — no volume at all
+                # Covers entries like "MIS quarterly, S. xiii\u2013xxiii, 2002"
+                j_match3 = re.search(
+                    r'\.\s+([A-Za-z\u00e4\u00f6\u00fc\u00c4\u00d6\u00dc][A-Za-z\u00e4\u00f6\u00fc\u00c4\u00d6\u00dc\s\-]{2,60}?),\s*S\.',
+                    rest,
+                )
+                if j_match3:
+                    candidate = j_match3.group(1).strip().rstrip(',.')
+                    if (not re.match(r'^(19|20)\d{2}$', candidate)
+                            and len(candidate) > 2):
+                        entry.journal = candidate
 
 
 # ---------------------------------------------------------------------------

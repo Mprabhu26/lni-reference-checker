@@ -366,6 +366,8 @@ let result = null;
 let mainFile = null;
 let bibFile = null;
 let dbLoaded = false;
+// Keys the professor has manually marked as fake (after review)
+let markedFakeKeys = new Set();
 
 function handleMainFile(inp) {
   mainFile = inp.files[0];
@@ -431,17 +433,24 @@ function switchTab(tab, btn) {
 }
 
 function openDbTab() {
+  // Hide all other tabs — show only the Database tab
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    const isDb = b.id === 'tabDbBtn' || b.getAttribute('onclick') === "switchTab('db',this)";
+    b.style.display = isDb ? '' : 'none';
+  });
   document.getElementById('tabsWrap').classList.add('show');
   switchTab('db', document.getElementById('tabDbBtn'));
   document.getElementById('tabsWrap').scrollIntoView({behavior:'smooth'});
+  window._dbOnlyMode = true;
 }
 
 function closeDbTab() {
+  // Restore all tab buttons if we were in DB-only mode
+  document.querySelectorAll('.tab-btn').forEach(b => b.style.display = '');
+  window._dbOnlyMode = false;
   if (result) {
-    // Results exist — switch back to score tab, keep tabs visible
     switchTab("score", document.querySelector(".tab-btn:nth-child(4)"));
   } else {
-    // No results — hide the entire tab bar completely
     document.getElementById("tabsWrap").classList.remove("show");
     document.querySelectorAll(".content").forEach(c => c.classList.remove("active"));
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -452,6 +461,8 @@ function startOver() {
   result = null;
   mainFile = null;
   bibFile = null;
+  markedFakeKeys = new Set();
+  window._dbOnlyMode = false;
   document.getElementById('mainFile').value = '';
   const bibInput = document.getElementById('bibFile');
   if (bibInput) bibInput.value = '';
@@ -949,7 +960,12 @@ function verifyCard(v) {
         ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-title">⚠ Red Flags</div><ul class="risk-list">${v.ai_risk_factors.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
         ${links.length ? `<div class="detail-section"><div class="detail-title">🔗 Links & Resources</div><div class="sources-row">${links.join('')}</div></div>` : ''}
         ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s => { const label = s === 'url_check' ? 'URL Check (direct fetch)' : s === 'content_title_match' ? 'Title Match (page content)' : s; return `<span class="source-chip" title="${s === 'url_check' ? 'The cited URL was fetched and the page title was compared to the cited title' : s === 'content_title_match' ? 'The page content title matched the cited title' : ''}">${escapeHtml(label)}</span>`; }).join('')}</div></div>` : ''}
-        ${verdict === 'FAKE' || verdict === 'SUSPICIOUS' ? `<div class="detail-section"><div class="detail-title">➕ Add to Verified Database</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, you can save it to the local database so it won't be flagged again.</div><button onclick="saveToDb(${JSON.stringify(escapeHtml(v.title||''))}, ${JSON.stringify(escapeHtml(v.ai_reasoning||''))}, '${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;">✓ Confirm as Real — Save to DB</button></div>` : ''}
+        ${verdict === 'FAKE' || verdict === 'SUSPICIOUS' ? `<div class="detail-section"><div class="detail-title">➕ Professor Actions</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, save it to the local database. If it is fabricated, mark it as fake to deduct points.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <button onclick="saveToDb(${JSON.stringify(escapeHtml(v.title||''))}, ${JSON.stringify(escapeHtml(v.ai_reasoning||''))}, '${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✓ Confirm as Real — Save to DB</button>
+            ${verdict === 'SUSPICIOUS' ? (markedFakeKeys.has(v.key) ? '<button disabled style="padding:6px 14px;background:var(--error);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;font-weight:600;cursor:default;">✕ Confirmed Fake</button>' : '<button onclick="markAsFake(\'' + escapeHtml(v.key) + '\', this)" style="padding:6px 14px;background:var(--error-bg);color:var(--error);border:1px solid var(--error);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✕ Mark as Fake</button>') : ''}
+          </div>
+        </div>` : ''}
         ${v.raw ? `<div class="detail-section"><div class="detail-title">📄 Raw Entry</div><div class="explanation-box" style="font-family:JetBrains Mono,monospace;font-size:11px;">${escapeHtml(v.raw)}</div></div>` : ''}
       </div>
     </div>
@@ -980,17 +996,72 @@ async function saveToDb(title, reason, key) {
 function renderScoreTab(data) {
   const sc = data.score || {};
   const s = data.summary || {};
-  const penalties = sc.penalties || [];
-  const verificationFakeCount = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length;
-  const verificationSuspCount = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS').length;
+
+  // Use professor-adjusted score (markedFakeKeys may add deductions)
+  const adj = computeAdjustedScore(data);
+  const penalties = adj.penalties;
+  const actualScore = adj.score;
+  const grade = adj.grade;
+
+  const verificationFakeCount = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size;
+  const verificationSuspCount = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length;
   const verificationRealCount = (data.verification || []).filter(v => v.ai_verdict === 'REAL').length;
-  let actualScore = sc.score;
-  if (actualScore === 0 && sc.max_score) actualScore = sc.max_score;
+
   const gradeColor = actualScore >= 75 ? 'green' : actualScore >= 50 ? 'orange' : 'red';
-  let html = `<div class="stat-bar"><div class="stat-box ${gradeColor}"><div class="value">${actualScore}/100</div><div class="label">Final Score · ${sc.grade || 'F'}</div></div><div class="stat-box ${verificationFakeCount ? 'red' : 'green'}"><div class="value">${verificationFakeCount}</div><div class="label">Fake References</div></div><div class="stat-box ${verificationSuspCount ? 'orange' : 'green'}"><div class="value">${verificationSuspCount}</div><div class="label">Suspicious References</div></div><div class="stat-box green"><div class="value">${verificationRealCount}</div><div class="label">Verified Real</div></div><div class="stat-box ${s.missing_from_bib ? 'red' : 'green'}"><div class="value">${s.missing_from_bib || 0}</div><div class="label">Missing from Bib</div></div></div>`;
+
+  let html = `<div class="stat-bar">
+    <div class="stat-box ${gradeColor}"><div class="value">${actualScore}/100</div><div class="label">Final Score · ${grade}</div></div>
+    <div class="stat-box ${verificationFakeCount ? 'red' : 'green'}"><div class="value">${verificationFakeCount}</div><div class="label">Fake References</div></div>
+    <div class="stat-box ${verificationSuspCount ? 'orange' : 'green'}"><div class="value">${verificationSuspCount}</div><div class="label">Suspicious References</div></div>
+    <div class="stat-box green"><div class="value">${verificationRealCount}</div><div class="label">Verified Real</div></div>
+    <div class="stat-box ${s.missing_from_bib ? 'red' : 'green'}"><div class="value">${s.missing_from_bib || 0}</div><div class="label">Missing from Bib</div></div>
+  </div>`;
+
   if (sc.verdict_reason) html += `<div class="explanation-box" style="margin-bottom:14px;">🤖 <strong>AI Verdict:</strong> ${escapeHtml(sc.verdict_reason)}</div>`;
-  html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:14px;"><div style="padding:12px 16px;background:var(--surface-secondary);font-weight:700;font-size:13px;">📊 Score Breakdown</div><table class="penalty-table"><thead><tr><th>Issue Category</th><th>Count</th><th>Deduction</th><th>Why it matters</th></tr></thead><tbody>${penalties.map(p => `<tr><td style="font-weight:600;">${escapeHtml(p.category)}</td><td>${p.count}</td><td class="deduct-cell">-${p.deduction}</td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml(explainPenalty(p.category))}</td></tr>`).join('')}${penalties.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--success);">✓ No deductions — perfect score!</td></tr>' : ''}<tr class="total-row"><td colspan="2"><strong>Final Score</strong></td><td><strong>${actualScore}/100 (${sc.grade || 'F'})</strong></td><td></td></tr></tbody></table></div>`;
-  if (sc.professor_note) { let cleanNote = sc.professor_note; cleanNote = cleanNote.replace(/^I will manually review\s+/, ''); html += `<div class="explanation-box"><strong>📝 Note:</strong> ${escapeHtml(cleanNote)}</div>`; }
+
+  // Suspicious references list (pending professor review)
+  const suspiciousRefs = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key));
+  if (suspiciousRefs.length > 0) {
+    html += `<div style="background:var(--warning-bg);border:1px solid #fed7aa;border-radius:var(--radius);padding:12px 14px;margin-bottom:14px;">
+      <div style="font-weight:700;font-size:12px;color:var(--warning);margin-bottom:8px;">⚠ ${suspiciousRefs.length} Suspicious Reference(s) — Pending Professor Review</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">These references are flagged as suspicious. If you confirm them as fake, <strong>-15 points each</strong> will be deducted. Go to the <strong>Reference Verification</strong> tab and click <em>Mark as Fake</em> to confirm.</div>
+      <table class="penalty-table" style="background:transparent;">
+        <thead><tr><th>Key</th><th>Title</th><th>Deduction if confirmed fake</th></tr></thead>
+        <tbody>${suspiciousRefs.map(v =>
+          `<tr>
+            <td><code style="font-family:JetBrains Mono,monospace;font-size:11px;">[${escapeHtml(v.key)}]</code></td>
+            <td style="color:var(--text-muted);font-size:11px;">${escapeHtml((v.title||'').slice(0,60))}</td>
+            <td class="deduct-cell">–</td>
+          </tr>`
+        ).join('')}</tbody>
+      </table>
+    </div>`;
+  }
+
+  html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:14px;">
+    <div style="padding:12px 16px;background:var(--surface-secondary);font-weight:700;font-size:13px;">📊 Score Breakdown</div>
+    <table class="penalty-table">
+      <thead><tr><th>Issue Category</th><th>Count</th><th>Deduction</th><th>Why it matters</th></tr></thead>
+      <tbody>
+        ${penalties.map(p => `<tr><td style="font-weight:600;">${escapeHtml(p.category)}</td><td>${p.count}</td><td class="deduct-cell">-${p.deduction}</td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml(explainPenalty(p.category))}</td></tr>`).join('')}
+        ${penalties.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--success);">✓ No deductions — perfect score!</td></tr>' : ''}
+        <tr class="total-row"><td colspan="2"><strong>Final Score</strong></td><td><strong>${actualScore}/100 (${grade})</strong></td><td></td></tr>
+      </tbody>
+    </table>
+  </div>`;
+
+  if (sc.professor_note) {
+    let cleanNote = sc.professor_note;
+    cleanNote = cleanNote.replace(/^I will manually review\s+/, '');
+    html += `<div class="explanation-box"><strong>📝 Note:</strong> ${escapeHtml(cleanNote)}</div>`;
+  }
+
+  // Show a note if suspicious refs still pending
+  if (suspiciousRefs.length > 0) {
+    const keys = suspiciousRefs.map(v => `[${v.key}]`).join(', ');
+    html += `<div class="explanation-box" style="margin-top:10px;border-left-color:var(--warning);background:var(--warning-bg);">📝 <strong>Note:</strong> Manually review the suspicious references ${escapeHtml(keys)} to determine their legitimacy.</div>`;
+  }
+
   document.getElementById('scoreContent').innerHTML = html;
 }
 
@@ -1238,6 +1309,66 @@ function buildXLSXReport(data) {
   return wb;
 }
 
+
+
+function markAsFake(key, btnEl) {
+  if (markedFakeKeys.has(key)) return;
+  markedFakeKeys.add(key);
+
+  if (btnEl) {
+    btnEl.textContent = '✕ Confirmed Fake';
+    btnEl.disabled = true;
+    btnEl.style.background = 'var(--error)';
+    btnEl.style.color = 'white';
+    btnEl.style.cursor = 'default';
+    btnEl.style.border = 'none';
+  }
+
+  // Update the badge on the verification card for this key
+  document.querySelectorAll(`.entry-card[data-key="${key}"]`).forEach(card => {
+    const badgeEl = card.querySelector('.badge-suspicious');
+    if (badgeEl) {
+      badgeEl.className = 'badge badge-fake';
+      badgeEl.textContent = '✕ FAKE — Confirmed by Professor';
+    }
+  });
+
+  if (result) {
+    renderScoreTab(result);
+    const fakeNow = (result.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size;
+    const suspNow = (result.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length;
+    setBadge('tabVerBadge', fakeNow + suspNow, fakeNow ? 'red' : suspNow ? 'orange' : '');
+  }
+
+  showToast(`✕ [${key}] confirmed as fake — score updated`, 'error');
+}
+
+function computeAdjustedScore(data) {
+  const sc = data.score || {};
+  let score = sc.score || 0;
+  const penalties = JSON.parse(JSON.stringify(sc.penalties || []));
+
+  const originalFakeKeys = new Set(
+    (data.verification || []).filter(v => v.ai_verdict === 'FAKE').map(v => v.key)
+  );
+  const newlyConfirmedCount = [...markedFakeKeys].filter(k => !originalFakeKeys.has(k)).length;
+
+  if (newlyConfirmedCount > 0) {
+    const deduction = newlyConfirmedCount * 15;
+    score = Math.max(0, score - deduction);
+    const fakePenalty = penalties.find(p => p.category === 'Likely fabricated references');
+    if (fakePenalty) {
+      fakePenalty.count += newlyConfirmedCount;
+      fakePenalty.deduction += deduction;
+    } else {
+      penalties.push({ category: 'Likely fabricated references', count: newlyConfirmedCount, deduction });
+    }
+  }
+
+  const grades = [[90,'A+'],[85,'A'],[80,'A-'],[75,'B+'],[70,'B'],[65,'B-'],[60,'C+'],[55,'C'],[50,'C-'],[0,'F']];
+  const grade = (grades.find(([min]) => score >= min) || [0,'F'])[1];
+  return { score, grade, penalties };
+}
 
 function escapeHtml(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function unescapeHtml(s) { if (!s) return ''; const t = document.createElement('textarea'); t.innerHTML = s; return t.value; }
