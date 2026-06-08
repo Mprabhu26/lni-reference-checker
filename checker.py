@@ -818,6 +818,49 @@ def verify_reference(entry) -> "VerificationResult":
     return result
 
 
+def _derive_fallback_urls(url: str) -> list:
+    """
+    Derive fallback URLs to try when the original returns non-200.
+    Generic — no hardcoding of domains.
+    """
+    from urllib.parse import urlparse, urlunparse
+    fallbacks = []
+    parsed = urlparse(url)
+
+    # 1. Strip query string
+    if parsed.query:
+        fallbacks.append(urlunparse(parsed._replace(query="", fragment="")))
+
+    # 2. If it's a direct PDF link, try the domain root and the parent path
+    if url.lower().endswith('.pdf'):
+        # Parent directory
+        parent = url.rsplit('/', 1)[0]
+        if parent != url:
+            fallbacks.append(parent + "/")
+        # Domain root
+        fallbacks.append(f"{parsed.scheme}://{parsed.netloc}/")
+
+    # 3. If path is deep (≥3 segments), try progressively shorter paths
+    parts = [p for p in parsed.path.split('/') if p]
+    if len(parts) >= 3:
+        shorter = f"{parsed.scheme}://{parsed.netloc}/" + "/".join(parts[:2]) + "/"
+        fallbacks.append(shorter)
+
+    # 4. Always try domain root as last resort
+    root = f"{parsed.scheme}://{parsed.netloc}/"
+    if root not in fallbacks:
+        fallbacks.append(root)
+
+    # Deduplicate preserving order, exclude original
+    seen = {url}
+    result = []
+    for u in fallbacks:
+        if u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
+
+
 def _verify_url_direct_strict(entry) -> Optional["VerificationResult"]:
     """
     Strict URL verification.
@@ -841,15 +884,27 @@ def _verify_url_direct_strict(entry) -> Optional["VerificationResult"]:
             
             # ONLY HTTP 200 is acceptable for automatic verification
             if resp.status_code != 200:
-                return VerificationResult(
-                    key=entry.key,
-                    title=entry.title or "",
-                    status="partial_match",
-                    confidence=0.30,
-                    open_access_url=url,
-                    note=f"URL returned HTTP {resp.status_code}. AI will verify.",
-                    sources_checked=["url_fetch"],
-                )
+                # Try fallback URLs before giving up
+                fallbacks = _derive_fallback_urls(url)
+                for fb_url in fallbacks:
+                    try:
+                        fb_resp = requests.get(fb_url, headers={"User-Agent": ua}, timeout=15, allow_redirects=True)
+                        if fb_resp.status_code == 200:
+                            resp = fb_resp
+                            url = fb_url
+                            break
+                    except Exception:
+                        continue
+                if resp.status_code != 200:
+                    return VerificationResult(
+                        key=entry.key,
+                        title=entry.title or "",
+                        status="partial_match",
+                        confidence=0.30,
+                        open_access_url=getattr(entry, 'url', '') or url,
+                        note=f"URL returned HTTP {resp.status_code} (fallbacks also failed). AI will verify.",
+                        sources_checked=["url_fetch"],
+                    )
             
             soup = BeautifulSoup(resp.text, 'html.parser')
             

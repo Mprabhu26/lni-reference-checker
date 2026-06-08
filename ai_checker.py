@@ -95,10 +95,12 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
                 time.sleep(2 ** attempt)
                 continue
             else:
+                print(f"Groq API HTTP {resp.status_code}: {resp.text[:300]}")
                 if attempt == 2:
-                    raise RuntimeError(f"Groq API error: HTTP {resp.status_code}")
+                    raise RuntimeError(f"Groq API error: HTTP {resp.status_code} — {resp.text[:200]}")
                 time.sleep(1.5 ** attempt)
         except Exception as e:
+            print(f"Groq API attempt {attempt} exception: {type(e).__name__}: {e}")
             if attempt == 2:
                 raise RuntimeError(f"Groq API failed: {str(e)}")
             time.sleep(1.5 ** attempt)
@@ -559,7 +561,9 @@ RULES:
             "risk_factors": risk_factors_out,
         }
     except Exception as e:
+        import traceback
         print(f"_llm_verify_grey_entry error: {e}")
+        traceback.print_exc()
         return None
 
 
