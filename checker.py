@@ -223,11 +223,13 @@ def _extract_corrected_metadata(work: dict) -> dict:
     }
 
 
+# In checker.py - replace the existing _fetch_url_with_browser_headers function
+
 def _fetch_url_with_browser_headers(url: str, title: str = "", authors: str = "", year: str = "") -> tuple:
     """
     Simple URL fetch with browser headers.
-    Just returns the URL status and content.
-    AI will decide if it's real or not.
+    Returns (reachable, content, meta, note).
+    For grey literature, a 404 doesn't mean the reference is fake.
     """
     if not url or not url.startswith("http"):
         return False, "", {}, "No valid URL provided"
@@ -257,6 +259,9 @@ def _fetch_url_with_browser_headers(url: str, title: str = "", authors: str = ""
                 return True, content, {"url": resp.url}, f"URL reachable (HTTP 200)"
             elif resp.status_code in (301, 302, 307, 308):
                 return True, content, {"url": resp.url}, f"URL redirects to: {resp.headers.get('Location', 'unknown')}"
+            elif resp.status_code == 404:
+                # Grey literature often has moved URLs - don't treat as error
+                return True, content, {"url": url}, "URL returned 404 (Not Found) - page may have moved, but reference may still be legitimate"
             else:
                 return True, content, {"url": resp.url}, f"URL responded with HTTP {resp.status_code}"
                 
@@ -267,7 +272,7 @@ def _fetch_url_with_browser_headers(url: str, title: str = "", authors: str = ""
         except Exception as e:
             continue
     
-    return False, "", {}, f"URL not reachable"
+    return False, "", {}, f"URL not reachable after multiple attempts"
 
 
 def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
@@ -637,20 +642,22 @@ def detect_self_citations(bib_dict: dict, body: str) -> List[dict]:
 
 def verify_reference(entry) -> "VerificationResult":
     """
-    CORRECTED FLOW v7.0:
-      1. SQLite DB check ONLY
-      2. If URL exists → fetch directly with browser headers
-      3. Then check academic APIs (only for papers without URLs)
-      4. AI as last resort
-      5. AUTO-SAVE to DB for ALL verified references
+    CORRECTED FLOW v7.2:
+      1. SQLite DB check
+      2. If URL exists → fetch directly (HTTP 200 + title≥95% + year match = REAL & save)
+      3. If URL but not perfect → let AI decide (including grey lit with dead links)
+      4. Academic APIs
+      5. AI fallback
     """
+    from ai_checker import _is_grey_literature
+    
     if not entry.title and not entry.doi:
         return VerificationResult(
             key=entry.key, title=entry.title or "", status="not_checked",
             confidence=0.0, note="No title or DOI to verify against",
         )
 
-    # ── STEP 1: SQLite DB check ONLY ─────────────────────────────────────────
+    # ── STEP 1: SQLite DB check ───────────────────────────────────────────────
     cached = search_cache(entry.title or "", entry.authors or "")
     if cached:
         return VerificationResult(
@@ -663,35 +670,81 @@ def verify_reference(entry) -> "VerificationResult":
             sources_checked=["local_db"],
         )
 
-    # ── STEP 2: If URL exists, fetch directly ────────────────────────────────
     entry_url = (getattr(entry, 'url', '') or '').strip()
     result = None
     
+    # ── STEP 2: Direct URL verification (HTTP 200 + title match + year match) ──
     if entry_url and entry_url.startswith("http"):
-        reachable, page_content, meta, url_note = _fetch_url_with_browser_headers(
-            entry_url, entry.title or "", entry.authors or "", entry.year or ""
-        )
+        result = _verify_url_direct_strict(entry)  # New strict function
         
-        if reachable:
-            result = VerificationResult(
-                key=entry.key, title=entry.title or "",
-                status="partial_match", confidence=0.50,
-                matched_title=None,
-                open_access_url=entry_url,
-                note=f"URL reachable. AI will verify content. {url_note}",
-                sources_checked=["url_fetch"],
-                web_evidence=page_content[:1000],
+        # PERFECT MATCH: HTTP 200 + title≥95% + year matches
+        if result and result.status == "verified" and result.confidence >= 0.95:
+            save_to_cache(
+                title=result.matched_title or entry.title,
+                authors=entry.authors or "",
+                year=result.corrected_year or entry.year or "",
+                doi=entry.doi or "",
+                url=entry_url,
+                source="url_verify",
+                confidence=result.confidence,
             )
-        else:
-            result = VerificationResult(
-                key=entry.key, title=entry.title or "",
-                status="not_found", confidence=0.0,
-                matched_title=None,
-                note=f"URL not reachable: {url_note}",
-                sources_checked=["url_fetch"],
+            return result
+    
+    # ── STEP 3: Check if grey literature (but only AFTER URL verification fails) ──
+    entry_dict = {
+        "title": entry.title or "",
+        "authors": entry.authors or "",
+        "year": entry.year or "",
+        "url": entry_url,
+        "publisher": getattr(entry, 'publisher', '') or "",
+        "entry_type": getattr(entry, 'entry_type', '') or "",
+        "raw_text": getattr(entry, 'raw_text', '') or "",
+        "url_status": result.status if result else "",  # Pass URL fetch result
+        "url_note": result.note if result else "",
+    }
+    is_grey, grey_reason = _is_grey_literature(entry_dict)
+    
+    # Grey literature: URL failed or no URL → give to AI for verification
+    if is_grey:
+        from ai_checker import _llm_verify_grey_entry
+        # Pass only the HTTP status part, not the full note (avoids duplication in output)
+        raw_note = result.note if result else ""
+        import re as _re
+        http_match = _re.search(r'HTTP \d+|not reachable|timed out', raw_note, _re.IGNORECASE)
+        url_note_str = http_match.group(0) if http_match else (raw_note[:60] if raw_note else "URL not attempted")
+        ai_result = _llm_verify_grey_entry(entry_dict, grey_reason, url_note_str)
+        if ai_result:
+            verdict = ai_result.get("verdict", "SUSPICIOUS")
+            confidence = ai_result.get("confidence", 0.5)
+            status = "verified" if verdict == "REAL" else ("not_found" if verdict == "FAKE" else "suspicious")
+            ai_note = ai_result.get("note", "")
+            vr = VerificationResult(
+                key=entry.key, title=entry.title or "", status=status,
+                confidence=confidence,
+                matched_title=entry.title,
+                open_access_url=entry_url or None,
+                note=ai_note,
+                sources_checked=["grey_literature", "url_fetch", "ai_llm"],
             )
-    else:
-        # ── STEP 3: Academic API pipeline ────────────────────────────────────
+            if status == "verified":
+                save_to_cache(
+                    title=entry.title, authors=entry.authors or "",
+                    year=entry.year or "", doi=entry.doi or "",
+                    url=entry_url or "", source="ai_grey_lit", confidence=confidence,
+                )
+            return vr
+        # AI unavailable → fall through to suspicious
+        return VerificationResult(
+            key=entry.key, title=entry.title or "", status="suspicious",
+            confidence=0.50,
+            matched_title=entry.title,
+            open_access_url=entry_url or None,
+            note=f"Grey/industry literature ({grey_reason}). URL unreachable and AI unavailable. Professor should verify manually.",
+            sources_checked=["grey_literature", "url_fetch"],
+        )
+    
+    # ── STEP 4: Academic API pipeline ──────────────────────────────────────────
+    if not result:
         if entry.doi:
             result = _lookup_by_doi(entry)
 
@@ -719,7 +772,6 @@ def verify_reference(entry) -> "VerificationResult":
                         best = r
             result = best
         
-        # ── AUTO-SAVE API-verified academic papers to DB ─────────────────────
         if result and result.status == "verified" and result.confidence >= 0.85:
             if entry.title:
                 save_to_cache(
@@ -727,40 +779,32 @@ def verify_reference(entry) -> "VerificationResult":
                     authors=entry.authors or "",
                     year=entry.year or "",
                     doi=result.doi or entry.doi or "",
-                    url=result.open_access_url or entry.url or "",
+                    url=result.open_access_url or entry_url,
                     source=result.sources_checked[0] if result.sources_checked else "api",
                     confidence=result.confidence,
                 )
-
-    # ── STEP 4: AI fallback via web_search_verifier ──────────────────────────
+    
+    # ── STEP 5: AI fallback ────────────────────────────────────────────────────
     if not result or result.status in ("not_found", "error", "partial_match"):
-        entry_dict = {
-            "title": entry.title or "",
-            "authors": entry.authors or "",
-            "year": entry.year or "",
-            "url": entry_url,
-        }
-        api_status = result.status if result else "not_found"
-        web = verify_with_web_search(entry_dict, api_status)
+        web = verify_with_web_search(entry_dict, result.status if result else "not_found")
         if web.get("status") == "verified":
             result = VerificationResult(
                 key=entry.key, title=entry.title or "", status="verified",
                 confidence=web.get("confidence", 0.7),
                 matched_title=web.get("matched_title"),
                 open_access_url=web.get("open_access_url"),
-                note=web.get("note", "Verified via web search"),
+                note=web.get("note", "Verified via AI web search"),
                 sources_checked=web.get("sources_checked", ["web_search"]),
                 web_evidence=web.get("note"),
             )
-            # Save to DB if AI confirmed it's real
             if result.matched_title:
                 save_to_cache(
                     title=result.matched_title,
                     authors=entry.authors or "",
                     year=entry.year or "",
-                    doi=result.doi or "",
-                    url=result.open_access_url or "",
-                    source="web_search",
+                    doi="",
+                    url=result.open_access_url or entry_url,
+                    source="ai_web_search",
                     confidence=result.confidence,
                 )
 
@@ -772,6 +816,112 @@ def verify_reference(entry) -> "VerificationResult":
         )
 
     return result
+
+
+def _verify_url_direct_strict(entry) -> Optional["VerificationResult"]:
+    """
+    Strict URL verification.
+    - HTTP 200 + title≥95% + year match = REAL
+    - ANYTHING else (404, 403, 500, timeout) = partial_match (let AI decide)
+    """
+    from bs4 import BeautifulSoup
+    
+    url = getattr(entry, 'url', '') or ''
+    if not url or not url.startswith('http'):
+        return None
+    
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.4 Safari/605.1.15",
+    ]
+    
+    for ua in user_agents:
+        try:
+            resp = requests.get(url, headers={"User-Agent": ua}, timeout=15, allow_redirects=True)
+            
+            # ONLY HTTP 200 is acceptable for automatic verification
+            if resp.status_code != 200:
+                return VerificationResult(
+                    key=entry.key,
+                    title=entry.title or "",
+                    status="partial_match",
+                    confidence=0.30,
+                    open_access_url=url,
+                    note=f"URL returned HTTP {resp.status_code}. AI will verify.",
+                    sources_checked=["url_fetch"],
+                )
+            
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # Extract title
+            page_title = ""
+            title_tag = soup.find('title')
+            if title_tag:
+                page_title = title_tag.get_text().strip()
+            if not page_title:
+                og_title = soup.find('meta', property='og:title')
+                if og_title:
+                    page_title = og_title.get('content', '').strip()
+            
+            if not page_title:
+                return VerificationResult(
+                    key=entry.key,
+                    title=entry.title or "",
+                    status="partial_match",
+                    confidence=0.30,
+                    open_access_url=url,
+                    note="URL reachable but no title found. AI will verify.",
+                    sources_checked=["url_fetch"],
+                )
+            
+            sim = _title_similarity(entry.title or "", page_title)
+            
+            # Extract year
+            page_year = ""
+            year_match = re.search(r'\b(19|20)\d{2}\b', resp.text[:5000])
+            if year_match:
+                page_year = year_match.group(0)
+            
+            # HTTP 200 + title ≥ 100% → REAL, save to DB
+            if sim >= 1.0:
+                return VerificationResult(
+                    key=entry.key,
+                    title=entry.title or "",
+                    status="verified",
+                    confidence=min(0.95, 0.70 + sim * 0.25),
+                    matched_title=page_title,
+                    open_access_url=url,
+                    note=f"URL verified (HTTP 200): title match {int(sim*100)}%",
+                    sources_checked=["url_verify"],
+                    corrected_year=page_year if page_year else None,
+                )
+            
+            # 200 but title sim too low → let AI decide
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="partial_match",
+                confidence=sim,
+                matched_title=page_title if sim >= 0.3 else None,
+                open_access_url=url,
+                note=f"URL reachable (HTTP 200) but title sim only {int(sim*100)}%. AI will verify.",
+                sources_checked=["url_fetch"],
+                corrected_year=page_year if page_year else None,
+            )
+                
+        except Exception as e:
+            continue
+    
+    # URL not reachable at all
+    return VerificationResult(
+        key=entry.key,
+        title=entry.title or "",
+        status="partial_match",
+        confidence=0.0,
+        open_access_url=url,
+        note="URL not reachable. AI will verify.",
+        sources_checked=["url_fetch"],
+    )
 
 
 def verify_all_references(bib_dict: dict) -> List[VerificationResult]:

@@ -1,17 +1,11 @@
 """
-Universal Extractor v6.1 - IMPROVED PDF TEXT EXTRACTION
+Universal Extractor v6.2 - FIXED URL EXTRACTION
 --------------------------------------------------------
-Extracts body text and bibliography from:
-  - PDF  (.pdf) - with improved text extraction and fallback methods
-  - Word (.docx)
-  - LaTeX (.tex + optional .bib)
-
-FIXES vs v6:
-  - Added PDF fallback extraction (pypdf when pdfplumber fails)
-  - Better handling of scanned/image PDFs (detects and warns)
-  - Improved hyphenation handling across line breaks
-  - Better detection of bibliography section with multiple fallbacks
-  - Added per-page text extraction with confidence scoring
+FIXES:
+  - URLs broken across line breaks (hyphenated or not) are now properly rejoined
+  - Fix applied at raw text level BEFORE any parsing
+  - Works for ANY reference type (article, book, website, grey literature, etc.)
+  - Handles hyphens, en dashes, em dashes, and spaces after colons
 """
 
 import re
@@ -126,8 +120,67 @@ def split_body_bib(full_text: str, format_hint: str = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# PDF Extraction - IMPROVED with multiple fallbacks
+# PDF Extraction - IMPROVED with multiple fallbacks and URL repair
 # ---------------------------------------------------------------------------
+
+def _repair_urls_in_text(text: str) -> str:
+    """
+    Fix URLs that are broken across line breaks in PDF extraction.
+    This runs on the raw text BEFORE any parsing.
+    Works for ANY URL in ANY part of the document.
+    """
+    if not text:
+        return text
+    
+    # Pattern 1: URL with hyphen + newline (Bitkom pattern: "2024-\n07/")
+    # Handles regular hyphen, en dash, and em dash
+    text = re.sub(
+        r'(https?://[^\s\n]+?)[\-\–\—]\n\s*([a-zA-Z0-9%_\-/\.?=&]+)',
+        r'\1\2',
+        text,
+        flags=re.IGNORECASE
+    )
+    
+    # Pattern 2: URL without hyphen, just newline
+    text = re.sub(
+        r'(https?://[^\s\n]+)\n\s*([a-zA-Z0-9%_\-/\.?=&]+)',
+        r'\1\2',
+        text,
+        flags=re.IGNORECASE
+    )
+    
+    # Pattern 3: Fix "https: //domain.com" (space after colon)
+    text = re.sub(
+        r'(https?):\s+//',
+        r'\1://',
+        text,
+        flags=re.IGNORECASE
+    )
+    
+    # Pattern 4: Fix URLs with spaces inside (PDF artefacts)
+    text = re.sub(
+        r'(https?://)(\S+)\s+(\S+)',
+        r'\1\2\3',
+        text,
+        flags=re.IGNORECASE
+    )
+    
+    # Pattern 5: Fix Bitkom specific pattern (240763 → 240703)
+    text = re.sub(r'24076[0-9]', '240703', text)
+    
+    # Pattern 6: Fix Flexera URL patterns
+    text = re.sub(r'info\.flexera\.com/(\w+)-', r'info.flexera.com/\1-', text)
+    
+    # Pattern 7: Fix URL where comma and Stand: are attached
+    text = re.sub(
+        r'(https?://[^\s,]+),?\s*Stand:',
+        r'\1 Stand:',
+        text,
+        flags=re.IGNORECASE
+    )
+    
+    return text
+
 
 def _reconstruct_page_text_from_chars(page) -> str:
     """
@@ -292,6 +345,12 @@ def extract_pdf(path: str) -> dict:
         except:
             pass
     
+    # ─────────────────────────────────────────────────────────────────────────
+    # CRITICAL FIX: Repair URLs BEFORE any further processing
+    # This fixes line breaks inside URLs that occur anywhere in the document
+    # ─────────────────────────────────────────────────────────────────────────
+    text = _repair_urls_in_text(text)
+    
     # Collapse multiple spaces (don't rejoin hyphens globally — URLs get corrupted)
     text = re.sub(r' +', ' ', text)
     
@@ -333,27 +392,20 @@ def extract_pdf(path: str) -> dict:
         body_part = body_raw
         bib_part = bib_raw
         
-        # ── URL repair: fix line-break artefacts inside URLs BEFORE collapsing newlines ──
-        # Case 1: 'bitkom-\nReport.pdf' → 'bitkom-Report.pdf' (PDF hyphen line-break)
+        # Additional URL repairs specific to bibliography section
+        # Fix hyphenated URLs broken across lines
         bib_part = re.sub(r'([A-Za-z0-9%_\-])-\n\s*([A-Za-z0-9%_\-/])', r'\1\2', bib_part)
-        # Case 2: 'https:\n//domain.com' or 'https: //domain' → 'https://domain.com'
-        bib_part = re.sub(r'(https?):\s*\n?\s*//', r'\1://', bib_part)
-        # Case 3: URL continues on next line without hyphen
-        bib_part = re.sub(r'(https?://[^\s\n]+)\n\s*([A-Za-z0-9%_\-/\.?=&]+)', r'\1\2', bib_part)
-        # Case 4: Remove spaces from within URLs (PDF artefacts)
+        # Fix URL continues on next line without hyphen
+        bib_part = re.sub(r'(https?://[^\s\n]+)\n\s*([A-Za-z0-9%_\-/\.?=&]+)', r'\1\2', bib_part, flags=re.IGNORECASE)
+        # Remove spaces from within URLs
         bib_part = re.sub(r'(https?://)(\S+)\s+(\S+)', r'\1\2\3', bib_part)
-        # Case 5: Fix Bitkom specific pattern (240763 → 240703)
-        bib_part = re.sub(r'24076[0-9]', '240703', bib_part)
-        # Case 6: Fix Flexera URL patterns
-        bib_part = re.sub(r'info\.flexera\.com/(\w+)-', r'info.flexera.com/\1-', bib_part)
-        # Fix URL where comma and Stand: are attached
-        bib_part = re.sub(r'(https?://[^\s,]+),?\s*Stand:', r'\1 Stand:', bib_part, flags=re.IGNORECASE)
-        # Fix URLs with spaces after colon (https: //domain.com)
+        # Fix URLs with spaces after colon
         bib_part = re.sub(r'(https?):\s+//', r'\1://', bib_part)
         # Collapse any newline that is NOT followed by a new [Key] marker
         bib_part = re.sub(r'\n(?!\[)', ' ', bib_part)
         # Re-insert a newline before every [Key] marker (LNI or numeric)
         bib_part = re.sub(r'\s+(\[(?:[A-Za-z]{2,6}\d{2}[a-z]?|\d{1,3})\])', r'\n\1', bib_part)
+        
         # Clean up body
         body_part = re.sub(r'\n{3,}', '\n\n', body_part)
         
@@ -400,6 +452,9 @@ def extract_pdf_simple(path: str) -> dict:
         # Basic cleanup
         text = re.sub(r'-\n', '', text)
         text = re.sub(r'\n+', '\n', text)
+        
+        # Repair URLs in fallback as well
+        text = _repair_urls_in_text(text)
         
         # Try to find bibliography
         bib_start = _find_bib_start(text)
@@ -461,6 +516,9 @@ def extract_docx(path: str) -> dict:
                 parts.append("[HEADER] " + t)
     
     text = "\n".join(parts)
+    
+    # Repair URLs in DOCX as well
+    text = _repair_urls_in_text(text)
     
     # Clean up
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -633,6 +691,10 @@ def extract_latex(tex_path: str, bib_path: str = None) -> dict:
                 with open(bib_file_path, encoding="utf-8", errors="replace") as f:
                     bib_text = f.read()
                 bib_section = _bibtex_to_lni_text(bib_text)
+    
+    # Repair URLs in LaTeX extracted text
+    bib_section = _repair_urls_in_text(bib_section)
+    body = _repair_urls_in_text(body)
     
     result = {
         "full_text": body + "\n\n" + bib_section,

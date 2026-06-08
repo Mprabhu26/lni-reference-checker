@@ -251,7 +251,7 @@ def _assemble_result(
             "matched_title": vr.matched_title,
             "doi": vr.doi or ai.get("open_access_url"),
             "open_access_url": ai.get("open_access_url") or vr.open_access_url,
-            "note": vr.note,
+            "note": ai.get("reasoning") or vr.note if ai_verdict == "REAL" and any(w in (vr.note or "") for w in ("unavailable", "unreachable", "Professor should verify")) else vr.note,
             "api_note": vr.note,   # exposed as api_note for frontend transparency
             "sources_checked": vr.sources_checked,
             "web_evidence": vr.web_evidence,

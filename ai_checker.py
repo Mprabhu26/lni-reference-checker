@@ -30,7 +30,8 @@ except ImportError:
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
+GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
+              "gemini-1.5-flash:generateContent")
 
 _LLM_CACHE: Dict[str, str] = {}
 _LLM_CACHE_LOCK = threading.Lock()
@@ -453,15 +454,18 @@ def _is_grey_literature(entry: dict) -> tuple:
         if kw in title:
             return True, f"Industry/grey literature ('{kw}')"
 
+    # In ai_checker.py, update the _is_grey_literature function's grey_domains list:
+
     grey_domains = [
-        "bitkom.org", "flexera.com", "info.flexera.com", "gartner.com",
+        "bitkom.org", "bitkom.de",  # Add .de variant
+        "flexera.com", "info.flexera.com", "gartner.com",
         "forrester.com", "mckinsey.com", "deloitte.com", "statista.com",
         "idc.com", "accenture.com", "capgemini.com", "pwc.com", "kpmg.com",
         "bsi.bund.de", "bsi.de", "bundesregierung.de", "bmwi.de", "bmwk.de",
         "destatis.de", "ec.europa.eu", "nist.gov", "37signals.com",
         "basecamp.com", "github.com", "github.io", "medium.com",
         "techcrunch.com", "substack.com", "resources.idg.de",
-    ]
+]
     for domain in grey_domains:
         if domain in url:
             return True, f"Industry/government source ({domain})"
@@ -506,9 +510,7 @@ def _llm_verify_grey_entry(entry: dict, grey_reason: str, url_note: str) -> Opti
     url       = entry.get("url") or ""
     raw       = entry.get("raw_text") or entry.get("raw") or ""
 
-    prompt = f"""You are verifying whether a grey-literature reference (industry report, government publication, or German-specific source) is real or fabricated.
-This source is NOT indexed in academic databases (CrossRef, Semantic Scholar, etc.) — that is normal for this type.
-The URL provided could not be fetched automatically.
+    prompt = f"""You are verifying whether a grey-literature reference (industry report, government publication, or similar non-academic source) actually exists and is not fabricated.
 
 REFERENCE:
   Title:     {title}
@@ -518,31 +520,24 @@ REFERENCE:
   URL:       {url or "none"}
   Raw text:  {raw[:300] if raw else "not available"}
 
-URL fetch result: {url_note}
+The URL could not be automatically verified (fetch result: {url_note}).
 
-SOURCE TYPE: {grey_reason}
-
-TASK: Based on your knowledge of industry reports, government publications, and German sources, determine if this reference is plausible.
-
-Consider:
-- Does this publisher/organisation actually exist and publish this type of content?
-- Is the title style consistent with real reports from this publisher?
-- Is the year plausible for this type of publication?
-- Does the URL domain match the claimed publisher?
+TASK: Does this reference actually exist? Use your knowledge to judge.
 
 Return ONLY valid JSON, no markdown:
 {{
   "verdict": "REAL or SUSPICIOUS or FAKE",
   "confidence": 0.0-1.0,
   "reasoning": "one concise sentence",
-  "risk_factors": ["list of specific concerns, empty if none"]
+  "risk_factors": ["specific concerns if any, empty list if none"]
 }}
 
 RULES:
-- REAL: Publisher/org is well-known and title/year are plausible for them
-- SUSPICIOUS: Cannot confirm — publisher unknown or details don't match
-- FAKE: Clear fabrication signals (impossible publisher, anachronistic year, nonsensical title)
-- Default to SUSPICIOUS when uncertain; FAKE requires strong positive evidence
+- REAL: You have positive knowledge this specific title/publisher/year combination exists
+- SUSPICIOUS: Publisher exists but you cannot confirm this specific report/title
+- FAKE: Clear fabrication — publisher doesn't exist, impossible year, nonsensical title
+- A 404 URL alone is not evidence either way
+- Do NOT default to REAL just because the publisher is well-known; students can fabricate plausible-sounding titles
 """
     try:
         result = _call_ai_json(prompt, max_tokens=400)
@@ -554,14 +549,14 @@ RULES:
         risk_factors = result.get("risk_factors", [])
 
         composite_risk = 0.15 if verdict == "REAL" else (0.55 if verdict == "SUSPICIOUS" else 0.85)
+        note_str = f"Grey/industry literature ({grey_reason}). {reasoning}."
+        risk_factors_out = [] if verdict == "REAL" else [r for r in risk_factors if r.strip()][:3]
         return {
             "verdict": verdict,
             "confidence": round(confidence, 2),
             "composite_risk": composite_risk,
-            "risk_factors": [
-                f"Grey/industry literature ({grey_reason}). {reasoning}. "
-                f"URL not reachable ({url_note}) — verified via LLM knowledge."
-            ] + risk_factors[:2],
+            "note": note_str,
+            "risk_factors": risk_factors_out,
         }
     except Exception as e:
         print(f"_llm_verify_grey_entry error: {e}")
@@ -572,24 +567,60 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     """Compute composite fake detection score from multiple signals."""
     
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 1: GREY LITERATURE DETECTION - Return REAL immediately
+    # STEP 1: Check URL verification status first
+    # ─────────────────────────────────────────────────────────────────────────
+    url_status = entry.get("url_status", "")
+    url_note = entry.get("url_note", "")
+    
+    # Check if URL verification failed (404, not reachable, timeout, etc.)
+    url_failed = (
+        "404" in url_note or
+        "not reachable" in url_note or
+        "unreachable" in url_note or
+        "unavailable" in url_note or
+        "error" in url_status or
+        "timed out" in url_note or
+        "HTTP 4" in url_note or
+        "HTTP 5" in url_note or
+        url_status in ("suspicious", "partial_match", "not_found")
+    )
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 2: GREY LITERATURE DETECTION
     # ─────────────────────────────────────────────────────────────────────────
     is_grey, grey_reason = _is_grey_literature(entry)
     
     if is_grey:
+        if url_failed:
+            # URL unreachable — ask LLM to verify based on publisher/title knowledge
+            ai_grey = _llm_verify_grey_entry(entry, grey_reason, url_note)
+            if ai_grey:
+                return {
+                    "verdict": ai_grey["verdict"],
+                    "confidence": ai_grey["confidence"],
+                    "composite_risk": ai_grey["composite_risk"],
+                    "risk_factors": ai_grey["risk_factors"],
+                }
+            # LLM unavailable
+            return {
+                "verdict": "SUSPICIOUS",
+                "confidence": 0.50,
+                "composite_risk": 0.55,
+                "risk_factors": [
+                    f"Grey/industry literature ({grey_reason}). "
+                    f"URL verification failed: {url_note}. AI unavailable. Professor should verify manually."
+                ],
+            }
+        # URL verified (200) → REAL
         return {
             "verdict": "REAL",
             "confidence": 0.95,
             "composite_risk": 0.05,
-            "risk_factors": [
-                f"Grey/industry literature ({grey_reason}). "
-                "This is a legitimate source type (industry report, government publication, etc.) "
-                "that is not expected to be indexed in academic databases like CrossRef."
-            ],
+            "risk_factors": [],
         }
     
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 2: Check API status first - if verified with high confidence
+    # STEP 3: Check API status first - if verified with high confidence
     # ─────────────────────────────────────────────────────────────────────────
     api_status = api_result.get("status", "not_checked")
     api_confidence = api_result.get("confidence", 0.0)
@@ -617,7 +648,7 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             }
     
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 3: Build risk signals for uncertain cases
+    # STEP 4: Build risk signals for uncertain cases
     # ─────────────────────────────────────────────────────────────────────────
     signals = []
     total_weight = 0
@@ -676,11 +707,16 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             weighted_sum += 0.6 * 0.1
             total_weight += 0.1
     
+    # Signal 7: URL fetch failure (added signal)
+    if url_failed:
+        weighted_sum += 0.4 * 0.1
+        total_weight += 0.1
+    
     # Normalize composite risk
     composite_risk = weighted_sum / total_weight if total_weight > 0 else 0.5
     
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 4: Determine verdict based on composite risk
+    # STEP 5: Determine verdict based on composite risk
     # ─────────────────────────────────────────────────────────────────────────
     # Count high-risk signals
     high_risk_count = sum(1 for s in signals if s["risk"] >= 0.5)
@@ -696,7 +732,7 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
         confidence = 0.7 + (1.0 - composite_risk) * 0.3
     
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 5: Build user-friendly risk factors
+    # STEP 6: Build user-friendly risk factors
     # ─────────────────────────────────────────────────────────────────────────
     risk_factors = []
     for s in signals:
@@ -717,11 +753,15 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             elif s["name"] == "implausible_year":
                 risk_factors.append("Year is implausible or in future")
     
+    # Add URL failure to risk factors if applicable
+    if url_failed:
+        risk_factors.append(f"URL verification failed: {url_note[:80]}")
+    
     return {
         "verdict": verdict,
         "confidence": round(confidence, 2),
         "composite_risk": round(composite_risk, 2),
-        "risk_factors": risk_factors[:4]
+        "risk_factors": risk_factors[:5]
     }
 
 
@@ -814,7 +854,10 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         if early:
             pre_screen_cache[entry["key"]] = early
         else:
-            composite = _compute_verdict_with_confidence(entry, vr, title_sim)
+            entry_with_url = {**entry,
+                              "url_note": vr.get("note", ""),
+                              "url_status": vr.get("status", "")}
+            composite = _compute_verdict_with_confidence(entry_with_url, vr, title_sim)
             
             if whitelist_check.get("whitelisted") and composite["verdict"] == "FAKE":
                 composite["verdict"] = "SUSPICIOUS"
@@ -957,7 +1000,10 @@ References (with pre-computed signals from API sources):
             title_sim = 0.0
             if entry.get("title") and matched_title:
                 title_sim = _local_title_similarity(entry["title"], matched_title)
-            composite = _compute_verdict_with_confidence(entry, vr, title_sim)
+            entry_with_url = {**entry,
+                              "url_note": vr.get("note", ""),
+                              "url_status": vr.get("status", "")}
+            composite = _compute_verdict_with_confidence(entry_with_url, vr, title_sim)
             venue = entry.get("journal") or entry.get("booktitle") or ""
             whitelist_check = is_venue_whitelisted(venue)
             if whitelist_check.get("whitelisted") and composite["verdict"] == "FAKE":
