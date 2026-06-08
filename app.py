@@ -691,6 +691,24 @@ def check():
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+def _auto_save_verified_to_db(verification_results: list, bib_dict: dict):
+    """Auto-save verified REAL references to local database."""
+    for vr in verification_results:
+        if vr.status == "verified" and vr.confidence >= 0.80:
+            entry = bib_dict.get(vr.key)
+            if entry and entry.title:
+                # Use the matched title if available, otherwise cited title
+                save_title = vr.matched_title or entry.title
+                save_to_cache(
+                    title=save_title,
+                    authors=entry.authors or "",
+                    year=entry.year or "",
+                    doi=vr.doi or entry.doi or "",
+                    url=vr.open_access_url or entry.url or "",
+                    source=vr.sources_checked[0] if vr.sources_checked else "api",
+                    confidence=vr.confidence,
+                )
+
 
 def _run_full_check(main_path: str, bib_path: str = None,
                     verify: bool = True, filename: str = "") -> dict:

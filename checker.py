@@ -1,11 +1,11 @@
 """
-STEP 3: Citation Cross-Checker + Reference Verifier — v6.3
+STEP 3: Citation Cross-Checker + Reference Verifier — v7.0
 ----------------------------------------------------------
-FIXES:
-  - Local DB checked FIRST before any API calls
-  - Better error messages (no misleading "api_status=error")
-  - Improved score calculation
-  - Deduplication of verification results
+CORRECTED FLOW v7.0:
+  1. SQLite DB check ONLY (no browser/disk cache)
+  2. If URL exists → fetch directly (bypass APIs)
+  3. Only then check academic APIs
+  4. AI as last resort
 """
 
 import copy
@@ -27,7 +27,7 @@ from web_search_verifier import verify_with_web_search
 from review_queue import is_venue_whitelisted, get_review_decision, get_false_positive
 
 # ---------------------------------------------------------------------------
-# Persistent disk cache
+# Persistent disk cache - DISABLED (only SQLite DB)
 # ---------------------------------------------------------------------------
 
 _DISK_CACHE_DIR: str = os.environ.get("LNI_CACHE_DIR", ".lni_cache")
@@ -36,8 +36,6 @@ _MEM_CACHE: Dict[str, "VerificationResult"] = {}
 _MEM_CACHE_LOCK = threading.Lock()
 _ARXIV_BIBTEX_MEM_CACHE: Dict[str, str] = {}
 _ARXIV_CACHE_LOCK = threading.Lock()
-_VERIFICATION_RESULT_CACHE: Dict[str, "VerificationResult"] = {}
-_VERIFICATION_CACHE_LOCK = threading.Lock()
 
 _RATE_LOCK: Dict[str, threading.Lock] = {}
 _RATE_LAST: Dict[str, float] = {}
@@ -55,72 +53,10 @@ def _rate_limit(host: str, min_interval: float) -> None:
         _RATE_LAST[host] = time.time()
 
 
-def _disk_cache_key(entry: BibEntry) -> str:
-    title = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', (entry.title or "").lower().strip()))
-    first = ""
-    if entry.authors:
-        first = entry.authors.split(';')[0].split(',')[0].strip().lower()
-    return hashlib.sha256(f"{title}|{first}".encode()).hexdigest()[:24]
-
-
-def _get_cached(entry: BibEntry) -> Optional["VerificationResult"]:
-    if not entry.title:
-        return None
-    key = _disk_cache_key(entry)
-    with _MEM_CACHE_LOCK:
-        hit = _MEM_CACHE.get(key)
-    if hit:
-        return hit
-    
-    path = Path(_DISK_CACHE_DIR) / f"{key}.json"
-    if path.exists():
-        try:
-            with _DISK_CACHE_LOCK:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            r = VerificationResult(**{k: data.get(k) for k in VerificationResult.__dataclass_fields__})
-            with _MEM_CACHE_LOCK:
-                _MEM_CACHE[key] = r
-            return r
-        except Exception:
-            pass
-    return None
-
-
-def _put_cache(entry: BibEntry, result: "VerificationResult") -> None:
-    if not entry.title:
-        return
-    key = _disk_cache_key(entry)
-    with _MEM_CACHE_LOCK:
-        _MEM_CACHE[key] = result
-    
-    path = Path(_DISK_CACHE_DIR) / f"{key}.json"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with _DISK_CACHE_LOCK:
-            path.write_text(json.dumps({
-                "key": result.key, "title": result.title, "status": result.status,
-                "confidence": result.confidence, "matched_title": result.matched_title,
-                "doi": result.doi, "open_access_url": result.open_access_url,
-                "note": result.note, "sources_checked": result.sources_checked,
-                "web_evidence": result.web_evidence, "correct_authors": result.correct_authors,
-                "version_note": result.version_note,
-            }, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
-
-
 def _normalize_title(t: str) -> str:
-    """
-    Deterministic title normaliser used for ALL similarity comparisons.
-    Must be applied to BOTH sides before any threshold check so that
-    casing ('Is' vs 'is'), punctuation ('.', ',', ':'), and diacritics
-    (é, ö, ñ …) never cause a real paper to fall below the 0.95 cutoff.
-    """
     if not t:
         return ""
-    # ── 1. Lower-case first so all subsequent replacements are uniform ──────
     t = t.lower().strip()
-    # ── 2. Full diacritic / umlaut map (covers Latin-1 + common accents) ───
     diacritic_map = [
         ('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss'),
         ('à', 'a'),  ('á', 'a'),  ('â', 'a'),  ('ã', 'a'),
@@ -134,14 +70,11 @@ def _normalize_title(t: str) -> str:
     ]
     for src, dst in diacritic_map:
         t = t.replace(src, dst)
-    # ── 3. Strip LaTeX / HTML entities ──────────────────────────────────────
     t = re.sub(r'&[a-z]+;', ' ', t)
     t = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', t)
     t = re.sub(r'[{}]', '', t)
-    # ── 4. Collapse all punctuation to spaces (covers -, :, ., ,, /, etc.) ─
     t = re.sub(r'[^\w\s]', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
-    # ── 5. Remove stop-words (keep content words only) ──────────────────────
     stop = {
         'the', 'a', 'an', 'in', 'of', 'for', 'on', 'and', 'to', 'with', 'its',
         'using', 'based', 'towards', 'toward', 'via', 'approach',
@@ -226,7 +159,7 @@ def author_overlap_score(cited_authors: str, correct_authors: str) -> Optional[f
 class VerificationResult:
     key: str
     title: str
-    status: str              # verified | partial_match | not_found | error
+    status: str
     confidence: float
     matched_title: Optional[str] = None
     doi: Optional[str] = None
@@ -254,7 +187,7 @@ def _check_retraction(doi: str) -> tuple:
         return False, None, None
     try:
         mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
-        ua = f"LNI-Checker/6.3 (mailto:{mailto})" if mailto else "LNI-Checker/6.3"
+        ua = f"LNI-Checker/7.0 (mailto:{mailto})" if mailto else "LNI-Checker/7.0"
         resp = requests.get(f"https://api.crossref.org/works/{doi}", timeout=5, headers={"User-Agent": ua})
         if resp.status_code != 200:
             return False, None, None
@@ -290,36 +223,77 @@ def _extract_corrected_metadata(work: dict) -> dict:
     }
 
 
+def _fetch_url_with_browser_headers(url: str, title: str = "", authors: str = "", year: str = "") -> tuple:
+    """
+    Simple URL fetch with browser headers.
+    Just returns the URL status and content.
+    AI will decide if it's real or not.
+    """
+    if not url or not url.startswith("http"):
+        return False, "", {}, "No valid URL provided"
+
+    # Real browser user agents to bypass simple blocks
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    ]
+
+    headers_base = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+    for ua in user_agents:
+        headers = {**headers_base, "User-Agent": ua}
+        try:
+            resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+            
+            # Get the page content (first 5000 chars for AI to analyze)
+            content = resp.text[:5000] if resp.text else ""
+            
+            if resp.status_code == 200:
+                return True, content, {"url": resp.url}, f"URL reachable (HTTP 200)"
+            elif resp.status_code in (301, 302, 307, 308):
+                return True, content, {"url": resp.url}, f"URL redirects to: {resp.headers.get('Location', 'unknown')}"
+            else:
+                return True, content, {"url": resp.url}, f"URL responded with HTTP {resp.status_code}"
+                
+        except requests.exceptions.Timeout:
+            continue
+        except requests.exceptions.ConnectionError:
+            continue
+        except Exception as e:
+            continue
+    
+    return False, "", {}, f"URL not reachable"
+
+
 def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
     if not entry.doi:
         return None
     _rate_limit("crossref.org", 0.2)
     try:
         mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
-        ua = f"LNI-Checker/6.3 (mailto:{mailto})" if mailto else "LNI-Checker/6.3"
+        ua = f"LNI-Checker/7.0 (mailto:{mailto})" if mailto else "LNI-Checker/7.0"
         resp = requests.get(f"https://api.crossref.org/works/{entry.doi}", timeout=5, headers={"User-Agent": ua})
         if resp.status_code == 200:
             work = resp.json().get("message", {})
             title = (work.get("title") or [""])[0]
             sim = _title_similarity(entry.title or "", title)
-            meta = _extract_corrected_metadata(work)
-            is_retracted, ret_doi, ret_note = _check_retraction(entry.doi)
-            status = "verified" if not is_retracted else "retracted"
-            confidence = 0.95 if sim > 0.7 else 0.7
-            note_str = f"DOI verified via CrossRef (match: {int(sim*100)}%)"
-            if is_retracted:
-                note_str = f"⚠ RETRACTED. {ret_note}"
-                confidence = 1.0
-            return VerificationResult(
-                key=entry.key, title=entry.title or "", status=status, confidence=confidence,
-                matched_title=title, doi=entry.doi, open_access_url=_check_unpaywall(entry.doi),
-                note=note_str, sources_checked=["CrossRef (DOI)"], correct_authors=meta["corrected_authors"],
-                is_retracted=is_retracted, retraction_doi=ret_doi, retraction_note=ret_note,
-                corrected_title=title if title else None, corrected_authors=meta["corrected_authors"],
-                corrected_year=meta["corrected_year"], corrected_journal=meta["corrected_journal"],
-                corrected_publisher=meta["corrected_publisher"], corrected_volume=meta["corrected_volume"],
-                corrected_pages=meta["corrected_pages"],
-            )
+            if sim >= 0.95:
+                meta = _extract_corrected_metadata(work)
+                is_retracted, ret_doi, ret_note = _check_retraction(entry.doi)
+                status = "verified" if not is_retracted else "retracted"
+                return VerificationResult(
+                    key=entry.key, title=entry.title or "", status=status, confidence=0.95,
+                    matched_title=title, doi=entry.doi, open_access_url=_check_unpaywall(entry.doi),
+                    note=f"DOI verified via CrossRef (match: {int(sim*100)}%)", sources_checked=["CrossRef (DOI)"],
+                    correct_authors=meta["corrected_authors"], is_retracted=is_retracted,
+                    corrected_title=title, corrected_authors=meta["corrected_authors"],
+                    corrected_year=meta["corrected_year"], corrected_journal=meta["corrected_journal"],
+                )
     except Exception:
         pass
     return None
@@ -343,41 +317,16 @@ def _lookup_by_arxiv_id(entry: BibEntry) -> Optional[VerificationResult]:
         return None
     _rate_limit("arxiv.org", 0.34)
     try:
-        resp = requests.get(f"https://arxiv.org/bibtex/{arxiv_id}", timeout=5, headers={"User-Agent": "LNI-Checker/6.2"})
+        resp = requests.get(f"https://arxiv.org/bibtex/{arxiv_id}", timeout=5, headers={"User-Agent": "LNI-Checker/7.0"})
         if resp.status_code == 200:
             bibtex = resp.text
             title_match = re.search(r'title\s*=\s*[{"]([^}"]+)[}"]', bibtex, re.IGNORECASE)
             title = title_match.group(1) if title_match else None
-            if title:
-                sim = _title_similarity(entry.title or "", title)
+            if title and _title_similarity(entry.title or "", title) >= 0.95:
                 return VerificationResult(
                     key=entry.key, title=entry.title or "", status="verified", confidence=0.92,
                     matched_title=title, open_access_url=f"https://arxiv.org/pdf/{arxiv_id}",
-                    note=f"arXiv ID {arxiv_id} verified (match: {int(sim*100)}%)", sources_checked=["arXiv (ID)"],
-                )
-    except Exception:
-        pass
-    return None
-
-
-def _lookup_by_isbn(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.isbn:
-        return None
-    isbn_clean = re.sub(r'[\s-]', '', entry.isbn)
-    _rate_limit("openlibrary.org", 0.5)
-    try:
-        resp = requests.get(f"https://openlibrary.org/api/books?bibkeys=ISBN:{isbn_clean}&format=json&jscmd=data", timeout=5, headers={"User-Agent": "LNI-Checker/6.2"})
-        if resp.status_code == 200:
-            data = resp.json()
-            key = f"ISBN:{isbn_clean}"
-            if key in data:
-                book = data[key]
-                title = book.get("title", "")
-                sim = _title_similarity(entry.title or "", title)
-                return VerificationResult(
-                    key=entry.key, title=entry.title or "", status="verified" if sim > 0.6 else "partial_match",
-                    confidence=0.88 if sim > 0.6 else 0.5, matched_title=title, open_access_url=book.get("url"),
-                    note=f"ISBN {isbn_clean} verified via Open Library", sources_checked=["Open Library (ISBN)"],
+                    note=f"arXiv ID {arxiv_id} verified", sources_checked=["arXiv (ID)"],
                 )
     except Exception:
         pass
@@ -389,34 +338,29 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
         return None
     _rate_limit("crossref.org", 0.2)
     try:
-        params = {"query.title": entry.title, "rows": 5}
+        params = {"query.title": entry.title, "rows": 3}
         if entry.authors:
             first_author = entry.authors.split(';')[0].split(',')[0].strip()
             params["query.author"] = first_author
         mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
-        ua = f"LNI-Checker/6.2 (mailto:{mailto})" if mailto else "LNI-Checker/6.2"
+        ua = f"LNI-Checker/7.0 (mailto:{mailto})" if mailto else "LNI-Checker/7.0"
         resp = requests.get("https://api.crossref.org/works", params=params, timeout=6, headers={"User-Agent": ua})
         if resp.status_code == 200:
             items = resp.json().get("message", {}).get("items", [])
             for item in items[:3]:
                 title = (item.get("title") or [""])[0]
                 sim = _title_similarity(entry.title, title)
-                if sim >= 0.5:
+                if sim >= 0.95:
                     doi = item.get("DOI", "")
                     authors = item.get("author", [])
                     author_str = "; ".join([f"{a.get('family', '')}, {a.get('given', '')}" for a in authors[:3]]) if authors else None
                     meta = _extract_corrected_metadata(item)
-                    is_ret, ret_doi, ret_note = _check_retraction(doi) if doi else (False, None, None)
-                    ret_note_full = f"⚠ RETRACTED. {ret_note}" if is_ret else f"Found on CrossRef (match: {int(sim*100)}%)"
                     return VerificationResult(
-                        key=entry.key, title=entry.title, status="retracted" if is_ret else ("verified" if sim >= 0.95 else "partial_match"),
-                        confidence=1.0 if is_ret else sim, matched_title=title, doi=doi, open_access_url=_check_unpaywall(doi) if doi else None,
-                        note=ret_note_full, sources_checked=["CrossRef"], correct_authors=author_str,
-                        is_retracted=is_ret, retraction_doi=ret_doi, retraction_note=ret_note,
-                        corrected_title=title if title else None, corrected_authors=meta["corrected_authors"],
-                        corrected_year=meta["corrected_year"], corrected_journal=meta["corrected_journal"],
-                        corrected_publisher=meta["corrected_publisher"], corrected_volume=meta["corrected_volume"],
-                        corrected_pages=meta["corrected_pages"],
+                        key=entry.key, title=entry.title, status="verified", confidence=sim,
+                        matched_title=title, doi=doi, open_access_url=_check_unpaywall(doi) if doi else None,
+                        note=f"Found on CrossRef (match: {int(sim*100)}%)", sources_checked=["CrossRef"],
+                        correct_authors=author_str, corrected_title=title,
+                        corrected_authors=meta["corrected_authors"], corrected_year=meta["corrected_year"],
                     )
     except Exception:
         pass
@@ -428,24 +372,23 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
         return None
     _rate_limit("api.semanticscholar.org", 0.2)
     try:
-        api_key = ""
-        headers = {"User-Agent": "LNI-Checker/6.2"}
-        if api_key:
-            headers["x-api-key"] = api_key
-        resp = requests.get("https://api.semanticscholar.org/graph/v1/paper/search", params={"query": entry.title, "limit": 5, "fields": "title,authors,year,openAccessPdf,externalIds"}, timeout=6, headers=headers)
+        headers = {"User-Agent": "LNI-Checker/7.0"}
+        resp = requests.get("https://api.semanticscholar.org/graph/v1/paper/search", 
+                           params={"query": entry.title, "limit": 3, "fields": "title,authors,year,openAccessPdf,externalIds"}, 
+                           timeout=6, headers=headers)
         if resp.status_code == 200:
             papers = resp.json().get("data", [])
             for paper in papers[:3]:
                 title = paper.get("title", "")
                 sim = _title_similarity(entry.title, title)
-                if sim >= 0.5:
+                if sim >= 0.95:
                     authors = paper.get("authors", [])
                     author_str = "; ".join([a.get("name", "") for a in authors[:3]]) if authors else None
                     oa = (paper.get("openAccessPdf") or {}).get("url")
                     doi = paper.get("externalIds", {}).get("DOI")
                     return VerificationResult(
-                        key=entry.key, title=entry.title, status="verified" if sim >= 0.95 else "partial_match",
-                        confidence=sim, matched_title=title, doi=doi, open_access_url=oa,
+                        key=entry.key, title=entry.title, status="verified", confidence=sim,
+                        matched_title=title, doi=doi, open_access_url=oa,
                         note=f"Found on Semantic Scholar (match: {int(sim*100)}%)", sources_checked=["Semantic Scholar"],
                         correct_authors=author_str,
                     )
@@ -454,253 +397,469 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
     return None
 
 
-def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.title:
+# ---------------------------------------------------------------------------
+# Helper validators
+# ---------------------------------------------------------------------------
+
+def _validate_doi_format(doi: str) -> tuple:
+    if not doi:
+        return False, "Empty DOI"
+    doi = doi.strip()
+    if re.match(r'^10\.\d{4,9}/', doi):
+        return True, "Valid DOI format"
+    return False, "Invalid DOI format"
+
+
+def _check_year_plausibility(year: str) -> tuple:
+    if not year:
+        return True, "No year"
+    m = re.search(r'\d{4}', str(year))
+    if not m:
+        return False, f"Cannot parse year: {year}"
+    y = int(m.group())
+    import datetime
+    current_year = datetime.datetime.now().year
+    if y < 1800:
+        return False, f"Year {y} is implausibly old"
+    if y > current_year + 1:
+        return False, f"Year {y} is in the future"
+    return True, f"Year {y} is plausible"
+
+
+def _check_unpaywall(doi: str) -> Optional[str]:
+    if not doi:
         return None
-    _rate_limit("api.openalex.org", 0.2)
+    mailto = os.environ.get("UNPAYWALL_EMAIL", os.environ.get("CROSSREF_MAILTO", "")).strip()
+    if not mailto:
+        return None
     try:
-        resp = requests.get("https://api.openalex.org/works", params={"search": entry.title, "per-page": 5}, timeout=6, headers={"User-Agent": "LNI-Checker/6.2"})
+        resp = requests.get(
+            f"https://api.unpaywall.org/v2/{doi}",
+            params={"email": mailto},
+            timeout=5,
+            headers={"User-Agent": "LNI-Checker/7.0"},
+        )
         if resp.status_code == 200:
-            results = resp.json().get("results", [])
-            for work in results[:3]:
-                title = work.get("title", "")
-                sim = _title_similarity(entry.title, title)
-                if sim >= 0.5:
-                    doi = (work.get("doi") or "").replace("https://doi.org/", "") or None
-                    oa = work.get("open_access", {}).get("oa_url")
-                    return VerificationResult(
-                        key=entry.key, title=entry.title, status="verified" if sim >= 0.95 else "partial_match",
-                        confidence=sim, matched_title=title, doi=doi, open_access_url=oa,
-                        note=f"Found on OpenAlex (match: {int(sim*100)}%)", sources_checked=["OpenAlex"],
-                    )
+            data = resp.json()
+            best = data.get("best_oa_location") or {}
+            return best.get("url_for_pdf") or best.get("url")
     except Exception:
         pass
     return None
 
 
-def _dblp_query(query: str, timeout: int = 6) -> list:
-    try:
-        resp = requests.get("https://dblp.org/search/publ/api", params={"q": query, "format": "json", "h": 8}, timeout=timeout, headers={"User-Agent": "LNI-Checker/6.3"})
-        if resp.status_code == 200:
-            return resp.json().get("result", {}).get("hits", {}).get("hit", [])
-    except Exception:
-        pass
-    return []
+# ---------------------------------------------------------------------------
+# LNI style check
+# ---------------------------------------------------------------------------
+
+def check_lni_macros(body: str) -> List[dict]:
+    suggestions = []
+    if not body:
+        return suggestions
+
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        ctx = line.strip()[:120]
+
+        if re.search(r'\[\d[\d,\s\-]*\]', line):
+            suggestions.append({
+                "type": "numeric_citation",
+                "message": "Numeric citation style detected. LNI requires author-year keys e.g. [AB20].",
+                "context": ctx,
+                "line": i + 1,
+            })
+
+        for m in re.finditer(r'\\cite\{([^}]+)\}', line):
+            key = m.group(1).strip()
+            if not re.match(r'^[A-Z]{1,4}\d{2}', key):
+                suggestions.append({
+                    "type": "cite_key_format",
+                    "message": f"Citation key '{key}' may not follow LNI convention (e.g. AB20).",
+                    "context": ctx,
+                    "line": i + 1,
+                })
+
+        if re.search(r'\bet\s+al\.', line, re.IGNORECASE):
+            suggestions.append({
+                "type": "et_al_in_text",
+                "message": "Found 'et al.' in text — acceptable in citations but bibliography must list all authors.",
+                "context": ctx,
+                "line": i + 1,
+            })
+
+    return suggestions
 
 
-def _search_dblp(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.title:
-        return None
-    _rate_limit("dblp.org", 1.0)
-    norm_title = _normalize_title(entry.title)
-    first_author_surname = ""
-    if entry.authors:
-        surnames = _extract_surnames(entry.authors)
-        if surnames:
-            first_author_surname = surnames[0]
-    queries = []
-    if first_author_surname:
-        queries.append(f"{norm_title} {first_author_surname}")
-    queries.append(norm_title)
-    sig_words = [w for w in norm_title.split() if len(w) >= 4][:6]
-    if len(sig_words) >= 3:
-        queries.append(" ".join(sig_words))
-    best = None
-    for q in queries:
-        hits = _dblp_query(q)
-        for hit in hits[:5]:
-            info = hit.get("info", {})
-            title = info.get("title", "")
-            if not title:
+# ---------------------------------------------------------------------------
+# Citation extraction
+# ---------------------------------------------------------------------------
+
+def extract_citations_from_body(body: str) -> set:
+    keys = set()
+    if not body:
+        return keys
+
+    for m in re.finditer(r'\[([A-Z][A-Za-z+]{0,5}\d{2}(?:,\s*[A-Z][A-Za-z+]{0,5}\d{2})*)\]', body):
+        for k in re.split(r',\s*', m.group(1)):
+            keys.add(k.strip())
+
+    for m in re.finditer(r'\\(?:cite|citet|citep|Cite)\{([^}]+)\}', body):
+        for k in m.group(1).split(','):
+            keys.add(k.strip())
+
+    if re.search(r'\[\d[\d,\s\-]*\]', body):
+        keys.add('__numeric_citations__')
+
+    return keys
+
+
+def extract_citation_contexts(body: str) -> List[dict]:
+    contexts = []
+    if not body:
+        return contexts
+
+    for m in re.finditer(
+        r'(.{0,80})'
+        r'(\[[A-Z][A-Za-z+]{0,5}\d{2}[^\]]*\]|\[\d[\d,\s\-]*\])'
+        r'(.{0,80})',
+        body,
+    ):
+        pre, cite, post = m.group(1), m.group(2), m.group(3)
+        inner = cite[1:-1]
+        for k in re.split(r',\s*', inner):
+            k = k.strip()
+            if k:
+                contexts.append({
+                    "key": k,
+                    "context": f"...{pre}{cite}{post}...".strip(),
+                })
+
+    return contexts
+
+
+# ---------------------------------------------------------------------------
+# Cross-check
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass as _dc, field as _field
+
+@_dc
+class CrossCheckResult:
+    correctly_used: List[str] = _field(default_factory=list)
+    cited_not_in_bib: List[str] = _field(default_factory=list)
+    in_bib_not_cited: List[str] = _field(default_factory=list)
+
+
+def cross_check(bib_dict: dict, cited_keys: set) -> CrossCheckResult:
+    result = CrossCheckResult()
+    if not bib_dict:
+        return result
+
+    bib_keys = set(bib_dict.keys())
+
+    real_cited = {
+        k for k in cited_keys
+        if k and not k.startswith('__')
+    }
+
+    if '__numeric_citations__' in cited_keys:
+        result.correctly_used = sorted(bib_keys)
+        return result
+
+    result.correctly_used = sorted(real_cited & bib_keys)
+    result.cited_not_in_bib = sorted(real_cited - bib_keys)
+    result.in_bib_not_cited = sorted(bib_keys - real_cited)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+# ---------------------------------------------------------------------------
+
+def find_duplicates(bib_dict: dict) -> List[dict]:
+    entries = list(bib_dict.values())
+    duplicates = []
+    seen_pairs = set()
+
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            a, b = entries[i], entries[j]
+            if not a.title or not b.title:
                 continue
-            sim = _title_similarity(entry.title, title)
-            if sim >= 0.5:
-                dblp_year = str(info.get("year", ""))
-                if dblp_year and entry.year and abs(int(dblp_year) - int(entry.year)) > 2:
-                    sim *= 0.85
-                doi = info.get("doi") or ""
-                url = info.get("url") or ""
-                authors_info = info.get("authors", {})
-                if isinstance(authors_info, dict):
-                    author_list = authors_info.get("author", [])
-                    if isinstance(author_list, list):
-                        author_str = "; ".join(a.get("text", "") if isinstance(a, dict) else str(a) for a in author_list[:4])
-                    elif isinstance(author_list, dict):
-                        author_str = author_list.get("text", "")
-                    else:
-                        author_str = str(author_list)
-                else:
-                    author_str = ""
-                status = "verified" if sim >= 0.95 else "partial_match"
-                vr = VerificationResult(
-                    key=entry.key, title=entry.title, status=status, confidence=sim,
-                    matched_title=title, doi=doi, open_access_url=url if url.startswith("http") else None,
-                    note=f"Found on DBLP (match: {int(sim*100)}%)", sources_checked=["DBLP"],
-                    correct_authors=author_str or None, corrected_year=dblp_year or None,
-                )
-                if best is None or sim > best.confidence:
-                    best = vr
-        if best and best.confidence >= 0.78:
-            break
-    return best
+            sim = _title_similarity(a.title, b.title)
+            if sim >= 0.92:
+                pair = tuple(sorted([a.key, b.key]))
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    duplicates.append({
+                        "key_a": a.key,
+                        "key_b": b.key,
+                        "similarity": round(sim, 3),
+                        "title_a": a.title,
+                        "title_b": b.title,
+                    })
+
+    return duplicates
 
 
-def _search_acl(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.title:
-        return None
-    _rate_limit("aclanthology.org", 0.5)
-    try:
-        resp = requests.get("https://aclanthology.org/search/", params={"q": entry.title}, timeout=6, headers={"User-Agent": "LNI-Checker/6.2"})
-        if resp.status_code == 200:
-            titles = re.findall(r'<span class="d-block"[^>]*>(.*?)</span>', resp.text, re.DOTALL)
-            for t in titles[:3]:
-                title = re.sub(r'<[^>]+>', '', t).strip()
-                sim = _title_similarity(entry.title, title)
-                if sim >= 0.6:
-                    return VerificationResult(
-                        key=entry.key, title=entry.title, status="verified" if sim >= 0.95 else "partial_match",
-                        confidence=sim, matched_title=title, note=f"Found on ACL Anthology (match: {int(sim*100)}%)",
-                        sources_checked=["ACL Anthology"],
-                    )
-    except Exception:
-        pass
-    return None
+# ---------------------------------------------------------------------------
+# Self-citation detection
+# ---------------------------------------------------------------------------
+
+def detect_self_citations(bib_dict: dict, body: str) -> List[dict]:
+    self_cites = []
+    body_lower = body.lower()
+    self_signals = re.findall(
+        r'(?:we|our|this paper|this work|the author|the authors|i )(?:.{0,60})'
+        r'(\[[A-Z][A-Za-z+]{0,5}\d{2}[^\]]*\])',
+        body_lower,
+    )
+    self_keys = set()
+    for match in self_signals:
+        inner = match[1:-1]
+        for k in re.split(r',\s*', inner):
+            self_keys.add(k.strip().upper())
+
+    for key, entry in bib_dict.items():
+        if key.upper() in self_keys:
+            self_cites.append({
+                "key": key,
+                "title": entry.title or "",
+                "reason": "Citation appears near self-referential language",
+            })
+
+    return self_cites
 
 
-def _search_arxiv_fallback(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.title:
-        return None
-    _rate_limit("export.arxiv.org", 0.34)
-    try:
-        import urllib.parse
-        query = f'ti:"{urllib.parse.quote(entry.title)}"'
-        if entry.authors:
-            first_author = entry.authors.split(';')[0].split(',')[0].strip()
-            query += f' AND au:{urllib.parse.quote(first_author)}'
-        resp = requests.get("https://export.arxiv.org/api/query", params={"search_query": query, "max_results": 3}, timeout=8, headers={"User-Agent": "LNI-Checker/6.2"})
-        if resp.status_code == 200:
-            entries_xml = re.findall(r'<entry>(.*?)</entry>', resp.text, re.DOTALL)
-            for entry_xml in entries_xml[:2]:
-                title_match = re.search(r'<title>(.*?)</title>', entry_xml, re.DOTALL)
-                if title_match:
-                    title = re.sub(r'\s+', ' ', title_match.group(1)).strip()
-                    sim = _title_similarity(entry.title, title)
-                    if sim >= 0.6:
-                        pdf_match = re.search(r'<link[^>]+title="pdf"[^>]+href="([^"]+)"', entry_xml)
-                        oa = pdf_match.group(1) if pdf_match else None
-                        return VerificationResult(
-                            key=entry.key, title=entry.title, status="verified" if sim >= 0.95 else "partial_match",
-                            confidence=sim, matched_title=title, open_access_url=oa,
-                            note=f"Found on arXiv (match: {int(sim*100)}%)", sources_checked=["arXiv (search)"],
-                        )
-    except Exception:
-        pass
-    return None
+# ---------------------------------------------------------------------------
+# MAIN VERIFICATION FUNCTION - CORRECTED FLOW
+# ---------------------------------------------------------------------------
 
+def verify_reference(entry) -> "VerificationResult":
+    """
+    CORRECTED FLOW v7.0:
+      1. SQLite DB check ONLY
+      2. If URL exists → fetch directly with browser headers
+      3. Then check academic APIs (only for papers without URLs)
+      4. AI as last resort
+      5. AUTO-SAVE to DB for ALL verified references
+    """
+    if not entry.title and not entry.doi:
+        return VerificationResult(
+            key=entry.key, title=entry.title or "", status="not_checked",
+            confidence=0.0, note="No title or DOI to verify against",
+        )
 
-def _search_openreview(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.title:
-        return None
-    _rate_limit("openreview.net", 0.5)
-    try:
-        resp = requests.get("https://api2.openreview.net/notes/search", params={"term": entry.title, "limit": 5, "offset": 0}, timeout=7, headers={"User-Agent": "LNI-Checker/6.3"})
-        if resp.status_code != 200:
-            return None
-        notes = resp.json().get("notes", [])
-        for note in notes[:5]:
-            content = note.get("content", {})
-            def _val(field):
-                v = content.get(field, "")
-                return v.get("value", "") if isinstance(v, dict) else (v or "")
-            found_title = _val("title")
-            if not found_title:
-                continue
-            sim = _title_similarity(entry.title, found_title)
-            if sim >= 0.6:
-                authors_list = _val("authors")
-                if isinstance(authors_list, list):
-                    author_str = "; ".join(str(a) for a in authors_list[:4])
-                else:
-                    author_str = str(authors_list)
-                forum_id = note.get("forum", note.get("id", ""))
-                oa_url = f"https://openreview.net/forum?id={forum_id}" if forum_id else None
-                return VerificationResult(
-                    key=entry.key, title=entry.title, status="verified" if sim >= 0.95 else "partial_match",
-                    confidence=sim, matched_title=found_title, open_access_url=oa_url,
-                    note=f"Found on OpenReview (match: {int(sim * 100)}%)", sources_checked=["OpenReview"],
-                    correct_authors=author_str,
-                )
-    except Exception:
-        pass
-    return None
+    # ── STEP 1: SQLite DB check ONLY ─────────────────────────────────────────
+    cached = search_cache(entry.title or "", entry.authors or "")
+    if cached:
+        return VerificationResult(
+            key=entry.key, title=entry.title or "", status="verified",
+            confidence=cached.confidence,
+            matched_title=cached.title,
+            doi=cached.doi,
+            open_access_url=cached.url,
+            note=f"Found in local database (source: {cached.source})",
+            sources_checked=["local_db"],
+        )
 
-
-def _search_ieee(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.title:
-        return None
-    _rate_limit("ieeexplore.ieee.org", 1.0)
-    try:
-        api_key = os.environ.get("IEEE_API_KEY", "").strip()
-        params = {"querytext": entry.title[:200], "max_records": 5, "format": "json", "apikey": api_key or "none"}
-        resp = requests.get("https://ieeexploreapi.ieee.org/api/v1/search/articles", params=params, timeout=7, headers={"User-Agent": "LNI-Checker/6.3"})
-        if resp.status_code == 200:
-            articles = resp.json().get("articles", [])
-            for art in articles[:5]:
-                title = art.get("title", "")
-                if not title:
-                    continue
-                sim = _title_similarity(entry.title, title)
-                if sim >= 0.55:
-                    doi = art.get("doi", "")
-                    authors_raw = art.get("authors", {}).get("authors", [])
-                    author_str = "; ".join(a.get("full_name", "") for a in authors_raw[:4]) if authors_raw else None
-                    year = str(art.get("publication_year", ""))
-                    return VerificationResult(
-                        key=entry.key, title=entry.title, status="verified" if sim >= 0.95 else "partial_match",
-                        confidence=sim, matched_title=title, doi=doi or None, open_access_url=f"https://doi.org/{doi}" if doi else None,
-                        note=f"Found on IEEE Xplore (match: {int(sim*100)}%)", sources_checked=["IEEE Xplore"],
-                        correct_authors=author_str, corrected_year=year or None,
-                    )
-    except Exception:
-        pass
-    return None
-
-
-def _search_core(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.title:
-        return None
-    _rate_limit("api.core.ac.uk", 0.5)
-    try:
-        api_key = os.environ.get("CORE_API_KEY", "").strip()
-        headers = {"User-Agent": "LNI-Checker/6.3"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        resp = requests.get("https://api.core.ac.uk/v3/search/works", params={"q": entry.title[:200], "limit": 5}, timeout=7, headers=headers)
-        if resp.status_code == 200:
-            results = resp.json().get("results", [])
-            for r in results[:5]:
-                title = r.get("title", "")
-                if not title:
-                    continue
-                sim = _title_similarity(entry.title, title)
-                if sim >= 0.6:
-                    doi = r.get("doi", "")
-                    oa_url = r.get("downloadUrl") or (r.get("links") or [{}])[0].get("url") if r.get("links") else None
-                    authors_raw = r.get("authors", [])
-                    author_str = "; ".join(a.get("name", "") for a in authors_raw[:4]) if isinstance(authors_raw, list) else None
-                    year = str(r.get("yearPublished", ""))
-                    return VerificationResult(
-                        key=entry.key, title=entry.title, status="verified" if sim >= 0.95 else "partial_match",
-                        confidence=sim, matched_title=title, doi=doi or None, open_access_url=oa_url,
-                        note=f"Found on CORE (match: {int(sim*100)}%)", sources_checked=["CORE"],
-                        correct_authors=author_str, corrected_year=year or None,
-                    )
-    except Exception:
-        pass
-    return None
-
-
-def _search_springer(entry: BibEntry) -> Optional[VerificationResult]:
-    if not entry.title:
-        return None
+    # ── STEP 2: If URL exists, fetch directly ────────────────────────────────
+    entry_url = (getattr(entry, 'url', '') or '').strip()
+    result = None
     
+    if entry_url and entry_url.startswith("http"):
+        reachable, page_content, meta, url_note = _fetch_url_with_browser_headers(
+            entry_url, entry.title or "", entry.authors or "", entry.year or ""
+        )
+        
+        if reachable:
+            result = VerificationResult(
+                key=entry.key, title=entry.title or "",
+                status="partial_match", confidence=0.50,
+                matched_title=None,
+                open_access_url=entry_url,
+                note=f"URL reachable. AI will verify content. {url_note}",
+                sources_checked=["url_fetch"],
+                web_evidence=page_content[:1000],
+            )
+        else:
+            result = VerificationResult(
+                key=entry.key, title=entry.title or "",
+                status="not_found", confidence=0.0,
+                matched_title=None,
+                note=f"URL not reachable: {url_note}",
+                sources_checked=["url_fetch"],
+            )
+    else:
+        # ── STEP 3: Academic API pipeline ────────────────────────────────────
+        if entry.doi:
+            result = _lookup_by_doi(entry)
+
+        if not result:
+            result = _lookup_by_arxiv_id(entry)
+
+        if not result:
+            searchers = [_search_crossref, _search_semantic_scholar]
+            best = None
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                futures = {ex.submit(fn, entry): fn.__name__ for fn in searchers}
+                for future in as_completed(futures):
+                    try:
+                        r = future.result()
+                    except Exception:
+                        r = None
+                    if r is None:
+                        continue
+                    if r.status == "verified" and r.confidence >= 0.95:
+                        best = r
+                        for f in futures:
+                            f.cancel()
+                        break
+                    if best is None or (r.confidence > best.confidence):
+                        best = r
+            result = best
+        
+        # ── AUTO-SAVE API-verified academic papers to DB ─────────────────────
+        if result and result.status == "verified" and result.confidence >= 0.85:
+            if entry.title:
+                save_to_cache(
+                    title=result.matched_title or entry.title,
+                    authors=entry.authors or "",
+                    year=entry.year or "",
+                    doi=result.doi or entry.doi or "",
+                    url=result.open_access_url or entry.url or "",
+                    source=result.sources_checked[0] if result.sources_checked else "api",
+                    confidence=result.confidence,
+                )
+
+    # ── STEP 4: AI fallback via web_search_verifier ──────────────────────────
+    if not result or result.status in ("not_found", "error", "partial_match"):
+        entry_dict = {
+            "title": entry.title or "",
+            "authors": entry.authors or "",
+            "year": entry.year or "",
+            "url": entry_url,
+        }
+        api_status = result.status if result else "not_found"
+        web = verify_with_web_search(entry_dict, api_status)
+        if web.get("status") == "verified":
+            result = VerificationResult(
+                key=entry.key, title=entry.title or "", status="verified",
+                confidence=web.get("confidence", 0.7),
+                matched_title=web.get("matched_title"),
+                open_access_url=web.get("open_access_url"),
+                note=web.get("note", "Verified via web search"),
+                sources_checked=web.get("sources_checked", ["web_search"]),
+                web_evidence=web.get("note"),
+            )
+            # Save to DB if AI confirmed it's real
+            if result.matched_title:
+                save_to_cache(
+                    title=result.matched_title,
+                    authors=entry.authors or "",
+                    year=entry.year or "",
+                    doi=result.doi or "",
+                    url=result.open_access_url or "",
+                    source="web_search",
+                    confidence=result.confidence,
+                )
+
+    if result is None:
+        result = VerificationResult(
+            key=entry.key, title=entry.title or "", status="not_found",
+            confidence=0.0, note="Not found in any source",
+            sources_checked=[],
+        )
+
+    return result
+
+
+def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
+    entries = list(bib_dict.values())
+    results = []
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        future_map = {ex.submit(verify_reference, e): e for e in entries}
+        for future in as_completed(future_map):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                e = future_map[future]
+                results.append(VerificationResult(
+                    key=e.key, title=e.title or "", status="error",
+                    confidence=0.0, note=f"Verification error: {exc}",
+                ))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Score computation
+# ---------------------------------------------------------------------------
+
+def compute_score(
+    bib_list: list,
+    xcheck: "CrossCheckResult",
+    api_results: list,
+    style_suggestions: list,
+    duplicates: list,
+    professor_confirmed_fakes: int = 0,
+    retracted_count: int = 0,
+) -> dict:
+    score = 100
+    penalties = []
+
+    missing = len(xcheck.cited_not_in_bib)
+    if missing:
+        deduct = min(missing * 5, 20)
+        score -= deduct
+        penalties.append({"reason": f"{missing} citation(s) missing from bibliography", "deduction": deduct})
+
+    orphaned = len(xcheck.in_bib_not_cited)
+    if orphaned:
+        deduct = min(orphaned * 2, 10)
+        score -= deduct
+        penalties.append({"reason": f"{orphaned} bibliography entry/entries never cited", "deduction": deduct})
+
+    style_count = len(style_suggestions)
+    if style_count:
+        deduct = min(style_count * 2, 15)
+        score -= deduct
+        penalties.append({"reason": f"{style_count} LNI style issue(s)", "deduction": deduct})
+
+    dup_count = len(duplicates)
+    if dup_count:
+        deduct = min(dup_count * 3, 10)
+        score -= deduct
+        penalties.append({"reason": f"{dup_count} duplicate reference(s)", "deduction": deduct})
+
+    if professor_confirmed_fakes:
+        deduct = min(professor_confirmed_fakes * 15, 40)
+        score -= deduct
+        penalties.append({"reason": f"{professor_confirmed_fakes} confirmed fake reference(s)", "deduction": deduct})
+
+    if retracted_count:
+        deduct = min(retracted_count * 5, 15)
+        score -= deduct
+        penalties.append({"reason": f"{retracted_count} retracted paper(s) cited", "deduction": deduct})
+
+    incomplete = sum(1 for e in bib_list if getattr(e, 'completeness_issues', None))
+    if incomplete:
+        deduct = min(incomplete * 2, 10)
+        score -= deduct
+        penalties.append({"reason": f"{incomplete} incomplete bibliography entry/entries", "deduction": deduct})
+
+    score = max(0, score)
+
+    if score >= 90:
+        grade = "A"
+    elif score >= 75:
+        grade = "B"
+    elif score >= 60:
+        grade = "C"
+    elif score >= 50:
+        grade = "D"
+    else:
+        grade = "F"
+
+    return {"score": score, "grade": grade, "penalties": penalties}

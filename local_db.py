@@ -332,3 +332,24 @@ def delete_paper(title: str) -> bool:
         return False
     finally:
         conn.close()
+
+def paper_exists(title: str, authors: str = "") -> bool:
+    """Check if a paper already exists in the database."""
+    if not title:
+        return False
+    norm = normalize_title(title)
+    conn = sqlite3.connect(str(CACHE_DB))
+    try:
+        if authors:
+            row = conn.execute(
+                "SELECT 1 FROM verified_papers WHERE title_norm = ? AND authors_blob = ?",
+                (norm, _compress(authors[:500]) if authors else None)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM verified_papers WHERE title_norm = ?",
+                (norm,)
+            ).fetchone()
+        return row is not None
+    finally:
+        conn.close()

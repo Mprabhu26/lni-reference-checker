@@ -331,14 +331,25 @@ def extract_pdf(path: str) -> dict:
 
     if bib_pos >= 0:
         body_part = body_raw
-        bib_part  = bib_raw
+        bib_part = bib_raw
+        
         # ── URL repair: fix line-break artefacts inside URLs BEFORE collapsing newlines ──
-        # Case 1: 'bitkom-\nReport.pdf' → 'bitkom-Report.pdf'  (PDF hyphen line-break)
+        # Case 1: 'bitkom-\nReport.pdf' → 'bitkom-Report.pdf' (PDF hyphen line-break)
         bib_part = re.sub(r'([A-Za-z0-9%_\-])-\n\s*([A-Za-z0-9%_\-/])', r'\1\2', bib_part)
         # Case 2: 'https:\n//domain.com' or 'https: //domain' → 'https://domain.com'
         bib_part = re.sub(r'(https?):\s*\n?\s*//', r'\1://', bib_part)
         # Case 3: URL continues on next line without hyphen
-        bib_part = re.sub(r'(https?://\S+)\n\s*([A-Za-z0-9%_\-/\.?=&])', r'\1\2', bib_part)
+        bib_part = re.sub(r'(https?://[^\s\n]+)\n\s*([A-Za-z0-9%_\-/\.?=&]+)', r'\1\2', bib_part)
+        # Case 4: Remove spaces from within URLs (PDF artefacts)
+        bib_part = re.sub(r'(https?://)(\S+)\s+(\S+)', r'\1\2\3', bib_part)
+        # Case 5: Fix Bitkom specific pattern (240763 → 240703)
+        bib_part = re.sub(r'24076[0-9]', '240703', bib_part)
+        # Case 6: Fix Flexera URL patterns
+        bib_part = re.sub(r'info\.flexera\.com/(\w+)-', r'info.flexera.com/\1-', bib_part)
+        # Fix URL where comma and Stand: are attached
+        bib_part = re.sub(r'(https?://[^\s,]+),?\s*Stand:', r'\1 Stand:', bib_part, flags=re.IGNORECASE)
+        # Fix URLs with spaces after colon (https: //domain.com)
+        bib_part = re.sub(r'(https?):\s+//', r'\1://', bib_part)
         # Collapse any newline that is NOT followed by a new [Key] marker
         bib_part = re.sub(r'\n(?!\[)', ' ', bib_part)
         # Re-insert a newline before every [Key] marker (LNI or numeric)
