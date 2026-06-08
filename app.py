@@ -322,12 +322,14 @@ def _assemble_result(
             if overlap is not None and overlap < 0.4:
                 author_mismatches += 1
 
-    det_score = compute_score(bib_list, xcheck, api_results_raw,
-                              style_suggestions, duplicates,
-                              ai_fake_count=ai_fake_count,
-                              retracted_count=retracted_count,
-                              year_mismatches=year_mismatches,
-                              author_mismatches=author_mismatches)
+    # professor_confirmed_fakes=0 at initial check time — score deduction for fakes
+    # only applies after professor explicitly marks a SUSPICIOUS/FAKE ref as confirmed.
+    det_score = compute_score(
+        bib_list, xcheck, api_results_raw,
+        style_suggestions, duplicates,
+        professor_confirmed_fakes=0,
+        retracted_count=retracted_count,
+    )
     s = det_score["score"]
     det_verdict = "PASS" if s >= 75 else "FLAG" if s >= 50 else "FAIL"
 

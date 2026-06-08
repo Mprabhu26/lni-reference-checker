@@ -630,11 +630,15 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     
     # Normalize
     composite_risk = weighted_sum / total_weight if total_weight > 0 else 0.5
-    
-    # Determine verdict based on composite risk
-    if composite_risk >= 0.75:
+
+    # Count independent high-risk signals (risk ≥ 0.5).
+    # A single "not found in database" must never alone brand a paper FAKE.
+    high_risk_signal_count = sum(1 for s in signals if s["risk"] >= 0.5)
+
+    # Determine verdict based on composite risk + co-occurrent signal guard
+    if composite_risk >= 0.82 and high_risk_signal_count >= 2:
         verdict = "FAKE"
-        confidence = min(0.7 + (composite_risk - 0.75) * 1.2, 0.95)
+        confidence = min(0.7 + (composite_risk - 0.82) * 1.2, 0.95)
     elif composite_risk >= 0.55:
         verdict = "SUSPICIOUS"
         confidence = 0.5 + (composite_risk - 0.55) * 1.5
@@ -654,6 +658,49 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
         "composite_risk": round(composite_risk, 2),
         "risk_factors": risk_factors[:4]
     }
+
+
+def _has_et_al(authors: str) -> bool:
+    """Return True if the author string is abbreviated (et al. or single surname)."""
+    if not authors:
+        return True
+    s = authors.lower().strip()
+    if re.search(r'\bet\s*al\.?', s):
+        return True
+    # Single token with no separator — likely "Vaswani" shorthand
+    parts = [p.strip() for p in re.split(r'[;,]', s) if p.strip()]
+    if len(parts) == 1 and ' ' not in parts[0]:
+        return True
+    return False
+
+
+def _detect_soft_flags(cited_title: str, matched_title: str,
+                       cited_authors: str, correct_authors: str) -> List[str]:
+    """
+    Detect minor surface differences that do NOT affect genuineness:
+      - Title casing only differs   e.g. 'Is' vs 'is'
+      - 1-character author typo     e.g. 'Vassawani' vs 'Vaswani'
+    Returns a list of human-readable flag strings (empty = clean).
+    These are REAL papers; flags carry zero score deduction.
+    """
+    flags: List[str] = []
+    if cited_title and matched_title:
+        if cited_title.strip() != matched_title.strip() and \
+                cited_title.strip().lower() == matched_title.strip().lower():
+            flags.append(
+                f"Title casing differs — cited: '{cited_title.strip()}' "
+                f"/ found: '{matched_title.strip()}'"
+            )
+    if cited_authors and correct_authors:
+        from difflib import SequenceMatcher as _SM
+        a_sim = _SM(None, cited_authors.lower(), correct_authors.lower()).ratio()
+        if a_sim < 1.0 and a_sim >= 0.82:
+            # Likely a 1-2 character typo; flag but don't penalise
+            flags.append(
+                f"Minor author spelling difference — cited: '{cited_authors}' "
+                f"/ found: '{correct_authors}'"
+            )
+    return flags
 
 
 def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: float) -> Optional[dict]:
@@ -677,47 +724,81 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
         return {"verdict": "REAL", "confidence": 0.99,
                 "reasoning": "Paper confirmed to exist but RETRACTED — do not cite",
                 "risk_factors": ["RETRACTED"]}
-    if has_doi and api_status == "verified" and confidence >= 0.80:
+    if has_doi and api_status == "verified" and confidence >= 0.95:
+        soft = _detect_soft_flags(
+            entry.get("title", ""), api_result.get("matched_title", ""),
+            entry.get("authors", ""), api_result.get("correct_authors", ""),
+        )
         return {"verdict": "REAL", "confidence": 0.95,
                 "reasoning": f"DOI confirmed + title {confidence:.0%} match",
-                "risk_factors": []}
-    if has_oa_url and confidence >= 0.75:
+                "risk_factors": soft,   # soft flags shown to professor, no deduction
+                "soft_flags": soft}
+    if has_oa_url and confidence >= 0.95:
+        soft = _detect_soft_flags(
+            entry.get("title", ""), api_result.get("matched_title", ""),
+            entry.get("authors", ""), api_result.get("correct_authors", ""),
+        )
         return {"verdict": "REAL", "confidence": 0.91,
-                "reasoning": f"Open-access copy retrieved and verified",
-                "risk_factors": []}
+                "reasoning": "Open-access copy retrieved and verified",
+                "risk_factors": soft,
+                "soft_flags": soft}
     if has_version_note and confidence >= 0.65:
         return {"verdict": "REAL", "confidence": 0.88,
                 "reasoning": f"Preprint found: {api_result.get('version_note','')}",
                 "risk_factors": []}
-    if api_status == "verified" and confidence >= 0.88 and n_sources >= 2:
+    if api_status == "verified" and confidence >= 0.95 and n_sources >= 2:
+        soft = _detect_soft_flags(
+            entry.get("title", ""), api_result.get("matched_title", ""),
+            entry.get("authors", ""), api_result.get("correct_authors", ""),
+        )
         return {"verdict": "REAL", "confidence": confidence,
                 "reasoning": f"Confirmed by {n_sources} independent databases",
-                "risk_factors": []}
-    
+                "risk_factors": soft,
+                "soft_flags": soft}
+
     cited_authors = (entry.get("authors") or "").strip()
     correct_authors = (api_result.get("correct_authors") or
                        api_result.get("corrected_authors") or "").strip()
+
+    # ── Et al. / abbreviated author guard ───────────────────────────────────
+    # If the student used shorthand ("Vaswani et al." or just "Vaswani"),
+    # the strict < 25% overlap check must be skipped — abbreviation is not
+    # evidence of fabrication.  Route to _compute_verdict_with_confidence.
+    if _has_et_al(cited_authors):
+        return None  # fall through to composite score — no FAKE verdict here
+
     if not cited_authors or not correct_authors:
         # Only short-circuit as REAL when database verification is solid AND
         # we have at least one concrete artifact (DOI or OA URL) to anchor the claim.
-        if api_status == "verified" and confidence >= 0.82 and (has_doi or has_oa_url):
+        if api_status == "verified" and confidence >= 0.95 and (has_doi or has_oa_url):
             return {"verdict": "REAL", "confidence": confidence,
                     "reasoning": "Verified in database with DOI/URL — no author data to cross-check",
                     "risk_factors": []}
         return None
-    
+
     overlap = author_overlap_score(cited_authors, correct_authors)
     if overlap is None:
         return None
     pct = int(overlap * 100)
+
+    # Soft-flag: minor author spelling difference (real paper, no deduction)
+    soft = _detect_soft_flags(
+        entry.get("title", ""), api_result.get("matched_title", ""),
+        cited_authors, correct_authors,
+    )
+
     if overlap < 0.25 and api_status in ("verified", "partial_match") and title_sim >= 0.40:
+        # Title matches a known paper but author set is almost entirely different
+        # → likely stolen title.  Still requires title_sim ≥ 0.95 (enforced upstream)
+        # so this only fires when we have very strong title evidence.
         return {"verdict": "FAKE", "confidence": 0.88,
-                "reasoning": f"Title matches but author overlap is only {pct}% — possible fabrication",
+                "reasoning": f"Title matches but author overlap is only {pct}% — possible stolen title",
                 "risk_factors": [f"Author mismatch ({pct}%)"]}
     if overlap >= 0.60 and api_status in ("verified", "partial_match") and confidence >= 0.65:
         return {"verdict": "REAL", "confidence": round(min(0.80 + overlap * 0.18, 0.97), 2),
                 "reasoning": f"Author overlap {pct}% + title match",
-                "risk_factors": []}
+                "risk_factors": soft,
+                "soft_flags": soft}
     return None
 
 
@@ -1054,14 +1135,16 @@ Return ONLY valid JSON, no markdown:
         return _call_ai_json(prompt, max_tokens=800)
     except Exception as e:
         score = 100
-        score -= min(fake_count * 20, 60)
+        # Only deduct for confirmed structural/format errors — not for flagged/suspicious refs
         score -= min(missing_cit * 10, 30)
         score -= min(incomplete * 5, 20)
         score -= min(orphaned * 3, 12)
         score -= min(len(key_issues) * 5, 15)
         score = max(0, min(100, score))
         grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F"
-        verdict = "FAIL" if fake_count >= 2 or score < 45 else "FLAG" if fake_count >= 1 or len(key_issues) >= 2 or score < 75 else "PASS"
+        # Only FAIL on structural grounds (missing bib, many incomplete entries)
+        # Suspicious/fake refs stay as FLAG until professor confirms
+        verdict = "FAIL" if score < 45 else "FLAG" if fake_count >= 1 or len(key_issues) >= 2 or score < 75 else "PASS"
         
         # Simplified professor note - just the keys to review
         keys_to_review = []
