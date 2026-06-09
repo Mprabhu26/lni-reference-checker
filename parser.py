@@ -160,15 +160,16 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         entry.isbn = re.sub(r'[\s-]', '', isbn_match.group(1))
 
     # ── Website detection ─────────────────────────────────────────────────────
-    # Also catches PDF artefact "https: //domain" (space after colon)
+    # Extract URL as-is, no cleaning except basic whitespace
     url_match = re.search(r'(https?://\S+|https?:\s+//\S+|www\.\S+)', raw)
     if url_match:
         entry.entry_type = "website"
-        # Fix "https: //..." space artefact, strip ",Stand:..." suffix
+        # Fix "https: //domain.com" space artefact if present
         raw_url = re.sub(r'^(https?):\s+//', r'\1://', url_match.group(1))
-        raw_url = re.sub(r',?\s*Stand:.*$', '', raw_url, flags=re.IGNORECASE)
-        entry.url = raw_url.rstrip('.,;)')
+        # Take URL as-is - no removal of "Stand:" or anything else
+        entry.url = raw_url.strip()
 
+        # Extract urldate separately if present
         date_match = re.search(
             r'(?:Stand:|Abruf:|abgerufen am|accessed|besucht am)[:\s]*([\d./-]+)',
             raw, re.IGNORECASE,

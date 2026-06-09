@@ -314,36 +314,160 @@ def verify_grey_literature_by_url_direct(url: str, title: str = "") -> dict:
     }
 
 
+def llm_verify_grey_literature_by_knowledge(
+    raw_text: str,
+    title: str,
+    authors: str,
+    year: str,
+    url: str,
+    url_note: str,
+) -> dict:
+    """
+    Use the LLM's own knowledge to verify grey literature (industry reports,
+    government docs, blog posts) when URL fetch and web search both fail.
+
+    The LLM is given the FULL raw reference string so it can recognise
+    well-known sources like Bitkom Cloud Report 2024, Flexera State of the
+    Cloud, 37signals/Basecamp blog posts, etc.
+
+    Returns a verify_with_web_search-compatible dict.
+    """
+    prompt = f"""You are an academic librarian verifying grey literature references
+(industry reports, government publications, corporate blog posts).
+
+These sources are NEVER indexed in CrossRef or Semantic Scholar, so you must
+rely on your own knowledge of publicly available grey literature.
+
+FULL REFERENCE TEXT (as written by the student):
+{raw_text or title}
+
+PARSED FIELDS:
+- Title:   {title}
+- Authors: {authors or "(organisation as author)"}
+- Year:    {year}
+- URL:     {url or "(none)"}
+- URL note: {url_note}
+
+TASK: Determine if this reference describes a real, publicly available document.
+For well-known industry reports (Bitkom Cloud Report, Flexera State of the Cloud,
+Gartner reports, government publications, etc.) use your training knowledge.
+
+Return ONLY valid JSON, no markdown:
+{{
+  "verdict": "REAL or FAKE or UNCERTAIN",
+  "confidence": 0.0-1.0,
+  "matched_title": "canonical title you know (or null)",
+  "matched_authors": "canonical author/org (or null)",
+  "matched_year": "year you know this was published (or null)",
+  "open_access_url": "canonical URL if you know it (or null)",
+  "explanation": "one-sentence reasoning"
+}}
+
+RULES:
+- REAL (confidence ≥ 0.80): You are confident this document exists and the
+  title/year/organisation match a known publication.
+- UNCERTAIN (confidence 0.40–0.79): The source type and organisation are
+  plausible but you cannot confirm the exact edition/year.
+- FAKE (confidence ≥ 0.80): This document does not exist or the details are
+  clearly fabricated (wrong year for a known series, non-existent organisation, etc.).
+"""
+    try:
+        result = _call_llm_for_verification(prompt)
+        verdict = result.get("verdict", "UNCERTAIN").upper()
+        if verdict not in ("REAL", "FAKE", "UNCERTAIN"):
+            verdict = "UNCERTAIN"
+        confidence = float(result.get("confidence", 0.5))
+        if verdict == "REAL" and confidence >= 0.80:
+            return {
+                "status": "verified",
+                "web_verified": True,
+                "confidence": confidence,
+                "matched_title": result.get("matched_title") or title,
+                "matched_authors": result.get("matched_authors"),
+                "matched_year": result.get("matched_year"),
+                "open_access_url": result.get("open_access_url"),
+                "note": f"Grey literature verified via AI knowledge: {result.get('explanation', '')}",
+                "sources_checked": ["ai_knowledge"],
+            }
+        if verdict == "FAKE" and confidence >= 0.80:
+            return {
+                "status": "suspicious",
+                "web_verified": False,
+                "confidence": confidence,
+                "note": f"AI: likely fabricated — {result.get('explanation', '')}",
+                "sources_checked": ["ai_knowledge"],
+            }
+        return {
+            "status": "suspicious",
+            "web_verified": False,
+            "confidence": confidence,
+            "note": f"AI uncertain about grey literature: {result.get('explanation', '')}",
+            "sources_checked": ["ai_knowledge"],
+        }
+    except Exception as e:
+        return {
+            "status": "suspicious",
+            "web_verified": False,
+            "confidence": 0.3,
+            "note": f"AI knowledge check failed: {str(e)[:100]}",
+            "sources_checked": [],
+        }
+
+
 def verify_with_web_search(entry: dict, api_status: str) -> dict:
     """
     Main entry point. Only call this when API lookup returned nothing.
+    If url_blocked=True (URL exists but bot-blocked), try direct URL verification
+    via LLM before falling back to generic web search.
     Returns updated verification result.
     """
     title = entry.get("title", "")
     authors = entry.get("authors", "")
     year = entry.get("year", "")
-    
+    url = entry.get("url", "")
+    url_blocked = entry.get("url_blocked", False)
+    url_note = entry.get("url_note", "")
+
     if not title:
         return {"status": api_status, "web_verified": False, "note": "No title to search for"}
-    
-    # Step 1: Search the web
+
+    # ── Fast-path: URL exists but was bot-blocked → ask AI to verify via URL ──
+    if url_blocked and url:
+        url_result = verify_grey_literature_by_url_direct(url, title)
+        status = url_result.get("status", "not_found")
+
+        if status in ("verified", "partial_match"):
+            confidence = url_result.get("confidence", 0.6)
+            return {
+                "status": "verified" if status == "verified" else "verified",
+                "web_verified": True,
+                "confidence": confidence,
+                "matched_title": url_result.get("matched_title") or title,
+                "open_access_url": url_result.get("open_access_url") or url,
+                "note": url_result.get("note", "Verified via direct URL (AI-assisted)"),
+                "sources_checked": url_result.get("sources_checked", ["url_ai"]),
+            }
+
+    # ── Standard path: generic web search + LLM ──────────────────────────────
     web_results = search_web_for_paper(title, authors)
-    
+
     if not web_results:
-        return {
-            "status": api_status,
-            "web_verified": False,
-            "note": "Web search found no results",
-            "web_attempted": True
-        }
-    
-    # Step 2: LLM analysis of web results
+        # No web results — fall back to AI's own knowledge (especially useful
+        # for well-known grey literature like Bitkom/Flexera annual reports)
+        return llm_verify_grey_literature_by_knowledge(
+            raw_text=entry.get("raw_text", ""),
+            title=title,
+            authors=authors,
+            year=year,
+            url=url,
+            url_note=url_note,
+        )
+
     llm_result = llm_verify_with_web_search(title, authors, year, web_results)
-    
-    # Step 3: If LLM found a real paper, return verified
+
     if llm_result.verdict == "REAL" and llm_result.found_title:
         return {
-            "status": "verified",  # Upgrade from not_found to verified!
+            "status": "verified",
             "web_verified": True,
             "confidence": llm_result.confidence,
             "matched_title": llm_result.found_title,
@@ -351,13 +475,26 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
             "matched_year": llm_result.found_year,
             "open_access_url": llm_result.found_url,
             "note": f"Found via web search: {llm_result.explanation}",
-            "sources_checked": ["web_search", "llm_verification"]
+            "sources_checked": ["web_search", "llm_verification"],
         }
-    
+
+    # Web search ran but LLM was not confident — try AI's own knowledge as
+    # a second opinion (catches well-known reports even when DDG snippets are thin)
+    knowledge_result = llm_verify_grey_literature_by_knowledge(
+        raw_text=entry.get("raw_text", ""),
+        title=title,
+        authors=authors,
+        year=year,
+        url=url,
+        url_note=url_note,
+    )
+    if knowledge_result.get("status") == "verified":
+        return knowledge_result
+
     return {
         "status": api_status,
         "web_verified": False,
         "confidence": llm_result.confidence,
         "note": f"Web search: {llm_result.explanation}",
-        "web_attempted": True
+        "web_attempted": True,
     }

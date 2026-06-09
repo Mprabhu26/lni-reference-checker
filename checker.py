@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from parser import BibEntry
-
+from concurrent.futures import TimeoutError as ConcurrentTimeoutError
 from local_db import search_cache, save_to_cache, get_cache_stats, init_cache_db
 from web_search_verifier import verify_with_web_search
 from review_queue import is_venue_whitelisted, get_review_decision, get_false_positive
@@ -352,8 +352,12 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
         
         mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
         ua = f"LNI-Checker/8.0 (mailto:{mailto})" if mailto else "LNI-Checker/8.0"
+        
+        # Longer timeout for academic papers (10 seconds instead of 8)
+        timeout = 10
+        
         resp = requests.get("https://api.crossref.org/works",
-                            params=params, timeout=8,
+                            params=params, timeout=timeout,
                             headers={"User-Agent": ua})
         
         if resp.status_code == 200:
@@ -371,7 +375,6 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                         f"{a.get('family','')}, {a.get('given','')}"
                         for a in authors[:3]
                     ) if authors else None
-                    # RETURN IMMEDIATELY when match found
                     return VerificationResult(
                         key=entry.key,
                         title=entry.title,
@@ -388,6 +391,17 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                         corrected_year=meta["corrected_year"],
                         corrected_journal=meta["corrected_journal"],
                     )
+    except requests.exceptions.Timeout:
+        # Return a special result indicating timeout - not a failure
+        print(f"CrossRef timeout for {entry.key}, will use AI fallback")
+        return VerificationResult(
+            key=entry.key,
+            title=entry.title or "",
+            status="timeout",
+            confidence=0.0,
+            note="CrossRef API timeout - will try AI verification",
+            sources_checked=["CrossRef_timeout"],
+        )
     except Exception as e:
         print(f"CrossRef search error for {entry.key}: {e}")
     
@@ -444,86 +458,161 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
     from bs4 import BeautifulSoup
 
     url = (getattr(entry, "url", "") or "").strip()
-    
+
     if not url or not url.startswith("http"):
         return None
 
     # Clean URL
     url = re.sub(r'\s+', '', url)
     url = re.sub(r',?\s*Stand:.*$', '', url, flags=re.IGNORECASE)
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html,application/pdf,application/xhtml+xml",
-    }
-    
-    try:
-        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
-        
-        if resp.status_code == 200:
-            content_type = resp.headers.get('Content-Type', '').lower()
-            
-            # Check if it's a PDF
-            if 'application/pdf' in content_type or url.endswith('.pdf'):
-                # For PDFs, if we got a 200, consider it verified
-                # (The PDF exists and is accessible)
-                return VerificationResult(
-                    key=entry.key,
-                    title=entry.title or "",
-                    status="verified",
-                    confidence=0.90,
-                    matched_title=entry.title,
-                    open_access_url=resp.url,
-                    note=f"PDF verified (HTTP 200)",
-                    sources_checked=["url_verify"],
-                )
-            
-            # For HTML pages, extract title
-            soup = BeautifulSoup(resp.text, "html.parser")
-            page_title = ""
-            if soup.find("title"):
-                page_title = soup.find("title").get_text().strip()
-            elif soup.find("meta", property="og:title"):
-                page_title = soup.find("meta", property="og:title").get("content", "")
-            elif soup.find("h1"):
-                page_title = soup.find("h1").get_text().strip()
-            
-            if page_title and entry.title:
-                sim = _title_similarity(entry.title, page_title)
-                if sim >= 0.85:
+    url = re.sub(r'Stand:.*$', '', url, flags=re.IGNORECASE)
+
+    # Rotate two browser profiles to defeat simple bot-blocks
+    _profiles = [
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.google.com/",
+        },
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                "Version/17.4 Safari/605.1.15"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "de-DE,de;q=0.9,en-GB;q=0.8,en;q=0.7",
+            "Referer": "https://www.google.com/",
+        },
+    ]
+
+    last_status = None
+    for profile in _profiles:
+        session = requests.Session()
+        session.headers.update(profile)
+        try:
+            # Warm-up HEAD to acquire cookies (helps Cloudflare / auth redirects)
+            try:
+                session.head(url, timeout=8, allow_redirects=True)
+            except Exception:
+                pass
+
+            resp = session.get(url, timeout=15, allow_redirects=True)
+            last_status = resp.status_code
+
+            if resp.status_code == 200:
+                content_type = resp.headers.get('Content-Type', '').lower()
+
+                # PDF → verified without title comparison
+                if 'application/pdf' in content_type or url.lower().endswith('.pdf'):
                     return VerificationResult(
                         key=entry.key,
                         title=entry.title or "",
                         status="verified",
-                        confidence=round(sim, 4),
-                        matched_title=page_title,
+                        confidence=0.90,
+                        matched_title=entry.title,
                         open_access_url=resp.url,
-                        note=f"URL verified (title match {int(sim*100)}%)",
+                        note="PDF verified (HTTP 200)",
                         sources_checked=["url_verify"],
                     )
-        
-        # For 404, try alternate URL patterns
-        if resp.status_code == 404 and "flexera" in url:
-            # Try without query parameters
-            base_url = url.split('?')[0]
-            resp2 = requests.get(base_url, headers=headers, timeout=15)
-            if resp2.status_code == 200:
+
+                # HTML → extract and compare title
+                soup = BeautifulSoup(resp.text, "html.parser")
+                page_title = ""
+                if soup.find("title"):
+                    page_title = soup.find("title").get_text().strip()
+                if not page_title:
+                    meta = soup.find("meta", property="og:title")
+                    if meta:
+                        page_title = meta.get("content", "")
+                if not page_title:
+                    h1 = soup.find("h1")
+                    if h1:
+                        page_title = h1.get_text().strip()
+
+                # Challenge / bot-block pages count as "URL alive, bot-blocked"
+                _challenge = {"just a moment", "access denied", "attention required",
+                              "403 forbidden", "404 not found", "please wait"}
+                if page_title.lower() in _challenge or "cloudflare" in resp.text[:500].lower():
+                    return VerificationResult(
+                        key=entry.key,
+                        title=entry.title or "",
+                        status="url_blocked",
+                        confidence=0.0,
+                        open_access_url=url,
+                        note=f"URL alive (HTTP 200) but bot-protected. Escalating to AI.",
+                        sources_checked=["url_fetch"],
+                    )
+
+                if page_title and entry.title:
+                    sim = _title_similarity(entry.title, page_title)
+                    if sim >= 0.85:
+                        return VerificationResult(
+                            key=entry.key,
+                            title=entry.title or "",
+                            status="verified",
+                            confidence=round(sim, 4),
+                            matched_title=page_title,
+                            open_access_url=resp.url,
+                            note=f"URL verified (title match {int(sim*100)}%)",
+                            sources_checked=["url_verify"],
+                        )
+
+                # Page reachable but title didn't match well enough
                 return VerificationResult(
                     key=entry.key,
                     title=entry.title or "",
-                    status="verified",
-                    confidence=0.85,
-                    matched_title=entry.title,
-                    open_access_url=resp2.url,
-                    note=f"URL verified (alternate URL)",
-                    sources_checked=["url_verify"],
+                    status="url_blocked",
+                    confidence=0.0,
+                    open_access_url=url,
+                    note=(
+                        f"URL reachable (HTTP 200) but title similarity too low "
+                        f"(page: '{page_title[:60]}'). Escalating to AI."
+                    ),
+                    sources_checked=["url_fetch"],
                 )
-        
-        return None
-        
-    except Exception as e:
-        print(f"URL fetch error for {entry.key}: {e}")
-        return None
+
+            elif resp.status_code in (301, 302, 303, 307, 308):
+                # Pure redirect without following — shouldn't happen (allow_redirects=True)
+                # but guard anyway
+                return VerificationResult(
+                    key=entry.key, title=entry.title or "",
+                    status="url_blocked", confidence=0.0,
+                    open_access_url=url,
+                    note=f"URL redirects (HTTP {resp.status_code}). Escalating to AI.",
+                    sources_checked=["url_fetch"],
+                )
+
+            elif resp.status_code in (403, 429):
+                # Server alive, blocking bots → URL almost certainly valid
+                return VerificationResult(
+                    key=entry.key, title=entry.title or "",
+                    status="url_blocked", confidence=0.0,
+                    open_access_url=url,
+                    note=f"URL reachable but bot-blocked (HTTP {resp.status_code}). Escalating to AI.",
+                    sources_checked=["url_fetch"],
+                )
+
+        except requests.exceptions.Timeout:
+            continue
+        except Exception as e:
+            print(f"URL fetch error for {entry.key}: {e}")
+            continue
+
+    # All attempts exhausted — still pass URL to AI rather than giving up
+    status_str = f"HTTP {last_status}" if last_status else "connection failed"
+    return VerificationResult(
+        key=entry.key, title=entry.title or "",
+        status="url_blocked", confidence=0.0,
+        open_access_url=url,
+        note=f"URL unreachable after all attempts ({status_str}). Escalating to AI.",
+        sources_checked=["url_fetch"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -714,6 +803,94 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             sources_checked=["local_db"],
         )
 
+    # ── STEP 1b: Fast-path for grey literature ────────────────────────────────
+    # Grey literature (industry reports, blogs, government docs) is never indexed
+    # in CrossRef or Semantic Scholar. Skip academic APIs entirely and go straight
+    # to URL fetch → AI verification.
+        
+    _entry_dict_for_grey = {
+        "title":      entry.title or "",
+        "authors":    getattr(entry, "authors", "") or "",
+        "year":       entry.year or "",
+        "url":        (getattr(entry, "url", "") or "").strip(),
+        "publisher":  getattr(entry, "publisher", "") or "",
+        "entry_type": getattr(entry, "entry_type", "") or "",
+        "raw_text":   getattr(entry, "raw_text", "") or "",
+    }
+    from ai_checker import _is_grey_literature
+    _is_grey, _grey_reason = _is_grey_literature(_entry_dict_for_grey)
+
+    if _is_grey:
+        entry_url = _entry_dict_for_grey["url"]
+        url_blocked = False
+        url_note = ""
+
+        if entry_url and entry_url.startswith("http"):
+            url_result = _fetch_url_strict(entry)
+            if url_result and url_result.status == "verified":
+                save_to_cache(
+                    title=url_result.matched_title or entry.title,
+                    authors=entry.authors or "",
+                    year=entry.year or "",
+                    doi=entry.doi or "",
+                    url=entry_url,
+                    source="url_verify",
+                    confidence=url_result.confidence,
+                )
+                return url_result
+            elif url_result and url_result.status == "url_blocked":
+                url_blocked = True
+                url_note = url_result.note or "URL reachable but bot-blocked."
+            else:
+                url_note = "URL fetch returned no result or 404."
+        else:
+            url_note = "No URL in grey literature entry."
+
+        # Build full raw reference for AI context
+        raw_ref = f"{entry.authors or ''}: {entry.title or ''}. {getattr(entry, 'publisher', '') or getattr(entry, 'journal', '') or ''}, {entry.year or ''}. {entry_url}"
+        
+        # Go straight to AI with full raw reference text
+        grey_dict = {
+            **_entry_dict_for_grey,
+            "api_status":        "not_found",
+            "api_matched_title": "",
+            "url_note":          url_note,
+            "url_blocked":       url_blocked,
+            "raw_text":          raw_ref,  # Pass full reference
+        }
+        web_result = verify_with_web_search(grey_dict, "not_found")
+        
+        # Lower confidence threshold for grey literature (0.75 instead of 0.95)
+        if (web_result.get("status") == "verified"
+                and web_result.get("confidence", 0) >= 0.75):
+            matched = web_result.get("matched_title") or entry.title
+            save_to_cache(
+                title=matched,
+                authors=entry.authors or "",
+                year=entry.year or "",
+                doi="",
+                url=web_result.get("open_access_url") or entry_url,
+                source="ai_grey_verified",
+                confidence=web_result["confidence"],
+            )
+            return VerificationResult(
+                key=entry.key, title=entry.title or "",
+                status="verified",
+                confidence=web_result["confidence"],
+                matched_title=matched,
+                open_access_url=web_result.get("open_access_url"),
+                note=web_result.get("note", f"Grey literature verified via AI ({_grey_reason})"),
+                sources_checked=["grey_lit", "ai_verified"],
+            )
+        # AI couldn't confirm — return suspicious but informative
+        return VerificationResult(
+            key=entry.key, title=entry.title or "",
+            status="suspicious",
+            confidence=web_result.get("confidence", 0.5),
+            note=f"Grey literature ({_grey_reason}). {web_result.get('note', 'Could not be auto-verified — manual check recommended.')}",
+            sources_checked=["grey_lit", "ai_attempted"],
+        )
+
     # ── STEP 2: Academic APIs ─────────────────────────────────────────────────
     api_result: Optional[VerificationResult] = None
 
@@ -781,44 +958,57 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     # ── STEP 3: URL fetch (only for entries with a URL) ───────────────────────
     entry_url = (getattr(entry, "url", "") or "").strip()
     url_note = ""
+    url_blocked = False  # True = server alive but bot-blocked; hand off to AI with URL
 
     if entry_url and entry_url.startswith("http"):
         sources_tried.append("url_fetch")
         url_result = _fetch_url_strict(entry)
-        if url_result and url_result.status == "verified":
-            # HTTP 200 + title ≥ 0.95 confirmed
-            save_to_cache(
-                title=url_result.matched_title or entry.title,
-                authors=entry.authors or "",
-                year=entry.year or "",
-                doi=entry.doi or "",
-                url=entry_url,
-                source="url_verify",
-                confidence=url_result.confidence,
-            )
-            return url_result
-        url_note = "URL fetch did not confirm (no 200 or title mismatch)."
+        if url_result:
+            if url_result.status == "verified":
+                # HTTP 200 + title confirmed
+                save_to_cache(
+                    title=url_result.matched_title or entry.title,
+                    authors=entry.authors or "",
+                    year=entry.year or "",
+                    doi=entry.doi or "",
+                    url=entry_url,
+                    source="url_verify",
+                    confidence=url_result.confidence,
+                )
+                return url_result
+            elif url_result.status == "url_blocked":
+                # Server is alive but blocked automated access — AI can still verify
+                url_blocked = True
+                url_note = url_result.note or "URL reachable but bot-blocked."
+            else:
+                url_note = "URL fetch did not confirm (no 200 or title mismatch)."
+        else:
+            url_note = "URL fetch returned no result."
     else:
         url_note = "No URL in entry."
 
     # ── STEP 4: AI / web-search fallback ─────────────────────────────────────
+        # ── STEP 4: AI / web-search fallback ─────────────────────────────────────
     entry_dict = {
-        "title":     entry.title or "",
-        "authors":   entry.authors or "",
-        "year":      entry.year or "",
-        "url":       entry_url,
-        "publisher": getattr(entry, "publisher", "") or "",
-        "entry_type":getattr(entry, "entry_type", "") or "",
-        "raw_text":  getattr(entry, "raw_text", "") or "",
+        "title":      entry.title or "",
+        "authors":    entry.authors or "",
+        "year":       entry.year or "",
+        "url":        entry_url,
+        "publisher":  getattr(entry, "publisher", "") or "",
+        "entry_type": getattr(entry, "entry_type", "") or "",
+        "raw_text":   getattr(entry, "raw_text", "") or "",
         "api_status": api_result.status if api_result else "not_found",
         "api_matched_title": api_result.matched_title if api_result else "",
-        "url_note":  url_note,
+        "url_note":   url_note,
+        "url_blocked": url_blocked,
     }
     sources_tried.append("web_search+ai")
 
     web_result = verify_with_web_search(entry_dict, "not_found")
+    
+    # Lower threshold for AI verification - 0.80 is sufficient
     if (web_result.get("status") == "verified"
-            and web_result.get("confidence", 0) >= 0.95):
+            and web_result.get("confidence", 0) >= 0.80):
         matched = web_result.get("matched_title") or entry.title
         save_to_cache(
             title=matched,
@@ -843,9 +1033,9 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     return VerificationResult(
         key=entry.key, title=entry.title or "",
         status="suspicious",
-        confidence=0.0,
+        confidence=web_result.get("confidence", 0.0),
         matched_title=api_result.matched_title if api_result else None,
-        note=f"Not confirmed by any source. {url_note}",
+        note=f"Not confirmed by any source. {web_result.get('note', url_note)}",
         sources_checked=list(dict.fromkeys(sources_tried)),
     )
 

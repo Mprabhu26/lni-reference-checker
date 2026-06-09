@@ -293,6 +293,7 @@ def _is_grey_literature(entry: dict) -> tuple:
     entry_type = (entry.get("entry_type") or "").lower()
     raw       = (entry.get("raw_text") or entry.get("raw") or "").lower()
 
+    # Check domains first - these are the most reliable
     grey_domains = [
         "bitkom.org", "flexera.com", "info.flexera.com", "gartner.com",
         "forrester.com", "mckinsey.com", "deloitte.com", "statista.com",
@@ -302,33 +303,41 @@ def _is_grey_literature(entry: dict) -> tuple:
         "basecamp.com", "github.com", "github.io", "medium.com",
         "techcrunch.com", "substack.com", "resources.idg.de",
     ]
+    
+    # Check each domain and return the specific one found
     for domain in grey_domains:
         if domain in url:
-            return True, f"Industry/government source ({domain})"
-
+            # Extract just the domain name for the reason
+            domain_name = domain.split('.')[0]
+            return True, f"Grey literature ({domain_name})"
+    
+    # If not found by domain, check title signals
     grey_title_signals = [
         "state of the cloud", "cloud report", "market report", "industry report",
         "annual report", "whitepaper", "white paper", "survey report",
         "leaving the cloud", "cloud repatriation", "state of devops",
         "state of agile", "developer survey",
     ]
+    
     for sig in grey_title_signals:
         if sig in title:
-            return True, f"Industry/grey literature ('{sig}')"
-
+            return True, f"Grey literature (title contains '{sig}')"
+    
+    # Check publishers
     grey_publishers = [
         "bitkom", "flexera", "gartner", "forrester", "idc", "statista",
         "mckinsey", "deloitte", "pwc", "kpmg", "accenture",
     ]
+    
     for pub in grey_publishers:
         if pub in publisher or pub in raw:
-            return True, f"Known industry publisher: {pub.title()}"
-
+            return True, f"Grey literature (published by {pub.title()})"
+    
+    # Website with URL and no journal/publisher = grey literature
     if entry_type in ("website", "online", "misc") and url:
-        return True, "Online/misc source with URL — not in academic databases"
-
+        return True, "Grey literature (website citation)"
+    
     return False, ""
-
 
 # ---------------------------------------------------------------------------
 # 3. Composite Fake Detection Signals (Only used when API returns no match)
@@ -563,13 +572,13 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
                     "URL was checked and content verified."
                 ],
             }
-        if has_url and api_status in ("partial_match",):
+        if has_url and api_status in ("partial_match", "not_found", "suspicious"):
             return {
-                "verdict": "REAL",
-                "confidence": 0.72,
-                "composite_risk": 0.28,
+                "verdict": "SUSPICIOUS",
+                "confidence": 0.55,
+                "composite_risk": 0.45,
                 "risk_factors": [
-                    f"Grey/industry literature ({grey_reason}) — URL present but could not be fully verified."
+                    f"Grey/industry literature ({grey_reason}) — URL present, escalating to AI for verification."
                 ],
             }
         return {
