@@ -358,7 +358,6 @@ let result = null;
 let mainFile = null;
 let bibFile = null;
 let dbLoaded = false;
-// Keys the professor has manually marked as fake (after review)
 let markedFakeKeys = new Set();
 
 function handleMainFile(inp) {
@@ -461,72 +460,52 @@ function startOver() {
   bibFile = null;
   markedFakeKeys = new Set();
   window._dbOnlyMode = false;
-
-  // Reset file inputs
   document.getElementById('mainFile').value = '';
   const bibInput = document.getElementById('bibFile');
   if (bibInput) bibInput.value = '';
-
-  // Reset sidebar
   document.getElementById('fileChip').style.display = 'none';
   document.getElementById('dropZone').style.display = '';
   const bibUpload = document.getElementById('bibUpload');
   if (bibUpload) bibUpload.style.display = 'none';
   document.getElementById('runBtn').disabled = true;
   document.getElementById('startOverBtn').style.display = 'none';
-
-  // Reset topbar
   document.getElementById('btnExport').disabled = true;
   document.getElementById('topbarTitle').innerHTML = '<strong>LNI Reference Checker</strong> — Upload a document to begin';
-
-  // Hide results UI
   document.getElementById('tabsWrap').classList.remove('show');
   document.getElementById('verdictBanner').classList.remove('show');
   document.getElementById('progressPanel').classList.remove('show');
-
-  // Show welcome screen
   document.getElementById('welcomeScreen').style.display = 'block';
-
-  // Clear all tab content
   document.getElementById('bibContent').innerHTML = '';
   document.getElementById('xcheckContent').innerHTML = '';
   document.getElementById('verifyContent').innerHTML = '';
   document.getElementById('scoreContent').innerHTML = '';
-
-  // Restore all tab buttons (in case DB-only mode was active)
   document.querySelectorAll('.tab-btn').forEach(b => { b.style.display = ''; b.classList.remove('active'); });
   document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
 }
 
 function closeDbTab() {
-  // Close = same as Start Over: clears PDF and results, DB is preserved
   startOver();
 }
 
 async function runCheck() {
   if (!mainFile) return;
   const verify = document.getElementById('verifyToggle').checked;
-
   document.getElementById('welcomeScreen').style.display = 'none';
   document.getElementById('tabsWrap').classList.remove('show');
   document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-bib').classList.add('active');
   document.getElementById('verdictBanner').classList.remove('show');
-  
   const progressPanel = document.getElementById('progressPanel');
   progressPanel.classList.add('show');
   clearProgressMessages();
   addProgressMessage('🚀', 'Starting reference check...', 'info');
   updateProgressStats('Initializing...');
-  
   document.getElementById('runBtn').disabled = true;
-
   const fd = new FormData();
   fd.append('file', mainFile);
   if (bibFile) fd.append('bib', bibFile);
   fd.append('verify', verify ? 'true' : 'false');
   fd.append('stream', 'true');
-
   try {
     const resp = await fetch('/check', { method: 'POST', body: fd });
     if (!resp.ok) {
@@ -534,11 +513,9 @@ async function runCheck() {
       showError(err.error || 'Server error');
       return;
     }
-
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -565,7 +542,6 @@ async function runCheck() {
 function handleSSE(event, dataStr) {
   let data;
   try { data = JSON.parse(dataStr); } catch { return; }
-
   if (event === 'progress') {
     const msg = data.message || '';
     if (msg) {
@@ -576,15 +552,12 @@ function handleSSE(event, dataStr) {
       else if (msg.includes('🤖')) icon = '🤖';
       else if (msg.includes('🔍')) icon = '🔍';
       else if (msg.includes('📚')) icon = '📚';
-      
       let type = 'info';
       if (msg.includes('⚠')) type = 'warning';
       else if (msg.includes('✓') || msg.includes('Done')) type = 'success';
       else if (msg.includes('❌')) type = 'error';
-      
       addProgressMessage(icon, msg, type);
     }
-    
     if (data.done && data.total) {
       updateProgressStats(`Verifying: ${data.done}/${data.total} references | Verified: ${data.verified_count || 0} | Not found: ${data.not_found_count || 0}`);
     } else if (data.step === 'extract_done') {
@@ -596,17 +569,14 @@ function handleSSE(event, dataStr) {
     } else if (data.step === 'ai_verdict') {
       updateProgressStats('AI analysis complete');
     }
-
   } else if (event === 'done') {
     result = data;
     addProgressMessage('✅', 'Analysis complete! Rendering results...', 'success');
     updateProgressStats('Complete!');
-    
     setTimeout(() => {
       document.getElementById('progressPanel').classList.remove('show');
       renderResults(result);
     }, 500);
-
   } else if (event === 'error') {
     showError(data.error || 'Unknown error');
   }
@@ -621,49 +591,35 @@ function showError(msg) {
 function renderResults(data) {
   const sc = data.score || {};
   const s = data.summary || {};
-
-  document.getElementById('topbarTitle').innerHTML =
-    `<strong>${escapeHtml(data.filename)}</strong> · ${data.format} · Checked ${s.bib_entry_count || 0} references`;
-
+  document.getElementById('topbarTitle').innerHTML = `<strong>${escapeHtml(data.filename)}</strong> · ${data.format} · Checked ${s.bib_entry_count || 0} references`;
   const icons = { PASS:'✅', FLAG:'⚠️', FAIL:'❌' };
   const vc2 = sc.verdict || 'FLAG';
   document.getElementById('verdictCard').className = 'verdict-card ' + vc2;
   document.getElementById('verdictIcon').textContent = icons[vc2] || '⚠️';
-  document.getElementById('verdictTitle').textContent =
-    vc2 === 'PASS' ? 'PASS — References look good' :
-    vc2 === 'FAIL' ? 'FAIL — Critical issues found' :
-    'REVIEW — Issues need attention';
+  document.getElementById('verdictTitle').textContent = vc2 === 'PASS' ? 'PASS — References look good' : vc2 === 'FAIL' ? 'FAIL — Critical issues found' : 'REVIEW — Issues need attention';
   document.getElementById('verdictReason').textContent = sc.verdict_reason || '';
   document.getElementById('verdictScore').textContent = (sc.score || 0) + '/100';
   document.getElementById('verdictBanner').classList.add('show');
-
   const missing = (data.cross_check?.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC')).length;
   const orphan = (data.cross_check?.in_bib_not_cited || []).length;
   const fake = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length;
   const susp = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS').length;
   const bib_issues = (data.bibliography || []).filter(e => e.completeness_issues?.length).length;
-
   setBadge('tabBibBadge', bib_issues, bib_issues ? 'orange' : '');
   setBadge('tabXBadge', missing + orphan, (missing + orphan) ? 'red' : '');
   setBadge('tabVerBadge', fake + susp, fake ? 'red' : susp ? 'orange' : '');
-
   document.getElementById('tabsWrap').classList.add('show');
   document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-bib').classList.add('active');
   document.querySelector('.tab-btn').classList.add('active');
-
   document.getElementById('btnExport').disabled = false;
   document.getElementById('startOverBtn').style.display = 'block';
-
   renderBibTab(data);
   renderXCheckTab(data);
   renderVerifyTab(data);
   renderScoreTab(data);
-
-  fetch('/api/db_stats').then(r => r.ok ? r.json() : null).then(stats => {
-    if (stats) updateDbBadge(stats);
-  }).catch(() => {});
+  fetch('/api/db_stats').then(r => r.ok ? r.json() : null).then(stats => { if (stats) updateDbBadge(stats); }).catch(() => {});
 }
 
 function setBadge(id, n, cls) {
@@ -676,7 +632,6 @@ function renderBibTab(data) {
   const bib = data.bibliography || [];
   const issues = bib.filter(e => e.completeness_issues?.length);
   const clean = bib.filter(e => !e.completeness_issues?.length);
-
   let html = `<div class="tab-description">Each bibliography entry is checked against LNI formatting rules — required fields (author, title, year, pages, etc.) are validated per entry type. Entries with missing or malformed fields are flagged. <strong>Note:</strong> "Correct format" means the entry is structurally complete — it does not indicate whether the referenced paper actually exists.</div>
   <div class="stat-bar">
     <div class="stat-box"><div class="value">${bib.length}</div><div class="label">Total Entries</div></div>
@@ -684,14 +639,8 @@ function renderBibTab(data) {
     <div class="stat-box green"><div class="value">${clean.length}</div><div class="label">Correct Format</div></div>
   </div>
   <div class="search-bar"><input type="text" placeholder="Filter entries…" oninput="filterBib(this.value)"></div>`;
-
-  if (issues.length)
-    html += `<div class="section-heading">⚠ Entries with issues (${issues.length})</div>` +
-            issues.map(e => bibCard(e)).join('');
-  if (clean.length)
-    html += `<div class="section-heading">✓ Correct format (${clean.length})</div>` +
-            clean.map(e => bibCard(e)).join('');
-
+  if (issues.length) html += `<div class="section-heading">⚠ Entries with issues (${issues.length})</div>` + issues.map(e => bibCard(e)).join('');
+  if (clean.length) html += `<div class="section-heading">✓ Correct format (${clean.length})</div>` + clean.map(e => bibCard(e)).join('');
   document.getElementById('bibContent').innerHTML = html;
 }
 
@@ -701,25 +650,15 @@ function bibCard(e) {
     const cls = i.includes('Missing') ? 'err' : i.includes('dash') || i.includes('Firstname') ? 'warn' : 'info';
     return `<div class="issue-item ${cls}">${friendlyIssue(i)}</div>`;
   }).join('');
-
   const badges = [];
   if (e.type) badges.push(`<span class="badge" style="background:var(--primary-bg);color:var(--primary)">${escapeHtml(e.type)}</span>`);
   if (hasIssues) badges.push(`<span class="badge badge-issue">⚠ ${e.completeness_issues.length} issue(s)</span>`);
   if (e.key_consistent === false) badges.push(`<span class="badge badge-fake">⚠ Key mismatch</span>`);
   if (e.ai_reparsed) badges.push(`<span class="badge" style="background:var(--info-bg);color:var(--info)">🤖 AI re-parsed</span>`);
-  
   let directLinks = '';
-  if (e.doi) {
-    directLinks += `<a href="https://doi.org/${escapeHtml(e.doi)}" target="_blank" class="resource-link" style="background:var(--success-bg);color:var(--success);">🔗 DOI: ${escapeHtml(e.doi)}</a>`;
-  }
-  if (e.url && !e.doi) {
-    directLinks += `<a href="${escapeHtml(e.url)}" target="_blank" class="resource-link" style="background:var(--success-bg);color:var(--success);">🔗 URL</a>`;
-  }
-  if (!hasIssues && !e.doi && !e.url && e.title) {
-    const searchQuery = encodeURIComponent(`${e.title} ${e.authors ? e.authors.split(';')[0] : ''}`);
-    directLinks += `<a href="https://scholar.google.com/scholar?q=${searchQuery}" target="_blank" class="resource-link" style="background:var(--info-bg);color:var(--info);">🔍 Google Scholar</a>`;
-  }
-
+  if (e.doi) { directLinks += `<a href="https://doi.org/${escapeHtml(e.doi)}" target="_blank" class="resource-link" style="background:var(--success-bg);color:var(--success);">🔗 DOI: ${escapeHtml(e.doi)}</a>`; }
+  if (e.url && !e.doi) { directLinks += `<a href="${escapeHtml(e.url)}" target="_blank" class="resource-link" style="background:var(--success-bg);color:var(--success);">🔗 URL</a>`; }
+  if (!hasIssues && !e.doi && !e.url && e.title) { const searchQuery = encodeURIComponent(`${e.title} ${e.authors ? e.authors.split(';')[0] : ''}`); directLinks += `<a href="https://scholar.google.com/scholar?q=${searchQuery}" target="_blank" class="resource-link" style="background:var(--info-bg);color:var(--info);">🔍 Google Scholar</a>`; }
   return `<div class="entry-card" data-key="${escapeHtml(e.key)}" data-title="${escapeHtml(e.title||'')}" data-authors="${escapeHtml(e.authors||'')}">
     <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')">
       <span class="entry-key">${escapeHtml(e.key)}</span>
@@ -758,39 +697,25 @@ function fieldRow(label, val) {
 }
 
 function friendlyIssue(issue) {
-  if (issue.includes("Missing required field: 'authors'"))
-    return `❌ <strong>Authors missing</strong> — Every LNI entry must list the author(s) in <em>Lastname, Firstname</em> format.`;
-  if (issue.includes("Missing required field: 'title'"))
-    return `❌ <strong>Title missing</strong> — The title of the work is required.`;
-  if (issue.includes("Missing required field: 'year'"))
-    return `❌ <strong>Year missing</strong> — The publication year is required.`;
-  if (issue.includes("Missing required field: 'pages'"))
-    return `⚠ <strong>Pages missing</strong> — Article/proceedings entries require a page range (e.g. S.&nbsp;12--34).`;
-  if (issue.includes("Missing required field: 'journal'"))
-    return `⚠ <strong>Journal name missing</strong> — Article entries require the journal or volume title.`;
-  if (issue.includes("Missing required field: 'publisher'"))
-    return `⚠ <strong>Publisher missing</strong> — Book entries require the publisher name.`;
-  if (issue.includes("Missing required field: 'booktitle'"))
-    return `⚠ <strong>Booktitle missing</strong> — Proceedings entries require the conference or book title.`;
-  if (issue.includes("single dash '-'"))
-    return `⚠ <strong>Wrong page dash</strong> — LNI requires a double dash: <code>S.&nbsp;12--34</code> (not <code>S.&nbsp;12-34</code>).`;
-  if (issue.includes("Firstname Lastname"))
-    return `⚠ <strong>Wrong author order</strong> — LNI requires <em>Lastname, Firstname</em> (comma between them).`;
-  if (issue.includes("LNI key inconsistency"))
-    return `⚠ <strong>Key doesn't match metadata</strong> — ${escapeHtml(issue.replace('LNI key inconsistency:', '').trim())}`;
-  if (issue.includes("Invalid key format"))
-    return `❌ <strong>Invalid key format</strong> — LNI keys must look like [ABC01] or [Ez10].<div class="correct-format">✓ Examples: [LBH15], [VSP17], [Ez10a]</div>`;
-  if (issue.includes("future"))
-    return `⚠ <strong>Year in the future</strong> — Check the publication year.`;
+  if (issue.includes("Missing required field: 'authors'")) return `❌ <strong>Authors missing</strong> — Every LNI entry must list the author(s) in <em>Lastname, Firstname</em> format.`;
+  if (issue.includes("Missing required field: 'title'")) return `❌ <strong>Title missing</strong> — The title of the work is required.`;
+  if (issue.includes("Missing required field: 'year'")) return `❌ <strong>Year missing</strong> — The publication year is required.`;
+  if (issue.includes("Missing required field: 'pages'")) return `⚠ <strong>Pages missing</strong> — Article/proceedings entries require a page range (e.g. S.&nbsp;12--34).`;
+  if (issue.includes("Missing required field: 'journal'")) return `⚠ <strong>Journal name missing</strong> — Article entries require the journal or volume title.`;
+  if (issue.includes("Missing required field: 'publisher'")) return `⚠ <strong>Publisher missing</strong> — Book entries require the publisher name.`;
+  if (issue.includes("Missing required field: 'booktitle'")) return `⚠ <strong>Booktitle missing</strong> — Proceedings entries require the conference or book title.`;
+  if (issue.includes("single dash '-'")) return `⚠ <strong>Wrong page dash</strong> — LNI requires a double dash: <code>S.&nbsp;12--34</code> (not <code>S.&nbsp;12-34</code>).`;
+  if (issue.includes("Firstname Lastname")) return `⚠ <strong>Wrong author order</strong> — LNI requires <em>Lastname, Firstname</em> (comma between them).`;
+  if (issue.includes("LNI key inconsistency")) return `⚠ <strong>Key doesn't match metadata</strong> — ${escapeHtml(issue.replace('LNI key inconsistency:', '').trim())}`;
+  if (issue.includes("Invalid key format")) return `❌ <strong>Invalid key format</strong> — LNI keys must look like [ABC01] or [Ez10].<div class="correct-format">✓ Examples: [LBH15], [VSP17], [Ez10a]</div>`;
+  if (issue.includes("future")) return `⚠ <strong>Year in the future</strong> — Check the publication year.`;
   return escapeHtml(issue);
 }
 
 function filterBib(q) {
   q = q.toLowerCase();
   document.querySelectorAll('#bibContent .entry-card').forEach(c => {
-    const match = !q || (c.dataset.key||'').toLowerCase().includes(q) ||
-                  (c.dataset.title||'').toLowerCase().includes(q) ||
-                  (c.dataset.authors||'').toLowerCase().includes(q);
+    const match = !q || (c.dataset.key||'').toLowerCase().includes(q) || (c.dataset.title||'').toLowerCase().includes(q) || (c.dataset.authors||'').toLowerCase().includes(q);
     c.style.display = match ? '' : 'none';
   });
 }
@@ -800,34 +725,16 @@ function renderXCheckTab(data) {
   const missing = (xc.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC'));
   const orphan = xc.in_bib_not_cited || [];
   const numWarn = (xc.cited_not_in_bib || []).find(k => k.includes('__NUMERIC'));
-
   let html = `<div class="tab-description">Every citation key used in the paper body is cross-referenced against the bibliography, and vice versa. <strong>Cited but missing</strong> means a [Key] appears in the text but has no bibliography entry — these must be added. <strong>Never cited</strong> means a bibliography entry exists but is never referenced in the text — these should be removed.</div>
   <div class="stat-bar">
     <div class="stat-box ${missing.length ? 'red' : 'green'}"><div class="value">${missing.length}</div><div class="label">Cited but missing</div></div>
     <div class="stat-box ${orphan.length ? 'orange' : 'green'}"><div class="value">${orphan.length}</div><div class="label">Never cited</div></div>
     <div class="stat-box green"><div class="value">${xc.correctly_used?.length || 0}</div><div class="label">Correctly used</div></div>
   </div>`;
-
-  if (numWarn) {
-    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-issue">⚠ Mixed citation styles</span></div>
-      <div class="explanation-box">This paper mixes LNI author-year keys with numeric citations. LNI only allows author-year keys. Replace all numeric citations with proper LNI keys.</div></div>`;
-  }
-
-  if (missing.length) {
-    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-missing">❌ Cited but not in bibliography (${missing.length})</span></div>
-      <div class="explanation-box" style="margin-bottom:10px;">These keys appear in the paper text but have <strong>no matching entry in the bibliography</strong>. You must either add the missing entries or remove the citations from the text.</div>
-      <div class="xcheck-list-wrapper">${missing.map(k => `<span class="xcheck-list missing">📖 <strong>[${escapeHtml(k)}]</strong> used in text, missing from bibliography</span>`).join('')}</div></div>`;
-  }
-
-  if (orphan.length) {
-    html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-orphan">⚠ In bibliography but never cited (${orphan.length})</span></div>
-      <div class="explanation-box" style="margin-bottom:10px;">These bibliography entries exist but are <strong>never referenced in the text</strong>. Remove them from the bibliography, or add citations to the text.</div>
-      <div class="xcheck-list-wrapper">${orphan.map(k => `<span class="xcheck-list orphan">📚 <strong>[${escapeHtml(k)}]</strong> in bibliography but never cited</span>`).join('')}</div></div>`;
-  }
-
-  if (!missing.length && !orphan.length && !numWarn) {
-    html += `<div class="empty"><div class="icon">✅</div><h3>Perfect!</h3><p>Every citation has a matching bibliography entry and every entry is cited.</p></div>`;
-  }
+  if (numWarn) { html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-issue">⚠ Mixed citation styles</span></div><div class="explanation-box">This paper mixes LNI author-year keys with numeric citations. LNI only allows author-year keys. Replace all numeric citations with proper LNI keys.</div></div>`; }
+  if (missing.length) { html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-missing">❌ Cited but not in bibliography (${missing.length})</span></div><div class="explanation-box" style="margin-bottom:10px;">These keys appear in the paper text but have <strong>no matching entry in the bibliography</strong>. You must either add the missing entries or remove the citations from the text.</div><div class="xcheck-list-wrapper">${missing.map(k => `<span class="xcheck-list missing">📖 <strong>[${escapeHtml(k)}]</strong> used in text, missing from bibliography</span>`).join('')}</div></div>`; }
+  if (orphan.length) { html += `<div class="xcheck-section"><div class="xcheck-title"><span class="badge badge-orphan">⚠ In bibliography but never cited (${orphan.length})</span></div><div class="explanation-box" style="margin-bottom:10px;">These bibliography entries exist but are <strong>never referenced in the text</strong>. Remove them from the bibliography, or add citations to the text.</div><div class="xcheck-list-wrapper">${orphan.map(k => `<span class="xcheck-list orphan">📚 <strong>[${escapeHtml(k)}]</strong> in bibliography but never cited</span>`).join('')}</div></div>`; }
+  if (!missing.length && !orphan.length && !numWarn) { html += `<div class="empty"><div class="icon">✅</div><h3>Perfect!</h3><p>Every citation has a matching bibliography entry and every entry is cited.</p></div>`; }
   document.getElementById('xcheckContent').innerHTML = html;
 }
 
@@ -838,9 +745,29 @@ function renderVerifyTab(data) {
     return;
   }
 
+  // Helper function to detect title differences (case only or minor punctuation)
+  function hasTitleDifference(v) {
+    if (!v.matched_title || v.matched_title === v.title) return false;
+    const citedN = (v.title || '').toLowerCase().trim();
+    const foundN = v.matched_title.toLowerCase().trim();
+    const isCaseOnly = citedN === foundN;
+    const isMinorDiff = !isCaseOnly && citedN.replace(/[^a-z0-9]/g, '') === foundN.replace(/[^a-z0-9]/g, '');
+    return isCaseOnly || isMinorDiff;
+  }
+
+  // Separate by verdict
   const fake = ver.filter(v => v.ai_verdict === 'FAKE');
   const susp = ver.filter(v => v.ai_verdict === 'SUSPICIOUS');
   const real = ver.filter(v => v.ai_verdict === 'REAL');
+
+  // Sort REAL: those with differences first, then exact matches
+  const realSorted = [...real].sort((a, b) => {
+    const aHasDiff = hasTitleDifference(a);
+    const bHasDiff = hasTitleDifference(b);
+    if (aHasDiff && !bHasDiff) return -1;
+    if (!aHasDiff && bHasDiff) return 1;
+    return 0;
+  });
 
   let html = `<div class="tab-description">Each bibliography entry is looked up against CrossRef, Semantic Scholar, OpenAlex, arXiv, and a local database. If no API match is found, an AI-assisted web search is used as a fallback. Entries that cannot be found in any source are flagged as potentially fabricated.</div>
   <div class="stat-bar">
@@ -858,13 +785,17 @@ function renderVerifyTab(data) {
 
   html += `<div class="search-bar"><input type="text" placeholder="Search references…" oninput="filterVerify(this.value)"></div>`;
 
-  if (fake.length + susp.length > 0)
+  // SECTION 1: Flagged references (SUSPICIOUS + FAKE) - show first
+  if (fake.length + susp.length > 0) {
     html += `<div class="section-heading">⚠ Flagged references (${fake.length + susp.length})</div>`;
-  html += [...fake, ...susp].map(v => verifyCard(v)).join('');
+    html += [...fake, ...susp].map(v => verifyCard(v)).join('');
+  }
 
-  if (real.length)
-    html += `<div class="section-heading">✓ Verified references (${real.length})</div>`;
-  html += real.map(v => verifyCard(v)).join('');
+  // SECTION 2: ALL Verified references (differences first, then exact matches) - ONE section
+  if (realSorted.length > 0) {
+    html += `<div class="section-heading">✓ Verified references (${realSorted.length})</div>`;
+    html += realSorted.map(v => verifyCard(v)).join('');
+  }
 
   document.getElementById('verifyContent').innerHTML = html;
 }
@@ -872,28 +803,15 @@ function renderVerifyTab(data) {
 function friendlyApiNote(note, sources) {
   if (!note) return '';
   let friendly = note;
-  // Inline source names where note says "2 independent sources" etc. without naming them
   if (sources && sources.length > 0 && friendly.includes('independent sources')) {
-    const sourceNames = sources
-      .filter(s => !['url_check','content_title_match','local_db'].includes(s))
-      .join(', ');
-    if (sourceNames) {
-      friendly = friendly.replace(
-        /Confirmed by (\d+) independent sources\./,
-        `Confirmed by $1 independent sources (${ sourceNames }).`
-      );
-    }
+    const sourceNames = sources.filter(s => !['url_check','content_title_match','local_db'].includes(s)).join(', ');
+    if (sourceNames) { friendly = friendly.replace(/Confirmed by (\d+) independent sources\./, `Confirmed by $1 independent sources (${ sourceNames }).`); }
   }
-  // Explain url_check in plain language
   if (sources && sources.includes('url_check')) {
     friendly = friendly.replace(/url_check/g, 'URL check');
-    if (!friendly.startsWith('The URL')) {
-      friendly = 'The referenced URL was fetched directly: ' + friendly;
-    }
+    if (!friendly.startsWith('The URL')) { friendly = 'The referenced URL was fetched directly: ' + friendly; }
   }
-  if (sources && sources.includes('content_title_match')) {
-    friendly = friendly + ' The page title was compared against the cited title to confirm it leads to the correct source.';
-  }
+  if (sources && sources.includes('content_title_match')) { friendly = friendly + ' The page title was compared against the cited title to confirm it leads to the correct source.'; }
   return friendly;
 }
 
@@ -920,20 +838,9 @@ function verifyCard(v) {
   if (v.doi) links.push(`<a href="https://doi.org/${escapeHtml(v.doi)}" target="_blank" class="resource-link">🔗 DOI</a>`);
   if (v.open_access_url) links.push(`<a href="${escapeHtml(v.open_access_url)}" target="_blank" class="resource-link">🌐 Open Source ↗</a>`);
   if (v.matched_title && v.matched_title !== v.title) { const q = encodeURIComponent(v.matched_title); links.push(`<a href="https://scholar.google.com/scholar?q=${q}" target="_blank" class="resource-link" style="background:var(--surface-secondary);">📖 Matched: "${escapeHtml(v.matched_title.slice(0,50))}"</a>`); }
-
-  // Determine primary launch URL for REAL sources
   const launchUrl = v.open_access_url || (v.doi ? `https://doi.org/${v.doi}` : null);
-  const launchBtn = (verdict === 'REAL' && launchUrl)
-    ? `<a href="${escapeHtml(launchUrl)}" target="_blank" rel="noopener"
-         onclick="event.stopPropagation()"
-         style="display:inline-flex;align-items:center;gap:4px;padding:4px 11px;background:var(--primary);color:white;border-radius:var(--radius-sm);font-size:11px;font-weight:600;text-decoration:none;flex-shrink:0;transition:background 0.15s;"
-         onmouseover="this.style.background='var(--primary-dark)'" onmouseout="this.style.background='var(--primary)'">
-         🔗 Open Source ↗
-       </a>`
-    : '';
-
+  const launchBtn = (verdict === 'REAL' && launchUrl) ? `<a href="${escapeHtml(launchUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="display:inline-flex;align-items:center;gap:4px;padding:4px 11px;background:var(--primary);color:white;border-radius:var(--radius-sm);font-size:11px;font-weight:600;text-decoration:none;flex-shrink:0;transition:background 0.15s;" onmouseover="this.style.background='var(--primary-dark)'" onmouseout="this.style.background='var(--primary)'">🔗 Open Source ↗</a>` : '';
   const apiNoteText = friendlyApiNote(v.api_note, v.sources_checked);
-
   return `<div class="entry-card" data-key="${escapeHtml(v.key)}" data-title="${escapeHtml(v.title||'')}">
     <div class="entry-header" onclick="this.nextElementSibling.classList.toggle('open')" style="cursor:pointer;">
       <span class="entry-key">${escapeHtml(v.key)}</span>
@@ -964,13 +871,9 @@ function verifyCard(v) {
           const isCaseOnly = citedN === foundN;
           const isMinorDiff = !isCaseOnly && citedN.replace(/[^a-z0-9]/g,'') === foundN.replace(/[^a-z0-9]/g,'');
           let flag = '';
-          if (isCaseOnly) {
-            flag = `<div class="issue-item info" style="margin-top:6px;">ℹ <strong>Capitalisation difference only</strong> — The cited and database titles are identical except for upper/lower case. This is not an error; LNI style requires sentence case for most titles.</div>`;
-          } else if (isMinorDiff) {
-            flag = `<div class="issue-item warn" style="margin-top:6px;">⚠ <strong>Minor punctuation / spacing difference</strong> — The titles match when punctuation is removed. Likely the same publication; verify it is correct.</div>`;
-          } else {
-            flag = `<div class="issue-item warn" style="margin-top:6px;">⚠ <strong>Title wording differs</strong> — The titles are similar but not identical. Confirm this is the correct publication.</div>`;
-          }
+          if (isCaseOnly) { flag = `<div class="issue-item info" style="margin-top:6px;">ℹ <strong>Capitalisation difference only</strong> — The cited and database titles are identical except for upper/lower case. This is not an error; LNI style requires sentence case for most titles.</div>`; }
+          else if (isMinorDiff) { flag = `<div class="issue-item warn" style="margin-top:6px;">⚠ <strong>Minor punctuation / spacing difference</strong> — The titles match when punctuation is removed. Likely the same publication; verify it is correct.</div>`; }
+          else { flag = `<div class="issue-item warn" style="margin-top:6px;">⚠ <strong>Title wording differs</strong> — The titles are similar but not identical. Confirm this is the correct publication.</div>`; }
           return `<div class="detail-section"><div class="detail-title">📌 Database Match</div><div class="explanation-box" style="border-left-color:var(--primary);"><strong>Cited as:</strong> ${escapeHtml(v.title||'')}<br><strong>Found as:</strong> ${escapeHtml(v.matched_title)}</div>${flag}</div>`;
         })()}
         ${v.ai_reasoning ? `<div class="detail-section"><div class="detail-title">🤖 AI Reasoning</div><div class="explanation-box">${escapeHtml(v.ai_reasoning)}</div></div>` : ''}
@@ -1003,29 +906,22 @@ async function saveToDb(title, reason, key) {
   try {
     const r = await fetch('/api/inject_paper', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     const d = await r.json();
-    if (d.success) {
-      showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success');
-      updateDbBadge(d);
-    } else { showToast('Failed: ' + (d.error || 'Unknown error'), 'error'); }
+    if (d.success) { showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success'); updateDbBadge(d); }
+    else { showToast('Failed: ' + (d.error || 'Unknown error'), 'error'); }
   } catch(e) { showToast('Network error: ' + e.message, 'error'); }
 }
 
 function renderScoreTab(data) {
   const sc = data.score || {};
   const s = data.summary || {};
-
-  // Use professor-adjusted score (markedFakeKeys may add deductions)
   const adj = computeAdjustedScore(data);
   const penalties = adj.penalties;
   const actualScore = adj.score;
   const grade = adj.grade;
-
   const verificationFakeCount = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size;
   const verificationSuspCount = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length;
   const verificationRealCount = (data.verification || []).filter(v => v.ai_verdict === 'REAL').length;
-
   const gradeColor = actualScore >= 75 ? 'green' : actualScore >= 50 ? 'orange' : 'red';
-
   let html = `<div class="stat-bar">
     <div class="stat-box ${gradeColor}"><div class="value">${actualScore}/100</div><div class="label">Final Score · ${grade}</div></div>
     <div class="stat-box ${verificationFakeCount ? 'red' : 'green'}"><div class="value">${verificationFakeCount}</div><div class="label">Fake References</div></div>
@@ -1033,52 +929,25 @@ function renderScoreTab(data) {
     <div class="stat-box green"><div class="value">${verificationRealCount}</div><div class="label">Verified Real</div></div>
     <div class="stat-box ${s.missing_from_bib ? 'red' : 'green'}"><div class="value">${s.missing_from_bib || 0}</div><div class="label">Missing from Bib</div></div>
   </div>`;
-
   if (sc.verdict_reason) html += `<div class="explanation-box" style="margin-bottom:14px;">🤖 <strong>AI Verdict:</strong> ${escapeHtml(sc.verdict_reason)}</div>`;
-
-  // Suspicious references list (pending professor review)
   const suspiciousRefs = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key));
   if (suspiciousRefs.length > 0) {
     html += `<div style="background:var(--warning-bg);border:1px solid #fed7aa;border-radius:var(--radius);padding:12px 14px;margin-bottom:14px;">
       <div style="font-weight:700;font-size:12px;color:var(--warning);margin-bottom:8px;">⚠ ${suspiciousRefs.length} Suspicious Reference(s) — Pending Professor Review</div>
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">These references are flagged as suspicious. If you confirm them as fake, <strong>-15 points each</strong> will be deducted. Go to the <strong>Reference Verification</strong> tab and click <em>Mark as Fake</em> to confirm.</div>
-      <table class="penalty-table" style="background:transparent;">
-        <thead><tr><th>Key</th><th>Title</th><th>Deduction if confirmed fake</th></tr></thead>
-        <tbody>${suspiciousRefs.map(v =>
-          `<tr>
-            <td><code style="font-family:JetBrains Mono,monospace;font-size:11px;">[${escapeHtml(v.key)}]</code></td>
-            <td style="color:var(--text-muted);font-size:11px;">${escapeHtml((v.title||'').slice(0,60))}</td>
-            <td class="deduct-cell">–</td>
-          </tr>`
-        ).join('')}</tbody>
-      </table>
+      <table class="penalty-table" style="background:transparent;"><thead><tr><th>Key</th><th>Title</th><th>Deduction if confirmed fake</th></tr></thead><tbody>${suspiciousRefs.map(v => `<tr><td><code style="font-family:JetBrains Mono,monospace;font-size:11px;">[${escapeHtml(v.key)}]</code></td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml((v.title||'').slice(0,60))}</td><td class="deduct-cell">–</td></tr>`).join('')}</tbody></table>
     </div>`;
   }
-
   html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:14px;">
     <div style="padding:12px 16px;background:var(--surface-secondary);font-weight:700;font-size:13px;">📊 Score Breakdown</div>
-    <table class="penalty-table">
-      <thead><tr><th>Issue Category</th><th>Count</th><th>Deduction</th><th>Why it matters</th></tr></thead>
-      <tbody>
-        ${penalties.map(p => `<tr><td style="font-weight:600;">${escapeHtml(p.category)}</td><td>${p.count}</td><td class="deduct-cell">-${p.deduction}</td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml(explainPenalty(p.category))}</td></tr>`).join('')}
-        ${penalties.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--success);">✓ No deductions — perfect score!</td></tr>' : ''}
-        <tr class="total-row"><td colspan="2"><strong>Final Score</strong></td><td><strong>${actualScore}/100 (${grade})</strong></td><td></td></tr>
-      </tbody>
-    </table>
+    <table class="penalty-table"><thead><tr><th>Issue Category</th><th>Count</th><th>Deduction</th><th>Why it matters</th></tr></thead><tbody>
+      ${penalties.map(p => `<tr><td style="font-weight:600;">${escapeHtml(p.category)}</td><td>${p.count}</td><td class="deduct-cell">-${p.deduction}</td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml(explainPenalty(p.category))}</td></tr>`).join('')}
+      ${penalties.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--success);">✓ No deductions — perfect score!</td></tr>' : ''}
+      <tr class="total-row"><td colspan="2"><strong>Final Score</strong></td><td><strong>${actualScore}/100 (${grade})</strong></td><td></td></tr>
+    </tbody></table>
   </div>`;
-
-  if (sc.professor_note) {
-    let cleanNote = sc.professor_note;
-    cleanNote = cleanNote.replace(/^I will manually review\s+/, '');
-    html += `<div class="explanation-box"><strong>📝 Note:</strong> ${escapeHtml(cleanNote)}</div>`;
-  }
-
-  // Show a note if suspicious refs still pending
-  if (suspiciousRefs.length > 0) {
-    const keys = suspiciousRefs.map(v => `[${v.key}]`).join(', ');
-    html += `<div class="explanation-box" style="margin-top:10px;border-left-color:var(--warning);background:var(--warning-bg);">📝 <strong>Note:</strong> Manually review the suspicious references ${escapeHtml(keys)} to determine their legitimacy.</div>`;
-  }
-
+  if (sc.professor_note) { let cleanNote = sc.professor_note; cleanNote = cleanNote.replace(/^I will manually review\s+/, ''); html += `<div class="explanation-box"><strong>📝 Note:</strong> ${escapeHtml(cleanNote)}</div>`; }
+  if (suspiciousRefs.length > 0) { const keys = suspiciousRefs.map(v => `[${v.key}]`).join(', '); html += `<div class="explanation-box" style="margin-top:10px;border-left-color:var(--warning);background:var(--warning-bg);">📝 <strong>Note:</strong> Manually review the suspicious references ${escapeHtml(keys)} to determine their legitimacy.</div>`; }
   document.getElementById('scoreContent').innerHTML = html;
 }
 
@@ -1120,88 +989,34 @@ function dbRow(p) {
   const confCls = confPct >= 90 ? 'high' : confPct >= 70 ? 'med' : 'low';
   const srcCls = p.source === 'manual' ? 'manual' : '';
   const link = p.doi ? `<a href="https://doi.org/${escapeHtml(p.doi)}" target="_blank" class="resource-link" style="font-size:10px;">DOI ↗</a>` : (p.url ? `<a href="${escapeHtml(p.url)}" target="_blank" class="resource-link" style="font-size:10px;">URL ↗</a>` : '—');
-  
-  // Store the original title for the delete function
   const originalTitle = p.title;
   const escapedTitleForAttr = escapeHtml(originalTitle).replace(/"/g, '&quot;');
-  
-  return `<tr>
-    <td title="${escapeHtml(originalTitle)}">${escapeHtml(originalTitle.length > 55 ? originalTitle.slice(0,55)+'…' : originalTitle)}</td>
-    <td title="${escapeHtml(p.authors)}">${escapeHtml(p.authors.length > 35 ? p.authors.slice(0,35)+'…' : (p.authors||'—'))}</td>
-    <td>${escapeHtml(p.year||'—')}</td>
-    <td><span class="source-badge ${srcCls}">${escapeHtml(p.source)}</span></td>
-    <td><span class="conf-pill ${confCls}" title="Confidence score">${confPct}%</span></td>
-    <td>${link}</td>
-    <td>${escapeHtml(p.added_date||'—')}</td>
-    <td><button class="del-btn" data-title="${escapedTitleForAttr}" onclick="dbDeletePaper(this)" title="Delete from database">🗑 Delete</button></td>
-  </tr>`;
+  return `<tr><td title="${escapeHtml(originalTitle)}">${escapeHtml(originalTitle.length > 55 ? originalTitle.slice(0,55)+'…' : originalTitle)}</td><td title="${escapeHtml(p.authors)}">${escapeHtml(p.authors.length > 35 ? p.authors.slice(0,35)+'…' : (p.authors||'—'))}</td><td>${escapeHtml(p.year||'—')}</td><td><span class="source-badge ${srcCls}">${escapeHtml(p.source)}</span></td><td><span class="conf-pill ${confCls}" title="Confidence score">${confPct}%</span></td><td>${link}</td><td>${escapeHtml(p.added_date||'—')}</td><td><button class="del-btn" data-title="${escapedTitleForAttr}" onclick="dbDeletePaper(this)" title="Delete from database">🗑 Delete</button></td></tr>`;
 }
 
 async function dbDeletePaper(btnEl) {
   const title = btnEl ? btnEl.getAttribute('data-title') : '';
-  if (!title) {
-    showToast('Error: No title specified', 'error');
-    return;
-  }
-  
+  if (!title) { showToast('Error: No title specified', 'error'); return; }
   if (!confirm(`Remove "${title.slice(0,60)}" from the database?`)) return;
-  
   const clickedBtn = btnEl;
-  if (clickedBtn) {
-    clickedBtn.textContent = '⏳ Deleting...';
-    clickedBtn.disabled = true;
-  }
-  
+  if (clickedBtn) { clickedBtn.textContent = '⏳ Deleting...'; clickedBtn.disabled = true; }
   try {
-    const response = await fetch('/api/db_delete', { 
-      method: 'POST', 
-      headers: {'Content-Type': 'application/json'}, 
-      body: JSON.stringify({title: unescapeHtml(title)}) 
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`HTTP ${response.status}: ${errorText.slice(0,100)}`);
-    }
-    
+    const response = await fetch('/api/db_delete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({title: unescapeHtml(title)}) });
+    if (!response.ok) { const errorText = await response.text(); throw new Error(`HTTP ${response.status}: ${errorText.slice(0,100)}`); }
     const d = await response.json();
-    
     if (d.success) {
       showToast('✓ Paper removed from database', 'success');
-      // Refresh the database tab
       await loadDbTab();
-      // Update the badge counts
       const statsRes = await fetch('/api/db_stats');
-      if (statsRes.ok) {
-        const stats = await statsRes.json();
-        updateDbBadge(stats);
-      }
-    } else {
-      showToast('Failed to remove: ' + (d.error || 'Unknown error'), 'error');
-      if (clickedBtn) {
-        clickedBtn.textContent = '🗑 Delete';
-        clickedBtn.disabled = false;
-      }
-    }
-  } catch(e) {
-    console.error('Delete error:', e);
-    showToast('Error deleting: ' + e.message, 'error');
-    if (clickedBtn) {
-      clickedBtn.textContent = '🗑 Delete';
-      clickedBtn.disabled = false;
-    }
-  }
+      if (statsRes.ok) { const stats = await statsRes.json(); updateDbBadge(stats); }
+    } else { showToast('Failed to remove: ' + (d.error || 'Unknown error'), 'error'); if (clickedBtn) { clickedBtn.textContent = '🗑 Delete'; clickedBtn.disabled = false; } }
+  } catch(e) { console.error('Delete error:', e); showToast('Error deleting: ' + e.message, 'error'); if (clickedBtn) { clickedBtn.textContent = '🗑 Delete'; clickedBtn.disabled = false; } }
 }
- 
-   
 
 function updateDbBadge(stats) {
   const n = stats.db_total !== undefined ? stats.db_total : (stats.total_papers || 0);
   document.getElementById('topbarDbCount').textContent = n;
   document.getElementById('tabDbBadge').textContent = n;
-  if (stats.db_size_kb) {
-    // keep for potential future use but sidebar badge is gone
-  }
 }
 
 fetch('/api/db_stats').then(r => r.ok ? r.json() : null).then(stats => { if (stats) updateDbBadge(stats); }).catch(() => {});
@@ -1224,9 +1039,7 @@ async function exportResults() {
     const baseName = (result.filename || 'report').replace(/\.[^.]+$/, '');
     XLSX.writeFile(wb, baseName + '_lni_report.xlsx');
     showToast('✓ Excel report downloaded', 'success');
-  } catch(e) {
-    showToast('Export failed: ' + e.message, 'error');
-  }
+  } catch(e) { showToast('Export failed: ' + e.message, 'error'); }
 }
 
 function buildXLSXReport(data) {
@@ -1234,130 +1047,45 @@ function buildXLSXReport(data) {
   const sc = data.score || {};
   const s = data.summary || {};
   const now = new Date().toLocaleString();
-
-  // ── Sheet 1: Summary ──────────────────────────────────────────────────────
   const summaryRows = [
-    ['LNI Reference Checker — Report'],
-    ['File', data.filename || ''],
-    ['Format', data.format || ''],
-    ['Date', now],
-    [],
-    ['OVERALL SCORE', `${sc.score}/100 (${sc.grade || ''})`],
-    ['Verdict', sc.verdict || ''],
-    ['Verdict Reason', sc.verdict_reason || ''],
-    [],
-    ['SUMMARY', 'Count'],
-    ['Bibliography entries', s.bib_entry_count || 0],
-    ['Citation count', s.citation_count || 0],
-    ['Cited but missing from bibliography', s.missing_from_bib || 0],
-    ['Never cited (orphaned entries)', s.uncited_entries || 0],
-    ['Incomplete LNI entries', s.incomplete_entries || 0],
-    ['Duplicate entries', s.duplicates || 0],
-    ['Likely FAKE references', s.fake_candidates || 0],
-    ['SUSPICIOUS references', s.suspicious || 0],
-    ['Verified REAL references', s.verified || 0],
-    ['Retracted papers cited', s.retracted || 0],
-    ['Open-access links found', s.open_access || 0],
-    [],
-    ['SCORE BREAKDOWN', 'Count', 'Deduction'],
-    ...(sc.penalties || []).map(p => [p.category, p.count, `-${p.deduction}`]),
+    ['LNI Reference Checker — Report'], ['File', data.filename || ''], ['Format', data.format || ''], ['Date', now], [],
+    ['OVERALL SCORE', `${sc.score}/100 (${sc.grade || ''})`], ['Verdict', sc.verdict || ''], ['Verdict Reason', sc.verdict_reason || ''], [],
+    ['SUMMARY', 'Count'], ['Bibliography entries', s.bib_entry_count || 0], ['Citation count', s.citation_count || 0],
+    ['Cited but missing from bibliography', s.missing_from_bib || 0], ['Never cited (orphaned entries)', s.uncited_entries || 0],
+    ['Incomplete LNI entries', s.incomplete_entries || 0], ['Duplicate entries', s.duplicates || 0],
+    ['Likely FAKE references', s.fake_candidates || 0], ['SUSPICIOUS references', s.suspicious || 0],
+    ['Verified REAL references', s.verified || 0], ['Retracted papers cited', s.retracted || 0],
+    ['Open-access links found', s.open_access || 0], [],
+    ['SCORE BREAKDOWN', 'Count', 'Deduction'], ...(sc.penalties || []).map(p => [p.category, p.count, `-${p.deduction}`]),
     ['Final Score', '', `${sc.score}/100`],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
   wsSummary['!cols'] = [{wch: 40}, {wch: 20}, {wch: 14}];
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
-
-  // ── Sheet 2: Bibliography Format Check ───────────────────────────────────
   const bibHeaders = ['Key', 'Type', 'Authors', 'Title', 'Year', 'Journal/Publisher', 'Pages', 'DOI', 'Format Issues'];
-  const bibRows = (data.bibliography || []).map(e => [
-    e.key || '',
-    e.type || '',
-    e.authors || '',
-    e.title || '',
-    e.year || '',
-    e.journal || e.publisher || '',
-    e.pages || '',
-    e.doi || '',
-    (e.completeness_issues || []).join('; '),
-  ]);
+  const bibRows = (data.bibliography || []).map(e => [e.key || '', e.type || '', e.authors || '', e.title || '', e.year || '', e.journal || e.publisher || '', e.pages || '', e.doi || '', (e.completeness_issues || []).join('; ')]);
   const wsBib = XLSX.utils.aoa_to_sheet([bibHeaders, ...bibRows]);
   wsBib['!cols'] = [{wch:10},{wch:14},{wch:30},{wch:50},{wch:6},{wch:28},{wch:10},{wch:22},{wch:50}];
   XLSX.utils.book_append_sheet(wb, wsBib, 'Bibliography Format Check');
-
-  // ── Sheet 3: Citation Cross-Check ─────────────────────────────────────────
   const xc = data.cross_check || {};
-  const xcRows = [
-    ['Citation Cross-Check'],
-    [],
-    ['CITED IN TEXT BUT MISSING FROM BIBLIOGRAPHY'],
-    ['Key'],
-    ...(xc.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC')).map(k => [k]),
-    [],
-    ['IN BIBLIOGRAPHY BUT NEVER CITED IN TEXT'],
-    ['Key'],
-    ...(xc.in_bib_not_cited || []).map(k => [k]),
-    [],
-    ['CORRECTLY USED'],
-    ['Key'],
-    ...(xc.correctly_used || []).map(k => [k]),
-  ];
+  const xcRows = [['Citation Cross-Check'], [], ['CITED IN TEXT BUT MISSING FROM BIBLIOGRAPHY'], ['Key'], ...(xc.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC')).map(k => [k]), [], ['IN BIBLIOGRAPHY BUT NEVER CITED IN TEXT'], ['Key'], ...(xc.in_bib_not_cited || []).map(k => [k]), [], ['CORRECTLY USED'], ['Key'], ...(xc.correctly_used || []).map(k => [k])];
   const wsXC = XLSX.utils.aoa_to_sheet(xcRows);
   wsXC['!cols'] = [{wch: 16}];
   XLSX.utils.book_append_sheet(wb, wsXC, 'Citation Cross-Check');
-
-  // ── Sheet 4: Reference Verification ──────────────────────────────────────
   const verHeaders = ['Key', 'Title', 'Verdict', 'Confidence %', 'Matched Title', 'DOI', 'Open Access URL', 'Sources Checked', 'AI Reasoning', 'Risk Factors', 'Raw Entry'];
-  const verRows = (data.verification || []).map(v => [
-    v.key || '',
-    v.title || '',
-    v.ai_verdict || '',
-    Math.round((v.confidence || 0) * 100),
-    v.matched_title || '',
-    v.doi || '',
-    v.open_access_url || '',
-    (v.sources_checked || []).join(', '),
-    v.ai_reasoning || '',
-    (v.ai_risk_factors || []).join('; '),
-    v.raw || '',
-  ]);
+  const verRows = (data.verification || []).map(v => [v.key || '', v.title || '', v.ai_verdict || '', Math.round((v.confidence || 0) * 100), v.matched_title || '', v.doi || '', v.open_access_url || '', (v.sources_checked || []).join(', '), v.ai_reasoning || '', (v.ai_risk_factors || []).join('; '), v.raw || '']);
   const wsVer = XLSX.utils.aoa_to_sheet([verHeaders, ...verRows]);
   wsVer['!cols'] = [{wch:10},{wch:50},{wch:12},{wch:14},{wch:50},{wch:22},{wch:30},{wch:30},{wch:60},{wch:40},{wch:60}];
   XLSX.utils.book_append_sheet(wb, wsVer, 'Reference Verification');
-
   return wb;
 }
-
-
 
 function markAsFake(key, btnEl) {
   if (markedFakeKeys.has(key)) return;
   markedFakeKeys.add(key);
-
-  if (btnEl) {
-    btnEl.textContent = '✕ Confirmed Fake';
-    btnEl.disabled = true;
-    btnEl.style.background = 'var(--error)';
-    btnEl.style.color = 'white';
-    btnEl.style.cursor = 'default';
-    btnEl.style.border = 'none';
-  }
-
-  // Update the badge on the verification card for this key
-  document.querySelectorAll(`.entry-card[data-key="${key}"]`).forEach(card => {
-    const badgeEl = card.querySelector('.badge-suspicious');
-    if (badgeEl) {
-      badgeEl.className = 'badge badge-fake';
-      badgeEl.textContent = '✕ FAKE — Confirmed by Professor';
-    }
-  });
-
-  if (result) {
-    renderScoreTab(result);
-    const fakeNow = (result.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size;
-    const suspNow = (result.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length;
-    setBadge('tabVerBadge', fakeNow + suspNow, fakeNow ? 'red' : suspNow ? 'orange' : '');
-  }
-
+  if (btnEl) { btnEl.textContent = '✕ Confirmed Fake'; btnEl.disabled = true; btnEl.style.background = 'var(--error)'; btnEl.style.color = 'white'; btnEl.style.cursor = 'default'; btnEl.style.border = 'none'; }
+  document.querySelectorAll(`.entry-card[data-key="${key}"]`).forEach(card => { const badgeEl = card.querySelector('.badge-suspicious'); if (badgeEl) { badgeEl.className = 'badge badge-fake'; badgeEl.textContent = '✕ FAKE — Confirmed by Professor'; } });
+  if (result) { renderScoreTab(result); const fakeNow = (result.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size; const suspNow = (result.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length; setBadge('tabVerBadge', fakeNow + suspNow, fakeNow ? 'red' : suspNow ? 'orange' : ''); }
   showToast(`✕ [${key}] confirmed as fake — score updated`, 'error');
 }
 
@@ -1365,24 +1093,15 @@ function computeAdjustedScore(data) {
   const sc = data.score || {};
   let score = sc.score || 0;
   const penalties = JSON.parse(JSON.stringify(sc.penalties || []));
-
-  const originalFakeKeys = new Set(
-    (data.verification || []).filter(v => v.ai_verdict === 'FAKE').map(v => v.key)
-  );
+  const originalFakeKeys = new Set((data.verification || []).filter(v => v.ai_verdict === 'FAKE').map(v => v.key));
   const newlyConfirmedCount = [...markedFakeKeys].filter(k => !originalFakeKeys.has(k)).length;
-
   if (newlyConfirmedCount > 0) {
     const deduction = newlyConfirmedCount * 15;
     score = Math.max(0, score - deduction);
     const fakePenalty = penalties.find(p => p.category === 'Likely fabricated references');
-    if (fakePenalty) {
-      fakePenalty.count += newlyConfirmedCount;
-      fakePenalty.deduction += deduction;
-    } else {
-      penalties.push({ category: 'Likely fabricated references', count: newlyConfirmedCount, deduction });
-    }
+    if (fakePenalty) { fakePenalty.count += newlyConfirmedCount; fakePenalty.deduction += deduction; }
+    else { penalties.push({ category: 'Likely fabricated references', count: newlyConfirmedCount, deduction }); }
   }
-
   const grades = [[90,'A+'],[85,'A'],[80,'A-'],[75,'B+'],[70,'B'],[65,'B-'],[60,'C+'],[55,'C'],[50,'C-'],[0,'F']];
   const grade = (grades.find(([min]) => score >= min) || [0,'F'])[1];
   return { score, grade, penalties };

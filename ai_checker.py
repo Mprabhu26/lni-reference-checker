@@ -1,11 +1,10 @@
 """
-AI Checker — v6.3 (FIXED)
+AI Checker — v6.4 (FIXED)
 --------------------------
 FIXES:
-  - Deduplication of verification results (no duplicate entries)
-  - Removed misleading "api_status=error" - replaced with user-friendly messages
-  - Removed confusing "composite_risk" from frontend display
-  - Better consistency between risk factors and verdict
+  - API verification results are honored FIRST (early return for verified matches)
+  - Grey literature detection preserved
+  - Composite risk only applied when API returns no match
   - Local DB checked FIRST before API calls
 """
 
@@ -17,16 +16,6 @@ import threading
 import requests
 from typing import List, Dict, Any, Optional
 from review_queue import is_venue_whitelisted
-
-# Load .env file
-try:
-    from dotenv import load_dotenv
-    from pathlib import Path
-    env_path = Path(__file__).parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-except ImportError:
-    pass
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -60,52 +49,68 @@ def get_llm_cache_stats() -> dict:
 
 
 def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
-    """Call Groq AI API only."""
+    """Call AI backend with automatic retry + exponential backoff."""
     import time
-    
     groq_key = os.environ.get("AI_API_KEY", "")
-    
-    if not groq_key:
-        raise RuntimeError("No AI API key configured. Set AI_API_KEY in your .env file.")
-    
-    model_tag = f"groq:{GROQ_MODEL}"
+    gemini_key = os.environ.get("AI_API_KEY_GEMINI", "")
+    model_tag = f"groq:{GROQ_MODEL}" if groq_key else "gemini:1.5-flash"
     cached = _llm_cache_get(model_tag, system, prompt)
     if cached is not None:
         return cached
-    
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    
-    for attempt in range(3):
-        try:
-            resp = requests.post(
-                GROQ_URL,
-                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                json={"model": GROQ_MODEL, "messages": messages,
-                      "max_tokens": max_tokens, "temperature": 0.1},
-                timeout=35,
-            )
-            if resp.status_code == 200:
-                result = resp.json()["choices"][0]["message"]["content"].strip()
-                _llm_cache_put(model_tag, system, prompt, result)
-                return result
-            elif resp.status_code == 429:
-                time.sleep(2 ** attempt)
-                continue
-            else:
-                print(f"Groq API HTTP {resp.status_code}: {resp.text[:300]}")
-                if attempt == 2:
-                    raise RuntimeError(f"Groq API error: HTTP {resp.status_code} — {resp.text[:200]}")
-                time.sleep(1.5 ** attempt)
-        except Exception as e:
-            print(f"Groq API attempt {attempt} exception: {type(e).__name__}: {e}")
-            if attempt == 2:
-                raise RuntimeError(f"Groq API failed: {str(e)}")
+    MAX_RETRIES = 2
+    for attempt in range(MAX_RETRIES + 1):
+        result = None
+        used_model = None
+        if groq_key:
+            try:
+                resp = requests.post(
+                    GROQ_URL,
+                    headers={"Authorization": f"Bearer {groq_key}",
+                             "Content-Type": "application/json"},
+                    json={"model": GROQ_MODEL, "messages": messages,
+                          "max_tokens": max_tokens, "temperature": 0.1},
+                    timeout=35,
+                )
+                if resp.status_code == 200:
+                    result = resp.json()["choices"][0]["message"]["content"].strip()
+                    used_model = f"groq:{GROQ_MODEL}"
+                elif resp.status_code == 429:
+                    wait = float(resp.headers.get("Retry-After", 2 ** attempt))
+                    time.sleep(min(wait, 8))
+                    continue
+            except Exception:
+                pass
+        if result is None and gemini_key:
+            try:
+                full_prompt = (system + "\n\n" + prompt) if system else prompt
+                resp = requests.post(
+                    f"{GEMINI_URL}?key={gemini_key}",
+                    headers={"Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": full_prompt}]}],
+                          "generationConfig": {"maxOutputTokens": max_tokens,
+                                               "temperature": 0.1}},
+                    timeout=35,
+                )
+                if resp.status_code == 200:
+                    parts = resp.json()["candidates"][0]["content"]["parts"]
+                    result = "".join(p.get("text", "") for p in parts).strip()
+                    used_model = "gemini:1.5-flash"
+                elif resp.status_code == 429:
+                    time.sleep(2 ** attempt)
+                    continue
+            except Exception:
+                pass
+        if result is not None:
+            _llm_cache_put(used_model or model_tag, system, prompt, result)
+            return result
+        if attempt < MAX_RETRIES:
             time.sleep(1.5 ** attempt)
-    
-    raise RuntimeError("Groq API failed after 3 attempts")
+    missing = [k for k, v in [("AI_API_KEY", groq_key), ("AI_API_KEY_GEMINI", gemini_key)] if not v]
+    raise RuntimeError("No AI API key configured. Set AI_API_KEY in your .env file. ")
 
 
 def _call_ai_json(prompt: str, max_tokens: int = 2000, system: str = "") -> dict:
@@ -136,7 +141,7 @@ def _chunk(lst: list, size: int) -> list:
 
 
 def _ai_available() -> bool:
-    return bool(os.environ.get("AI_API_KEY"))
+    return bool(os.environ.get("AI_API_KEY") or os.environ.get("AI_API_KEY_GEMINI"))
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +278,60 @@ def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 3. ENHANCED: Composite Fake Detection Signals
+# 2. Grey Literature Detection
+# ---------------------------------------------------------------------------
+
+def _is_grey_literature(entry: dict) -> tuple:
+    """
+    Detect industry reports, government docs, blog posts — valid sources
+    not indexed in CrossRef/Semantic Scholar.
+    Returns (is_grey: bool, reason: str).
+    """
+    title     = (entry.get("title") or "").lower()
+    url       = (entry.get("url") or "").lower()
+    publisher = (entry.get("publisher") or "").lower()
+    entry_type = (entry.get("entry_type") or "").lower()
+    raw       = (entry.get("raw_text") or entry.get("raw") or "").lower()
+
+    grey_domains = [
+        "bitkom.org", "flexera.com", "info.flexera.com", "gartner.com",
+        "forrester.com", "mckinsey.com", "deloitte.com", "statista.com",
+        "idc.com", "accenture.com", "capgemini.com", "pwc.com", "kpmg.com",
+        "bsi.bund.de", "bsi.de", "bundesregierung.de", "bmwi.de", "bmwk.de",
+        "destatis.de", "ec.europa.eu", "nist.gov", "37signals.com",
+        "basecamp.com", "github.com", "github.io", "medium.com",
+        "techcrunch.com", "substack.com", "resources.idg.de",
+    ]
+    for domain in grey_domains:
+        if domain in url:
+            return True, f"Industry/government source ({domain})"
+
+    grey_title_signals = [
+        "state of the cloud", "cloud report", "market report", "industry report",
+        "annual report", "whitepaper", "white paper", "survey report",
+        "leaving the cloud", "cloud repatriation", "state of devops",
+        "state of agile", "developer survey",
+    ]
+    for sig in grey_title_signals:
+        if sig in title:
+            return True, f"Industry/grey literature ('{sig}')"
+
+    grey_publishers = [
+        "bitkom", "flexera", "gartner", "forrester", "idc", "statista",
+        "mckinsey", "deloitte", "pwc", "kpmg", "accenture",
+    ]
+    for pub in grey_publishers:
+        if pub in publisher or pub in raw:
+            return True, f"Known industry publisher: {pub.title()}"
+
+    if entry_type in ("website", "online", "misc") and url:
+        return True, "Online/misc source with URL — not in academic databases"
+
+    return False, ""
+
+
+# ---------------------------------------------------------------------------
+# 3. Composite Fake Detection Signals (Only used when API returns no match)
 # ---------------------------------------------------------------------------
 
 def _check_journal_plausibility(journal: str) -> tuple:
@@ -432,231 +490,100 @@ def _get_user_friendly_message(status: str, details: str = "") -> str:
         return "Verification attempted"
 
 
-def _is_grey_literature(entry: dict) -> tuple:
-    """
-    Detect industry reports, government docs, blog posts — valid sources
-    not indexed in CrossRef/Semantic Scholar.
-    Returns (is_grey: bool, reason: str).
-    """
-    title     = (entry.get("title") or "").lower()
-    url       = (entry.get("url") or "").lower()
-    publisher = (entry.get("publisher") or "").lower()
-    entry_type = (entry.get("entry_type") or "").lower()
-    raw       = (entry.get("raw_text") or entry.get("raw") or "").lower()
-    authors   = (entry.get("authors") or "").lower()
-
-    # CRITICAL FIX: Check title FIRST for grey keywords
-    grey_title_keywords = [
-        "state of the cloud", "cloud report", "market report", "industry report",
-        "whitepaper", "white paper", "survey report", "bitkom", "flexera",
-        "gartner", "forrester", "idc", "statista", "leaving the cloud",
-        "cloud repatriation", "state of devops"
-    ]
-    for kw in grey_title_keywords:
-        if kw in title:
-            return True, f"Industry/grey literature ('{kw}')"
-
-    # In ai_checker.py, update the _is_grey_literature function's grey_domains list:
-
-    grey_domains = [
-        "bitkom.org", "bitkom.de",  # Add .de variant
-        "flexera.com", "info.flexera.com", "gartner.com",
-        "forrester.com", "mckinsey.com", "deloitte.com", "statista.com",
-        "idc.com", "accenture.com", "capgemini.com", "pwc.com", "kpmg.com",
-        "bsi.bund.de", "bsi.de", "bundesregierung.de", "bmwi.de", "bmwk.de",
-        "destatis.de", "ec.europa.eu", "nist.gov", "37signals.com",
-        "basecamp.com", "github.com", "github.io", "medium.com",
-        "techcrunch.com", "substack.com", "resources.idg.de",
-]
-    for domain in grey_domains:
-        if domain in url:
-            return True, f"Industry/government source ({domain})"
-
-    grey_title_signals = [
-        "state of the cloud", "cloud report", "market report", "industry report",
-        "annual report", "whitepaper", "white paper", "survey report",
-        "leaving the cloud", "cloud repatriation", "state of devops",
-        "state of agile", "developer survey",
-    ]
-    for sig in grey_title_signals:
-        if sig in title:
-            return True, f"Industry/grey literature ('{sig}')"
-
-    grey_publishers = [
-        "bitkom", "flexera", "gartner", "forrester", "idc", "statista",
-        "mckinsey", "deloitte", "pwc", "kpmg", "accenture",
-    ]
-    for pub in grey_publishers:
-        if pub in publisher or pub in raw:
-            return True, f"Known industry publisher: {pub.title()}"
-
-    if entry_type in ("website", "online", "misc") and url:
-        return True, "Online/misc source with URL — not in academic databases"
-
-    return False, ""
-
-
-def _llm_verify_grey_entry(entry: dict, grey_reason: str, url_note: str) -> Optional[dict]:
-    """
-    LLM fallback for grey/industry/German sources whose URL is unreachable.
-    Uses title, authors, publisher, year, and URL as signals.
-    Returns a verdict dict or None if LLM is unavailable.
-    """
-    if not _ai_available():
-        return None
-
-    title     = entry.get("title") or ""
-    authors   = entry.get("authors") or ""
-    year      = entry.get("year") or ""
-    publisher = entry.get("publisher") or ""
-    url       = entry.get("url") or ""
-    raw       = entry.get("raw_text") or entry.get("raw") or ""
-
-    prompt = f"""You are verifying whether a grey-literature reference (industry report, government publication, or similar non-academic source) actually exists and is not fabricated.
-
-REFERENCE:
-  Title:     {title}
-  Authors:   {authors or "not given"}
-  Year:      {year or "not given"}
-  Publisher: {publisher or "not given"}
-  URL:       {url or "none"}
-  Raw text:  {raw[:300] if raw else "not available"}
-
-The URL could not be automatically verified (fetch result: {url_note}).
-
-TASK: Does this reference actually exist? Use your knowledge to judge.
-
-Return ONLY valid JSON, no markdown:
-{{
-  "verdict": "REAL or SUSPICIOUS or FAKE",
-  "confidence": 0.0-1.0,
-  "reasoning": "one concise sentence",
-  "risk_factors": ["specific concerns if any, empty list if none"]
-}}
-
-RULES:
-- REAL: You have positive knowledge this specific title/publisher/year combination exists
-- SUSPICIOUS: Publisher exists but you cannot confirm this specific report/title
-- FAKE: Clear fabrication — publisher doesn't exist, impossible year, nonsensical title
-- A 404 URL alone is not evidence either way
-- Do NOT default to REAL just because the publisher is well-known; students can fabricate plausible-sounding titles
-"""
-    try:
-        result = _call_ai_json(prompt, max_tokens=400)
-        verdict = result.get("verdict", "SUSPICIOUS").upper()
-        if verdict not in ("REAL", "SUSPICIOUS", "FAKE"):
-            verdict = "SUSPICIOUS"
-        confidence = float(result.get("confidence", 0.55))
-        reasoning  = result.get("reasoning", "LLM grey-literature check")
-        risk_factors = result.get("risk_factors", [])
-
-        composite_risk = 0.15 if verdict == "REAL" else (0.55 if verdict == "SUSPICIOUS" else 0.85)
-        note_str = f"Grey/industry literature ({grey_reason}). {reasoning}."
-        risk_factors_out = [] if verdict == "REAL" else [r for r in risk_factors if r.strip()][:3]
-        return {
-            "verdict": verdict,
-            "confidence": round(confidence, 2),
-            "composite_risk": composite_risk,
-            "note": note_str,
-            "reasoning": note_str,   # also exposed as reasoning for ai_verdicts pipeline
-            "risk_factors": risk_factors_out,
-        }
-    except Exception as e:
-        import traceback
-        print(f"_llm_verify_grey_entry error: {e}")
-        traceback.print_exc()
-        return None
-
-
 def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: float) -> dict:
-    """Compute composite fake detection score from multiple signals."""
+    """
+    Compute verdict based on API results FIRST.
+    If API confirmed it, return REAL immediately.
+    Only apply composite risk when API returns no match.
+    """
     
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 1: Check URL verification status first
-    # ─────────────────────────────────────────────────────────────────────────
-    url_status = entry.get("url_status", "")
-    url_note = entry.get("url_note", "")
-    
-    # Check if URL verification failed (404, not reachable, timeout, etc.)
-    url_failed = (
-        "404" in url_note or
-        "not reachable" in url_note or
-        "unreachable" in url_note or
-        "unavailable" in url_note or
-        "error" in url_status or
-        "timed out" in url_note or
-        "HTTP 4" in url_note or
-        "HTTP 5" in url_note or
-        url_status in ("suspicious", "partial_match", "not_found")
-    )
-    
-    # ─────────────────────────────────────────────────────────────────────────
-    # STEP 2: GREY LITERATURE DETECTION
-    # ─────────────────────────────────────────────────────────────────────────
-    is_grey, grey_reason = _is_grey_literature(entry)
-    
-    if is_grey:
-        if url_failed:
-            # URL unreachable — ask LLM to verify based on publisher/title knowledge
-            ai_grey = _llm_verify_grey_entry(entry, grey_reason, url_note)
-            if ai_grey:
-                return {
-                    "verdict": ai_grey["verdict"],
-                    "confidence": ai_grey["confidence"],
-                    "composite_risk": ai_grey["composite_risk"],
-                    "risk_factors": ai_grey["risk_factors"],
-                    "reasoning": ai_grey.get("note", ai_grey.get("reasoning", f"Grey/industry literature ({grey_reason}). AI verification performed.")),
-                }
-            # LLM unavailable
-            return {
-                "verdict": "SUSPICIOUS",
-                "confidence": 0.50,
-                "composite_risk": 0.55,
-                "reasoning": f"Grey/industry literature ({grey_reason}). URL verification returned: {url_note}. AI unavailable — professor should verify manually.",
-                "risk_factors": [
-                    f"Grey/industry literature ({grey_reason}). "
-                    f"URL verification failed: {url_note}. AI unavailable. Professor should verify manually."
-                ],
-            }
-        # URL verified (200) → REAL
-        return {
-            "verdict": "REAL",
-            "confidence": 0.95,
-            "composite_risk": 0.05,
-            "risk_factors": [],
-            "reasoning": f"Grey/industry literature ({grey_reason}). URL responded HTTP 200 — page is reachable and content confirmed.",
-        }
-    
-    # ─────────────────────────────────────────────────────────────────────────
-    # STEP 3: Check API status first - if verified with high confidence
+    # STEP 1: Get API status
     # ─────────────────────────────────────────────────────────────────────────
     api_status = api_result.get("status", "not_checked")
     api_confidence = api_result.get("confidence", 0.0)
     matched_title = api_result.get("matched_title", "")
     sources = api_result.get("sources_checked", [])
-    
-    # DOI match is strongest evidence
-    if entry.get("doi") and api_status == "verified" and api_confidence >= 0.90:
-        return {
-            "verdict": "REAL",
-            "confidence": 0.95,
-            "composite_risk": 0.10,
-            "risk_factors": ["DOI verified in CrossRef"],
-        }
-    
-    # High confidence API match
-    if api_status == "verified" and api_confidence >= 0.85 and matched_title:
-        sim = _title_similarity(entry.get("title", ""), matched_title)
-        if sim >= 0.85:
-            return {
-                "verdict": "REAL",
-                "confidence": api_confidence,
-                "composite_risk": 0.15,
-                "risk_factors": [f"Confirmed in {', '.join(sources[:2])} with {int(sim*100)}% title match"],
-            }
+    has_doi = bool(entry.get("doi") or api_result.get("doi"))
+    has_url_confirmed = bool(api_result.get("open_access_url") and api_status == "verified")
     
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 4: Build risk signals for uncertain cases
+    # STEP 2: CRITICAL FIX - If API confirmed it, return REAL immediately
+    # This ensures academic API results are NEVER overridden by risk signals
+    # ─────────────────────────────────────────────────────────────────────────
+    if api_status == "verified" and api_confidence >= 0.85 and matched_title:
+        return {
+            "verdict": "REAL",
+            "confidence": api_confidence,
+            "composite_risk": 0.10,
+            "risk_factors": [],
+            "reasoning": f"Confirmed in {', '.join(sources[:2])}: '{matched_title[:60]}'",
+        }
+    
+    # DOI match is strongest evidence
+    if has_doi and api_status == "verified" and api_confidence >= 0.80:
+        return {
+            "verdict": "REAL",
+            "confidence": 0.92,
+            "composite_risk": 0.10,
+            "risk_factors": [],
+            "reasoning": f"DOI verified in CrossRef: {entry.get('doi')}",
+        }
+    
+    # URL confirmed (HTTP 200 with title match)
+    if has_url_confirmed:
+        return {
+            "verdict": "REAL",
+            "confidence": 0.88,
+            "composite_risk": 0.12,
+            "risk_factors": [],
+            "reasoning": f"URL verified: page title matches cited reference",
+        }
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 3: Grey literature detection (valid sources not in academic DBs)
+    # ─────────────────────────────────────────────────────────────────────────
+    is_grey, grey_reason = _is_grey_literature(entry)
+    
+    if is_grey:
+        url_confirmed = (
+            api_status == "verified"
+            or "url_check" in sources
+            or "trusted_publisher" in sources
+        )
+        has_url = bool(entry.get("url"))
+
+        if url_confirmed and api_confidence >= 0.60:
+            return {
+                "verdict": "REAL",
+                "confidence": min(api_confidence + 0.05, 0.92),
+                "composite_risk": 0.10,
+                "risk_factors": [
+                    f"Grey/industry literature ({grey_reason}). "
+                    "URL was checked and content verified."
+                ],
+            }
+        if has_url and api_status in ("partial_match",):
+            return {
+                "verdict": "REAL",
+                "confidence": 0.72,
+                "composite_risk": 0.28,
+                "risk_factors": [
+                    f"Grey/industry literature ({grey_reason}) — URL present but could not be fully verified."
+                ],
+            }
+        return {
+            "verdict": "SUSPICIOUS",
+            "confidence": 0.55,
+            "composite_risk": 0.55,
+            "risk_factors": [
+                f"Grey/industry literature ({grey_reason}). "
+                "Not indexed in academic databases and no URL provided."
+            ],
+        }
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 4: No API confirmation → Compute risk signals (but don't override)
     # ─────────────────────────────────────────────────────────────────────────
     signals = []
     total_weight = 0
@@ -666,116 +593,158 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     status_scores = {
         "verified": 0.0,
         "retracted": 0.1,
-        "partial_match": 0.35,
+        "partial_match": 0.4,
         "not_checked": 0.5,
-        "not_found": 0.65,
+        "not_found": 0.7,
         "error": 0.5
     }
     status_risk = status_scores.get(api_status, 0.5)
-    signals.append({"name": "database_match", "risk": status_risk, "weight": 0.35})
+    signals.append({"name": "database_match", "risk": status_risk, "weight": 0.35, 
+                    "friendly": _get_user_friendly_message(api_status)})
     weighted_sum += status_risk * 0.35
     total_weight += 0.35
     
-    # Signal 2: Title similarity (only if we have a match)
-    if title_sim is not None and title_sim > 0 and matched_title:
-        title_risk = 1.0 - min(title_sim, 0.95)
-        signals.append({"name": "title_match", "risk": title_risk, "weight": 0.25})
+    # Signal 2: Title similarity (only if we have a match from API)
+    if title_sim is not None and matched_title:
+        title_risk = 1.0 - title_sim
+        signals.append({"name": "title_match", "risk": title_risk, "weight": 0.25, 
+                        "friendly": f"Title match: {int(title_sim*100)}%"})
         weighted_sum += title_risk * 0.25
-        total_weight += 0.25
-    else:
-        # No match found at all - this is a signal but not conclusive
-        weighted_sum += 0.5 * 0.25
         total_weight += 0.25
     
     # Signal 3: Missing required fields
     required_fields = ["authors", "title", "year"]
     missing_count = sum(1 for f in required_fields if not entry.get(f))
-    missing_risk = min(missing_count / 3, 0.4)
-    weighted_sum += missing_risk * 0.1
-    total_weight += 0.1
+    missing_risk = min(missing_count / 3, 0.5)
+    if missing_count > 0:
+        signals.append({"name": "missing_fields", "risk": missing_risk, "weight": 0.1, 
+                        "friendly": f"Missing {missing_count} required field(s)"})
+        weighted_sum += missing_risk * 0.1
+        total_weight += 0.1
     
     # Signal 4: Key consistency
     if entry.get("key_consistent") is False:
-        weighted_sum += 0.5 * 0.1
+        signals.append({"name": "key_mismatch", "risk": 0.6, "weight": 0.1, 
+                        "friendly": "Key doesn't match author/year"})
+        weighted_sum += 0.6 * 0.1
         total_weight += 0.1
     
     # Signal 5: Journal plausibility
     journal = entry.get("journal", "")
     if journal:
-        journal_plausible, _ = _check_journal_plausibility(journal)
+        journal_plausible, journal_flags = _check_journal_plausibility(journal)
         if not journal_plausible:
-            weighted_sum += 0.4 * 0.1
+            signals.append({"name": "journal", "risk": 0.55, "weight": 0.1, 
+                            "friendly": "Journal name appears suspicious"})
+            weighted_sum += 0.55 * 0.1
             total_weight += 0.1
     
-    # Signal 6: Future year
-    year = entry.get("year", "")
-    if year:
-        year_ok, _ = _check_year_plausibility(str(year))
-        if not year_ok:
-            weighted_sum += 0.6 * 0.1
-            total_weight += 0.1
+    # Signal 6: Page range
+    pages = entry.get("pages", "")
+    if pages:
+        pages_plausible, _ = _check_page_range_implausibility(pages, entry.get("year", ""))
+        if not pages_plausible:
+            signals.append({"name": "page_range", "risk": 0.4, "weight": 0.05, 
+                            "friendly": "Page range seems unusual"})
+            weighted_sum += 0.4 * 0.05
+            total_weight += 0.05
     
-    # Signal 7: URL fetch failure (added signal)
-    if url_failed:
-        weighted_sum += 0.4 * 0.1
-        total_weight += 0.1
-    
-    # Normalize composite risk
+    # Normalize
     composite_risk = weighted_sum / total_weight if total_weight > 0 else 0.5
     
-    # ─────────────────────────────────────────────────────────────────────────
-    # STEP 5: Determine verdict based on composite risk
-    # ─────────────────────────────────────────────────────────────────────────
-    # Count high-risk signals
-    high_risk_count = sum(1 for s in signals if s["risk"] >= 0.5)
-    
-    if composite_risk >= 0.75 and high_risk_count >= 2:
+    # Determine verdict based on composite risk (only for non-API-confirmed entries)
+    if composite_risk >= 0.75:
         verdict = "FAKE"
-        confidence = min(0.75 + (composite_risk - 0.75) * 1.5, 0.95)
+        confidence = min(0.7 + (composite_risk - 0.75) * 1.2, 0.95)
     elif composite_risk >= 0.55:
         verdict = "SUSPICIOUS"
-        confidence = 0.5 + (composite_risk - 0.55) * 1.2
+        confidence = 0.5 + (composite_risk - 0.55) * 1.5
     else:
-        verdict = "REAL"
-        confidence = 0.7 + (1.0 - composite_risk) * 0.3
+        verdict = "SUSPICIOUS"  # Changed from REAL - no evidence = SUSPICIOUS
+        confidence = 0.4
     
-    # ─────────────────────────────────────────────────────────────────────────
-    # STEP 6: Build user-friendly risk factors
-    # ─────────────────────────────────────────────────────────────────────────
+    # Collect user-friendly risk factors
     risk_factors = []
     for s in signals:
         if s["risk"] >= 0.4:
-            if s["name"] == "database_match":
-                if api_status == "not_found":
-                    risk_factors.append("Not found in any academic database")
-                elif api_status == "partial_match":
-                    risk_factors.append("Only partial/weak match in databases")
-            elif s["name"] == "title_match":
-                risk_factors.append(f"Low title similarity ({int((1-s['risk'])*100)}%)")
-            elif s["name"] == "missing_fields":
-                risk_factors.append(f"Missing required metadata fields")
-            elif s["name"] == "key_mismatch":
-                risk_factors.append("LNI key doesn't match author/year")
-            elif s["name"] == "journal":
-                risk_factors.append("Journal name appears suspicious")
-            elif s["name"] == "implausible_year":
-                risk_factors.append("Year is implausible or in future")
-    
-    # Add URL failure to risk factors if applicable
-    if url_failed:
-        risk_factors.append(f"URL verification failed: {url_note[:80]}")
+            risk_factors.append(s["friendly"])
     
     return {
         "verdict": verdict,
         "confidence": round(confidence, 2),
         "composite_risk": round(composite_risk, 2),
-        "risk_factors": risk_factors[:5],
-        "reasoning": (
-            f"Not found in any academic database." if verdict == "FAKE" else
-            f"Composite risk {int(composite_risk*100)}% — partial or ambiguous evidence. Manual review recommended." if verdict == "SUSPICIOUS" else
-            f"Confidence {int(confidence*100)}% based on database signals."
-        ),
+        "risk_factors": risk_factors[:4],
+        "reasoning": f"Analysis: {int(composite_risk*100)}% risk score",
     }
+
+
+def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: float) -> Optional[dict]:
+    """Deterministic pre-screen using author overlap + multi-source evidence."""
+    from checker import author_overlap_score
+    api_status = api_result.get("status", "not_checked")
+    confidence = api_result.get("confidence", 0)
+    sources = api_result.get("sources_checked", [])
+    n_sources = len(sources)
+    is_retracted = api_result.get("is_retracted", False)
+    has_doi = bool(api_result.get("doi"))
+    has_oa_url = bool(api_result.get("open_access_url"))
+    has_version_note = bool(api_result.get("version_note"))
+    matched_title = api_result.get("matched_title", "")
+
+    # Grey literature: never pre-screen as FAKE
+    is_grey, _ = _is_grey_literature(entry)
+    if is_grey:
+        return None
+
+    if is_retracted:
+        return {"verdict": "REAL", "confidence": 0.99,
+                "reasoning": "Paper confirmed to exist but RETRACTED — do not cite",
+                "risk_factors": ["RETRACTED"]}
+    
+    # Only mark REAL if we have actual API confirmation with matched title
+    if has_doi and api_status == "verified" and confidence >= 0.80 and matched_title:
+        return {"verdict": "REAL", "confidence": 0.95,
+                "reasoning": f"DOI confirmed + title match",
+                "risk_factors": []}
+    
+    if has_oa_url and confidence >= 0.75 and matched_title:
+        return {"verdict": "REAL", "confidence": 0.91,
+                "reasoning": "Open-access copy retrieved and verified",
+                "risk_factors": []}
+    
+    if has_version_note and confidence >= 0.65:
+        return {"verdict": "REAL", "confidence": 0.88,
+                "reasoning": f"Preprint found: {api_result.get('version_note','')}",
+                "risk_factors": []}
+    
+    if api_status == "verified" and confidence >= 0.88 and n_sources >= 2 and matched_title:
+        return {"verdict": "REAL", "confidence": confidence,
+                "reasoning": f"Confirmed by {n_sources} independent databases",
+                "risk_factors": []}
+    
+    cited_authors = (entry.get("authors") or "").strip()
+    correct_authors = (api_result.get("correct_authors") or
+                       api_result.get("corrected_authors") or "").strip()
+    if not cited_authors or not correct_authors:
+        if api_status == "verified" and confidence >= 0.82 and (has_doi or has_oa_url) and matched_title:
+            return {"verdict": "REAL", "confidence": confidence,
+                    "reasoning": "Verified in database with DOI/URL",
+                    "risk_factors": []}
+        return None
+    
+    overlap = author_overlap_score(cited_authors, correct_authors)
+    if overlap is None:
+        return None
+    pct = int(overlap * 100)
+    if overlap < 0.25 and api_status in ("verified", "partial_match") and title_sim >= 0.40:
+        return {"verdict": "FAKE", "confidence": 0.88,
+                "reasoning": f"Title matches but author overlap is only {pct}% — possible fabrication",
+                "risk_factors": [f"Author mismatch ({pct}%)"]}
+    if overlap >= 0.60 and api_status in ("verified", "partial_match") and confidence >= 0.65:
+        return {"verdict": "REAL", "confidence": round(min(0.80 + overlap * 0.18, 0.97), 2),
+                "reasoning": f"Author overlap {pct}% + title match",
+                "risk_factors": []}
+    return None
 
 
 def _llm_reverify_medium_confidence(entry: dict, vr: dict, matched_title: str) -> Optional[dict]:
@@ -791,7 +760,7 @@ def _llm_reverify_medium_confidence(entry: dict, vr: dict, matched_title: str) -
     prompt = f"""You are an expert academic librarian doing a second-opinion check.
 
 A citation checker found a medium-confidence database match. Determine if this is:
-A) A real paper cited with minor metadata errors (e.g. different edition, arXiv vs published version)
+A) A real paper cited with minor metadata errors
 B) A suspicious citation that needs professor review
 C) A likely fabricated reference
 
@@ -829,7 +798,7 @@ Respond ONLY with valid JSON:
 def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     """
     Determine REAL / SUSPICIOUS / FAKE for each reference.
-    Fixed: deduplication, user-friendly messages, consistent verdicts.
+    FIXED: API results are honored first.
     """
     from review_queue import is_venue_whitelisted
     
@@ -867,10 +836,7 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         if early:
             pre_screen_cache[entry["key"]] = early
         else:
-            entry_with_url = {**entry,
-                              "url_note": vr.get("note", ""),
-                              "url_status": vr.get("status", "")}
-            composite = _compute_verdict_with_confidence(entry_with_url, vr, title_sim)
+            composite = _compute_verdict_with_confidence(entry, vr, title_sim)
             
             if whitelist_check.get("whitelisted") and composite["verdict"] == "FAKE":
                 composite["verdict"] = "SUSPICIOUS"
@@ -878,26 +844,23 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 composite["reasoning"] = f"Venue is whitelisted ({whitelist_check.get('venue')})"
             
             if composite["verdict"] != "SUSPICIOUS" and composite["confidence"] >= 0.75:
-                # Extra guard: don't auto-REAL when the database found nothing and we have
-                # no concrete artefact (DOI / OA URL) to back the claim.
                 vr_status = vr.get("status", "not_checked")
                 vr_doi = vr.get("doi") or vr.get("open_access_url")
                 if (composite["verdict"] == "REAL"
                         and vr_status in ("not_found", "error", "not_checked")
                         and not vr_doi):
-                    # Downgrade to SUSPICIOUS so the LLM / AI layer gets a look
                     needs_ai.append((entry, vr, title_sim, composite))
                     continue
                 pre_screen_cache[entry["key"]] = {
                     "verdict": composite["verdict"],
                     "confidence": composite["confidence"],
-                    "reasoning": composite.get("reasoning") or f"Composite risk score: {int(composite.get('composite_risk', 0.5)*100)}%.",
+                    "reasoning": composite.get("reasoning", "Analysis complete"),
                     "risk_factors": composite.get("risk_factors", []),
                 }
             else:
                 matched_title = vr.get("matched_title", "")
                 api_conf = vr.get("confidence", 0)
-                if matched_title and 0.45 <= api_conf <= 0.74:
+                if matched_title and 0.45 <= api_conf <= 0.74 and _ai_available():
                     reverify = _llm_reverify_medium_confidence(entry, vr, matched_title)
                     if reverify and reverify["verdict"] == "REAL":
                         pre_screen_cache[entry["key"]] = {
@@ -907,8 +870,6 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                             "risk_factors": [],
                             "version_note": reverify.get("version_note", ""),
                         }
-                        if reverify.get("is_version_mismatch"):
-                            pre_screen_cache[entry["key"]]["reasoning"] += " (version mismatch — paper is real)"
                         continue
                     elif reverify and reverify["verdict"] == "FAKE":
                         pre_screen_cache[entry["key"]] = {
@@ -921,78 +882,63 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 needs_ai.append((entry, vr, title_sim, composite))
     
     ai_verdicts_by_key: Dict[str, dict] = {}
-    fake_count = suspicious_count = real_count = 0
     
-    for chunk in _chunk(needs_ai, 15):
-        combined = []
-        for entry, vr, title_sim, composite in chunk:
-            combined.append({
-                "key": entry["key"],
-                "title": entry.get("title") or "",
-                "authors": entry.get("authors") or "",
-                "year": entry.get("year") or "",
-                "entry_type": entry.get("entry_type") or "unknown",
-                "doi": entry.get("doi") or "",
-                "journal": entry.get("journal") or "",
-                "publisher": entry.get("publisher") or "",
-                "url": entry.get("url") or "",
-                "booktitle": entry.get("booktitle") or "",
-                "pages": entry.get("pages") or "",
-                "key_consistent": entry.get("key_consistent"),
-                "api_status": vr.get("status", "not_checked"),
-                "api_confidence": round(vr.get("confidence", 0), 2),
-                "api_matched_title": vr.get("matched_title") or "",
-                "api_sources": vr.get("sources_checked", []),
-                "open_access_url": vr.get("open_access_url") or "",
-                "web_evidence": vr.get("web_evidence") or "",
-                "arxiv_version_note": vr.get("version_note") or "",
-                "composite_risk": composite.get("composite_risk", 0.5),
-                "url_content": entry.get("web_evidence") or "",  # Add fetched page content
-                "url_status": entry.get("status") or ""
-            })
-        
-        prompt = f"""You are a senior academic librarian and integrity specialist.
+    # Only process AI chunk if AI is available
+    if _ai_available() and needs_ai:
+        for chunk in _chunk(needs_ai, 15):
+            combined = []
+            for entry, vr, title_sim, composite in chunk:
+                combined.append({
+                    "key": entry["key"],
+                    "title": entry.get("title") or "",
+                    "authors": entry.get("authors") or "",
+                    "year": entry.get("year") or "",
+                    "entry_type": entry.get("entry_type") or "unknown",
+                    "doi": entry.get("doi") or "",
+                    "journal": entry.get("journal") or "",
+                    "publisher": entry.get("publisher") or "",
+                    "url": entry.get("url") or "",
+                    "booktitle": entry.get("booktitle") or "",
+                    "pages": entry.get("pages") or "",
+                    "key_consistent": entry.get("key_consistent"),
+                    "api_status": vr.get("status", "not_checked"),
+                    "api_confidence": round(vr.get("confidence", 0), 2),
+                    "api_matched_title": vr.get("matched_title") or "",
+                    "api_sources": vr.get("sources_checked", []),
+                    "open_access_url": vr.get("open_access_url") or "",
+                    "web_evidence": vr.get("web_evidence") or "",
+                    "arxiv_version_note": vr.get("version_note") or "",
+                    "composite_risk": composite.get("composite_risk", 0.5),
+                })
+            
+            prompt = f"""You are a senior academic librarian.
 Analyze each reference below and return REAL / SUSPICIOUS / FAKE.
 
-━━━ VERDICTS ━━━
-REAL       — Paper demonstrably exists. Confirmed by database or strong evidence.
-SUSPICIOUS — Cannot confirm, cannot falsify. Flag for professor manual review.
-FAKE       — Positive evidence of fabrication. Only use when confident.
-
-━━━ CALIBRATION (read carefully) ━━━
-CONSERVATIVE BIAS: Calling a real paper FAKE harms a student unjustly.
-Only mark FAKE when ≥2 independent signals confirm fabrication.
-"Not found in database" alone is NOT enough to call FAKE.
-GREY LITERATURE RULE: Industry reports (Bitkom, Flexera, Gartner, etc.), government publications, podcasts, and company whitepapers are valid sources but NOT indexed in CrossRef or Semantic Scholar. If a reference has a known publisher or URL and its only issue is not being in an academic database, mark SUSPICIOUS (not FAKE).
-
-Return ONLY valid JSON (no markdown, no explanation outside JSON):
+Return ONLY valid JSON:
 {{
   "verdicts": [
     {{"key": "string", "verdict": "REAL", "confidence": 0.95,
-      "reasoning": "one concise sentence explaining the verdict",
-      "risk_factors": ["list", "of", "specific", "flags"]}}
-  ],
-  "fake_count": 0, "suspicious_count": 0, "real_count": 0,
-  "summary": "2-3 sentence overall assessment of the submission quality"
+      "reasoning": "one sentence", "risk_factors": []}}
+  ]
 }}
 
-References (with pre-computed signals from API sources):
+References:
 {json.dumps(combined, ensure_ascii=False, indent=2)}"""
-        
-        try:
-            chunk_result = _call_ai_json(prompt, max_tokens=4000)
-            for v in chunk_result.get("verdicts", []):
-                ai_verdicts_by_key[v["key"]] = v
-        except Exception as e:
-            for entry, vr, title_sim, composite in chunk:
-                verdict = composite["verdict"]
-                ai_verdicts_by_key[entry["key"]] = {
-                    "key": entry["key"],
-                    "verdict": verdict,
-                    "confidence": composite["confidence"],
-                    "reasoning": composite.get("reasoning", f"Analysis: {int(composite['composite_risk']*100)}% risk"),
-                    "risk_factors": composite.get("risk_factors", []),
-                }
+            
+            try:
+                chunk_result = _call_ai_json(prompt, max_tokens=4000)
+                for v in chunk_result.get("verdicts", []):
+                    ai_verdicts_by_key[v["key"]] = v
+            except Exception:
+                # AI failed - fall back to composite results
+                for entry, vr, title_sim, composite in chunk:
+                    ai_verdicts_by_key[entry["key"]] = {
+                        "key": entry["key"],
+                        "verdict": composite["verdict"],
+                        "confidence": composite["confidence"],
+                        "reasoning": composite.get("reasoning", ""),
+                        "risk_factors": composite.get("risk_factors", []),
+                    }
     
     # Collect all verdicts with deduplication by key
     seen_keys = set()
@@ -1013,10 +959,7 @@ References (with pre-computed signals from API sources):
             title_sim = 0.0
             if entry.get("title") and matched_title:
                 title_sim = _local_title_similarity(entry["title"], matched_title)
-            entry_with_url = {**entry,
-                              "url_note": vr.get("note", ""),
-                              "url_status": vr.get("status", "")}
-            composite = _compute_verdict_with_confidence(entry_with_url, vr, title_sim)
+            composite = _compute_verdict_with_confidence(entry, vr, title_sim)
             venue = entry.get("journal") or entry.get("booktitle") or ""
             whitelist_check = is_venue_whitelisted(venue)
             if whitelist_check.get("whitelisted") and composite["verdict"] == "FAKE":
@@ -1026,12 +969,11 @@ References (with pre-computed signals from API sources):
                 "key": key,
                 "verdict": composite["verdict"],
                 "confidence": composite["confidence"],
-                "reasoning": f"Analysis: {int(composite['composite_risk']*100)}% risk",
+                "reasoning": composite.get("reasoning", ""),
                 "risk_factors": composite.get("risk_factors", []),
                 "open_access_url": None,
             })
     
-        # Count verdicts directly from the all_verdicts array
     fake_count = sum(1 for v in all_verdicts if v.get("verdict") == "FAKE")
     suspicious_count = sum(1 for v in all_verdicts if v.get("verdict") == "SUSPICIOUS")
     real_count = sum(1 for v in all_verdicts if v.get("verdict") == "REAL")
@@ -1041,158 +983,9 @@ References (with pre-computed signals from API sources):
         "fake_count": fake_count,
         "suspicious_count": suspicious_count,
         "real_count": real_count,
-        "summary": f"Analysis complete: {fake_count} FAKE, {suspicious_count} SUSPICIOUS, {real_count} REAL references identified.",
+        "summary": f"Analysis: {real_count} REAL, {suspicious_count} SUSPICIOUS, {fake_count} FAKE",
     }
-def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: float) -> Optional[dict]:
-    """Deterministic pre-screen using author overlap + multi-source evidence."""
-    from checker import author_overlap_score
-    api_status = api_result.get("status", "not_checked")
-    confidence = api_result.get("confidence", 0)
-    sources = api_result.get("sources_checked", [])
-    n_sources = len(sources)
-    is_retracted = api_result.get("is_retracted", False)
-    has_doi = bool(api_result.get("doi"))
-    has_oa_url = bool(api_result.get("open_access_url"))
-    has_version_note = bool(api_result.get("version_note"))
 
-    # Grey literature: never pre-screen as FAKE; defer to _compute_verdict
-    is_grey, _ = _is_grey_literature(entry)
-    if is_grey:
-        return None
-
-    if is_retracted:
-        return {"verdict": "REAL", "confidence": 0.99,
-                "reasoning": "Paper confirmed to exist but RETRACTED — do not cite",
-                "risk_factors": ["RETRACTED"]}
-    if has_doi and api_status == "verified" and confidence >= 0.95:
-        soft = _detect_soft_flags(
-            entry.get("title", ""), api_result.get("matched_title", ""),
-            entry.get("authors", ""), api_result.get("correct_authors", ""),
-        )
-        return {"verdict": "REAL", "confidence": 0.95,
-                "reasoning": f"DOI confirmed + title {confidence:.0%} match",
-                "risk_factors": soft,
-                "soft_flags": soft}
-    if has_oa_url and confidence >= 0.95:
-        soft = _detect_soft_flags(
-            entry.get("title", ""), api_result.get("matched_title", ""),
-            entry.get("authors", ""), api_result.get("correct_authors", ""),
-        )
-        return {"verdict": "REAL", "confidence": 0.91,
-                "reasoning": "Open-access copy retrieved and verified",
-                "risk_factors": soft,
-                "soft_flags": soft}
-    if has_version_note and confidence >= 0.65:
-        return {"verdict": "REAL", "confidence": 0.88,
-                "reasoning": f"Preprint found: {api_result.get('version_note','')}",
-                "risk_factors": []}
-    if api_status == "verified" and confidence >= 0.95 and n_sources >= 2:
-        soft = _detect_soft_flags(
-            entry.get("title", ""), api_result.get("matched_title", ""),
-            entry.get("authors", ""), api_result.get("correct_authors", ""),
-        )
-        return {"verdict": "REAL", "confidence": confidence,
-                "reasoning": f"Confirmed by {n_sources} independent databases",
-                "risk_factors": soft,
-                "soft_flags": soft}
-
-    cited_authors = (entry.get("authors") or "").strip()
-    correct_authors = (api_result.get("correct_authors") or
-                       api_result.get("corrected_authors") or "").strip()
-
-    # Et al. / abbreviated author guard
-    if _has_et_al(cited_authors):
-        return None
-
-    if not cited_authors or not correct_authors:
-        if api_status == "verified" and confidence >= 0.95 and (has_doi or has_oa_url):
-            return {"verdict": "REAL", "confidence": confidence,
-                    "reasoning": "Verified in database with DOI/URL — no author data to cross-check",
-                    "risk_factors": []}
-        return None
-
-    overlap = author_overlap_score(cited_authors, correct_authors)
-    if overlap is None:
-        return None
-    pct = int(overlap * 100)
-
-    soft = _detect_soft_flags(
-        entry.get("title", ""), api_result.get("matched_title", ""),
-        cited_authors, correct_authors,
-    )
-
-    if overlap < 0.25 and api_status in ("verified", "partial_match") and title_sim >= 0.40:
-        return {"verdict": "FAKE", "confidence": 0.88,
-                "reasoning": f"Title matches but author overlap is only {pct}% — possible stolen title",
-                "risk_factors": [f"Author mismatch ({pct}%)"]}
-    if overlap >= 0.60 and api_status in ("verified", "partial_match") and confidence >= 0.65:
-        return {"verdict": "REAL", "confidence": round(min(0.80 + overlap * 0.18, 0.97), 2),
-                "reasoning": f"Author overlap {pct}% + title match",
-                "risk_factors": soft,
-                "soft_flags": soft}
-    return None
-
-def _detect_soft_flags(cited_title: str, matched_title: str,
-                       cited_authors: str, correct_authors: str) -> List[str]:
-    """Detect minor surface differences that do NOT affect genuineness."""
-    flags: List[str] = []
-    if cited_title and matched_title:
-        if cited_title.strip() != matched_title.strip() and \
-                cited_title.strip().lower() == matched_title.strip().lower():
-            flags.append(
-                f"Title casing differs — cited: '{cited_title.strip()}' "
-                f"/ found: '{matched_title.strip()}'"
-            )
-    if cited_authors and correct_authors:
-        from difflib import SequenceMatcher as _SM
-        a_sim = _SM(None, cited_authors.lower(), correct_authors.lower()).ratio()
-        if a_sim < 1.0 and a_sim >= 0.82:
-            flags.append(
-                f"Minor author spelling difference — cited: '{cited_authors}' "
-                f"/ found: '{correct_authors}'"
-            )
-    return flags
-
-
-def _has_et_al(authors: str) -> bool:
-    """Return True if the author string is abbreviated (et al. or single surname)."""
-    if not authors:
-        return True
-    s = authors.lower().strip()
-    if re.search(r'\bet\s*al\.?', s):
-        return True
-    parts = [p.strip() for p in re.split(r'[;,]', s) if p.strip()]
-    if len(parts) == 1 and ' ' not in parts[0]:
-        return True
-    return False
-
-def _title_similarity(title1: str, title2: str) -> float:
-    """Simple title similarity for internal use."""
-    if not title1 or not title2:
-        return 0.0
-    t1 = re.sub(r'[^\w\s]', '', title1.lower())
-    t2 = re.sub(r'[^\w\s]', '', title2.lower())
-    words1 = set(t1.split())
-    words2 = set(t2.split())
-    if not words1 or not words2:
-        return 0.0
-    return len(words1 & words2) / len(words1 | words2)
-
-def _check_year_plausibility(year: str) -> tuple:
-    """Check whether a publication year is plausible."""
-    if not year:
-        return True, "No year"
-    m = re.search(r'\d{4}', str(year))
-    if not m:
-        return False, f"Cannot parse year: {year}"
-    y = int(m.group())
-    import datetime
-    current_year = datetime.datetime.now().year
-    if y < 1800:
-        return False, f"Year {y} is implausibly old"
-    if y > current_year + 1:
-        return False, f"Year {y} is in the future"
-    return True, f"Year {y} is plausible"
 
 def ai_overall_verdict(filename: str, summary: dict, xcheck,
                        bib_list: list, verification_result: dict) -> dict:
@@ -1222,76 +1015,58 @@ def ai_overall_verdict(filename: str, summary: dict, xcheck,
         for v in verification_result.get("verdicts", []) if v.get("verdict") == "SUSPICIOUS"
     ][:5]
     
-    prompt = f"""You are a professor reviewing a student submission to a GI LNI conference.
-Automated checks have run on "{filename}". Synthesise into a final assessment.
+    # Try AI if available
+    if _ai_available():
+        prompt = f"""You are a professor reviewing a student submission.
+Automated checks have run on "{filename}".
 
 STATISTICS:
 - Bibliography entries: {bib_count}
 - In-text citations: {cited_count}
-- Cited but missing from bibliography: {missing_cit}
-- In bibliography but never cited (orphaned): {orphaned}
-- Entries with missing required fields: {incomplete}
-- LNI key-vs-metadata mismatches (deterministic): {len(key_issues)}
-- FAKE references (AI+composite verdict): {fake_count}
+- Cited but missing: {missing_cit}
+- Never cited: {orphaned}
+- Incomplete entries: {incomplete}
+- Key mismatches: {len(key_issues)}
+- FAKE references: {fake_count}
 - SUSPICIOUS references: {suspicious}
-- Duplicates: {summary.get('duplicates', 0)}
-- Self-citations flagged: {summary.get('self_citations', 0)}
 
-KEY INCONSISTENCIES:
-{chr(10).join(key_issue_details) or "None"}
-
-INCOMPLETE ENTRIES (sample):
-{chr(10).join(incomplete_details) or "None"}
-
-FAKE REFERENCES:
-{chr(10).join(fake_details) or "None"}
-
-SUSPICIOUS (sample):
-{chr(10).join(suspicious_details) or "None"}
-
-VERDICT RULES:
-PASS  — references appear legitimate, only minor formatting issues
-FLAG  — suspicious refs or key mismatches require professor spot-check
-FAIL  — multiple likely fake references OR critical structural failures
-
-Return ONLY valid JSON, no markdown:
-{{
-  "verdict": "PASS",
-  "score": 85,
-  "grade": "B",
-  "verdict_reason": "1-2 sentences",
-  "student_feedback": [],
-  "professor_note": "One sentence on what to manually review."
-}}"""
+Return JSON: {{"verdict": "PASS/FLAG/FAIL", "score": 0-100, "grade": "A-F",
+"verdict_reason": "...", "student_feedback": [], "professor_note": "..."}}"""
+        
+        try:
+            return _call_ai_json(prompt, max_tokens=800)
+        except Exception:
+            pass
     
-    try:
-        return _call_ai_json(prompt, max_tokens=800)
-    except Exception as e:
-        score = 100
-        # Only deduct for confirmed structural/format errors — not for flagged/suspicious refs
-        score -= min(missing_cit * 10, 30)
-        score -= min(incomplete * 5, 20)
-        score -= min(orphaned * 3, 12)
-        score -= min(len(key_issues) * 5, 15)
-        score = max(0, min(100, score))
-        grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F"
-        # Only FAIL on structural grounds (missing bib, many incomplete entries)
-        # Suspicious/fake refs stay as FLAG until professor confirms
-        verdict = "FAIL" if score < 45 else "FLAG" if fake_count >= 1 or len(key_issues) >= 2 or score < 75 else "PASS"
-        
-        # Simplified professor note - just the keys to review
-        keys_to_review = []
-        for v in verification_result.get("verdicts", [])[:3]:
-            if v.get("verdict") in ("FAKE", "SUSPICIOUS"):
-                keys_to_review.append(f"[{v['key']}]")
-        professor_note = f"Manually review references: {' '.join(keys_to_review)}" if keys_to_review else "Review flagged references manually"
-        
-        return {
-            "verdict": verdict,
-            "score": score,
-            "grade": grade,
-            "verdict_reason": f"Computed from check results (AI unavailable: {str(e)[:50]})",
-            "student_feedback": [],
-            "professor_note": professor_note,
-            "error": str(e),
-        }
+    # Deterministic fallback
+    score = 100
+    score -= min(fake_count * 20, 60)
+    score -= min(missing_cit * 10, 30)
+    score -= min(incomplete * 5, 20)
+    score -= min(orphaned * 3, 12)
+    score -= min(len(key_issues) * 5, 15)
+    score = max(0, min(100, score))
+    
+    grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F"
+    
+    if fake_count >= 1:
+        verdict = "FAIL"
+    elif suspicious >= 1 or score < 75:
+        verdict = "FLAG"
+    else:
+        verdict = "PASS"
+    
+    keys_to_review = []
+    for v in verification_result.get("verdicts", [])[:5]:
+        if v.get("verdict") in ("FAKE", "SUSPICIOUS"):
+            keys_to_review.append(f"[{v['key']}]")
+    professor_note = f"Manually review: {' '.join(keys_to_review)}" if keys_to_review else "No issues found"
+    
+    return {
+        "verdict": verdict,
+        "score": score,
+        "grade": grade,
+        "verdict_reason": f"Score {score}/100. {fake_count} fake, {suspicious} suspicious.",
+        "student_feedback": [],
+        "professor_note": professor_note,
+    }

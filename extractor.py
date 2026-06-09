@@ -136,7 +136,7 @@ def _repair_urls_in_text(text: str) -> str:
     # Handles regular hyphen, en dash, and em dash
     text = re.sub(
         r'(https?://[^\s\n]+?)[\-\–\—]\n\s*([a-zA-Z0-9%_\-/\.?=&]+)',
-        r'\1\2',
+        r'\1-\2',
         text,
         flags=re.IGNORECASE
     )

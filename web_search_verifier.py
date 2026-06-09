@@ -67,72 +67,13 @@ def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
 
 def _call_llm_for_verification(prompt: str) -> dict:
     """
-    Call LLM (reuses your Groq/Gemini setup from ai_checker.py)
+    Call the AI for web-search verification.
+    Uses the same Groq setup as the rest of the app (ai_checker._call_ai_json).
     """
     import sys
-    
-    # Try to import your existing AI function
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    
-    try:
-        from ai_checker import _call_ai_json
-        return _call_ai_json(prompt, max_tokens=800)
-    except (ImportError, AttributeError) as import_err:
-        # Fallback: try direct Groq call
-        print(f"Could not import _call_ai_json: {import_err}, falling back to direct API calls")
-        
-        import requests
-        
-        groq_key = os.environ.get("AI_API_KEY", "")
-        if groq_key:
-            try:
-                resp = requests.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "llama-3.3-70b-versatile",
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": 800,
-                        "temperature": 0.1
-                    },
-                    timeout=30
-                )
-                if resp.status_code == 200:
-                    content = resp.json()["choices"][0]["message"]["content"].strip()
-                    # Extract JSON from response
-                    if content.startswith("```"):
-                        content = content.split("```")[1]
-                        if content.startswith("json"):
-                            content = content[4:]
-                    return json.loads(content)
-            except Exception as groq_err:
-                print(f"Groq fallback failed: {groq_err}")
-        
-        # Fallback to Gemini
-        gemini_key = os.environ.get("AI_API_KEY_GEMINI", "")
-        if gemini_key:
-            try:
-                resp = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}",
-                    headers={"Content-Type": "application/json"},
-                    json={
-                        "contents": [{"parts": [{"text": prompt}]}],
-                        "generationConfig": {"maxOutputTokens": 800, "temperature": 0.1}
-                    },
-                    timeout=30
-                )
-                if resp.status_code == 200:
-                    parts = resp.json()["candidates"][0]["content"]["parts"]
-                    text = "".join(p.get("text", "") for p in parts).strip()
-                    if text.startswith("```"):
-                        text = text.split("```")[1]
-                        if text.startswith("json"):
-                            text = text[4:]
-                    return json.loads(text)
-            except Exception as gemini_err:
-                print(f"Gemini fallback failed: {gemini_err}")
-        
-        raise RuntimeError("No LLM available for web search verification. Set GROQ_API_KEY or GEMINI_API_KEY")
+    from ai_checker import _call_ai_json
+    return _call_ai_json(prompt, max_tokens=800)
 
 
 def _title_similarity_simple(title1: str, title2: str) -> float:
@@ -248,7 +189,7 @@ RULES:
 def verify_grey_literature_by_url_direct(url: str, title: str = "") -> dict:
     """
     Direct URL verification for grey literature.
-    Bypasses academic APIs entirely.
+    Uses a requests.Session with full browser headers to defeat simple bot detection.
     """
     if not url:
         return {
@@ -257,79 +198,118 @@ def verify_grey_literature_by_url_direct(url: str, title: str = "") -> dict:
             "note": "No URL provided for grey literature reference",
             "sources_checked": []
         }
-    
-    # Try to fix common URL typos
-    url = re.sub(r'24076[0-9]', '240703', url)
+
+    # Fix common URL artefacts from PDF extraction
     url = re.sub(r'\s+', '', url)
-    
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.4 Safari/605.1.15",
-        "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+
+    # Cloudflare / challenge page titles — if we see these the URL exists but is gated
+    _CHALLENGE_TITLES = {"just a moment", "access denied", "attention required",
+                         "403 forbidden", "404 not found", "please wait"}
+
+    browser_profiles = [
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Referer": "https://www.google.com/",
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "de-DE,de;q=0.9,en-GB;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Referer": "https://www.google.com/",
+        },
     ]
-    
-    for ua in user_agents:
+
+    def _extract_title(html: str) -> str:
+        m = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+        return m.group(1).strip() if m else ""
+
+    def _sim(a: str, b: str) -> float:
+        a_set = set(re.sub(r'[^\w\s]', '', a.lower()).split())
+        b_set = set(re.sub(r'[^\w\s]', '', b.lower()).split())
+        if not a_set or not b_set:
+            return 0.0
+        return len(a_set & b_set) / len(a_set | b_set)
+
+    last_status = None
+    for profile in browser_profiles:
+        session = requests.Session()
+        session.headers.update(profile)
         try:
-            # Try HEAD first to check existence
+            # Warm up the session with a HEAD to get cookies (helps with Cloudflare)
             try:
-                head_resp = requests.head(url, headers={"User-Agent": ua}, timeout=8, allow_redirects=True)
-                if head_resp.status_code == 404:
-                    continue
+                session.head(url, timeout=8, allow_redirects=True)
             except Exception:
                 pass
-            
-            resp = requests.get(
-                url,
-                headers={"User-Agent": ua, "Accept": "text/html,application/xhtml+xml"},
-                timeout=15,
-                allow_redirects=True
-            )
-            
+
+            resp = session.get(url, timeout=15, allow_redirects=True)
+            last_status = resp.status_code
+
             if resp.status_code == 200:
-                page_title_match = re.search(r'<title[^>]*>(.*?)</title>', resp.text, re.IGNORECASE)
-                page_title = page_title_match.group(1).strip() if page_title_match else ""
-                
-                if title:
-                    def sim(a, b):
-                        a_set = set(re.sub(r'[^\w\s]', '', a.lower()).split())
-                        b_set = set(re.sub(r'[^\w\s]', '', b.lower()).split())
-                        if not a_set or not b_set:
-                            return 0
-                        return len(a_set & b_set) / len(a_set | b_set)
-                    
-                    if sim(title, page_title) >= 0.3:
+                page_title = _extract_title(resp.text)
+
+                # If it's a challenge page, treat as partial (URL exists but gated)
+                if page_title.lower() in _CHALLENGE_TITLES or "cloudflare" in resp.text[:500].lower():
+                    return {
+                        "status": "partial_match",
+                        "confidence": 0.60,
+                        "note": f"URL reachable (HTTP 200) but gated by bot-protection. Manual verification recommended.",
+                        "open_access_url": url,
+                        "sources_checked": ["url_fetch"]
+                    }
+
+                if title and page_title:
+                    similarity = _sim(title, page_title)
+                    if similarity >= 0.3:
                         return {
                             "status": "verified",
                             "confidence": 0.85,
-                            "matched_title": page_title or title,
+                            "matched_title": page_title,
                             "open_access_url": url,
-                            "note": f"URL verified: page title '{page_title[:80]}'",
+                            "note": f"URL verified: page title '{page_title[:80]}' (similarity {int(similarity*100)}%)",
                             "sources_checked": ["url_fetch"]
                         }
-                
+
                 return {
                     "status": "partial_match",
-                    "confidence": 0.65,
+                    "confidence": 0.60,
                     "matched_title": page_title or None,
                     "open_access_url": url,
-                    "note": f"URL reachable (HTTP 200). Page exists but content verification pending.",
+                    "note": f"URL reachable (HTTP 200). Page title: '{page_title[:60]}'",
                     "sources_checked": ["url_fetch"]
                 }
-                
+
             elif resp.status_code in (403, 429):
+                # Server is alive and blocking bots — URL almost certainly exists
                 return {
                     "status": "partial_match",
-                    "confidence": 0.55,
-                    "note": f"URL reachable but server blocked access (HTTP {resp.status_code}). Manual verification recommended.",
+                    "confidence": 0.60,
+                    "note": f"URL reachable but server blocked automated access (HTTP {resp.status_code}). Manual verification recommended.",
+                    "open_access_url": url,
                     "sources_checked": ["url_fetch"]
                 }
+
+        except requests.exceptions.Timeout:
+            continue
         except Exception:
             continue
-    
+
+    # All attempts exhausted
+    status_str = f"HTTP {last_status}" if last_status else "connection failed"
     return {
         "status": "not_found",
         "confidence": 0.0,
-        "note": f"URL not reachable after multiple attempts. Manual verification required.",
+        "note": f"URL not reachable after multiple attempts ({status_str}). Manual verification required.",
         "sources_checked": []
     }
 
