@@ -558,6 +558,7 @@ RULES:
             "confidence": round(confidence, 2),
             "composite_risk": composite_risk,
             "note": note_str,
+            "reasoning": note_str,   # also exposed as reasoning for ai_verdicts pipeline
             "risk_factors": risk_factors_out,
         }
     except Exception as e:
@@ -604,12 +605,14 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
                     "confidence": ai_grey["confidence"],
                     "composite_risk": ai_grey["composite_risk"],
                     "risk_factors": ai_grey["risk_factors"],
+                    "reasoning": ai_grey.get("note", ai_grey.get("reasoning", f"Grey/industry literature ({grey_reason}). AI verification performed.")),
                 }
             # LLM unavailable
             return {
                 "verdict": "SUSPICIOUS",
                 "confidence": 0.50,
                 "composite_risk": 0.55,
+                "reasoning": f"Grey/industry literature ({grey_reason}). URL verification returned: {url_note}. AI unavailable — professor should verify manually.",
                 "risk_factors": [
                     f"Grey/industry literature ({grey_reason}). "
                     f"URL verification failed: {url_note}. AI unavailable. Professor should verify manually."
@@ -621,6 +624,7 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             "confidence": 0.95,
             "composite_risk": 0.05,
             "risk_factors": [],
+            "reasoning": f"Grey/industry literature ({grey_reason}). URL responded HTTP 200 — page is reachable and content confirmed.",
         }
     
     # ─────────────────────────────────────────────────────────────────────────
@@ -765,7 +769,12 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
         "verdict": verdict,
         "confidence": round(confidence, 2),
         "composite_risk": round(composite_risk, 2),
-        "risk_factors": risk_factors[:5]
+        "risk_factors": risk_factors[:5],
+        "reasoning": (
+            f"Not found in any academic database." if verdict == "FAKE" else
+            f"Composite risk {int(composite_risk*100)}% — partial or ambiguous evidence. Manual review recommended." if verdict == "SUSPICIOUS" else
+            f"Confidence {int(confidence*100)}% based on database signals."
+        ),
     }
 
 
@@ -882,7 +891,7 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 pre_screen_cache[entry["key"]] = {
                     "verdict": composite["verdict"],
                     "confidence": composite["confidence"],
-                    "reasoning": f"Analysis complete",
+                    "reasoning": composite.get("reasoning") or f"Composite risk score: {int(composite.get('composite_risk', 0.5)*100)}%.",
                     "risk_factors": composite.get("risk_factors", []),
                 }
             else:

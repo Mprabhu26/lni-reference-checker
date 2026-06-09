@@ -699,8 +699,10 @@ def verify_reference(entry) -> "VerificationResult":
         "publisher": getattr(entry, 'publisher', '') or "",
         "entry_type": getattr(entry, 'entry_type', '') or "",
         "raw_text": getattr(entry, 'raw_text', '') or "",
-        "url_status": result.status if result else "",  # Pass URL fetch result
+        "url_status": result.status if result else "",
         "url_note": result.note if result else "",
+        # Pass partial page title hint so AI can use it (e.g. 200 but low sim)
+        "matched_title": result.matched_title if result else "",
     }
     is_grey, grey_reason = _is_grey_literature(entry_dict)
     
@@ -864,117 +866,191 @@ def _derive_fallback_urls(url: str) -> list:
 def _verify_url_direct_strict(entry) -> Optional["VerificationResult"]:
     """
     Strict URL verification.
-    - HTTP 200 + title≥95% + year match = REAL
-    - ANYTHING else (404, 403, 500, timeout) = partial_match (let AI decide)
+    - HTTP 200 + title≥95% = REAL
+    - ANYTHING else (404, 403, 500, timeout, bot-block) = partial_match → AI decides.
+
+    Uses full modern browser headers (Sec-Fetch-*, Accept-Language, etc.) to defeat
+    simple bot-detection that returns 404/403 to plain requests but 200 to real browsers.
+
+    IMPORTANT: fallback URLs are only tried for path-level variations of the SAME resource
+    (e.g. stripping query string, PDF → landing page).  Domain-root fallbacks are NEVER
+    used as a verification target — they would match the wrong page title.
     """
     from bs4 import BeautifulSoup
-    
-    url = getattr(entry, 'url', '') or ''
-    if not url or not url.startswith('http'):
+    from urllib.parse import urlparse
+
+    cited_url = (getattr(entry, 'url', '') or '').strip()
+    if not cited_url or not cited_url.startswith('http'):
         return None
-    
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.4 Safari/605.1.15",
+
+    # Full modern browser header set — defeats most simple bot blocks
+    _BROWSER_HEADERS = [
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "de-DE,de;q=0.9,en-GB;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "de,en-US;q=0.7,en;q=0.3",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+        },
     ]
-    
-    for ua in user_agents:
+
+    cited_parsed = urlparse(cited_url)
+    cited_domain = cited_parsed.netloc
+
+    def _try_fetch(target_url: str, headers: dict) -> Optional[requests.Response]:
         try:
-            resp = requests.get(url, headers={"User-Agent": ua}, timeout=15, allow_redirects=True)
-            
-            # ONLY HTTP 200 is acceptable for automatic verification
-            if resp.status_code != 200:
-                # Try fallback URLs before giving up
-                fallbacks = _derive_fallback_urls(url)
-                for fb_url in fallbacks:
-                    try:
-                        fb_resp = requests.get(fb_url, headers={"User-Agent": ua}, timeout=15, allow_redirects=True)
-                        if fb_resp.status_code == 200:
-                            resp = fb_resp
-                            url = fb_url
-                            break
-                    except Exception:
-                        continue
-                if resp.status_code != 200:
-                    return VerificationResult(
-                        key=entry.key,
-                        title=entry.title or "",
-                        status="partial_match",
-                        confidence=0.30,
-                        open_access_url=getattr(entry, 'url', '') or url,
-                        note=f"URL returned HTTP {resp.status_code} (fallbacks also failed). AI will verify.",
-                        sources_checked=["url_fetch"],
-                    )
-            
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            # Extract title
-            page_title = ""
-            title_tag = soup.find('title')
-            if title_tag:
-                page_title = title_tag.get_text().strip()
+            resp = requests.get(target_url, headers=headers, timeout=15, allow_redirects=True)
+            return resp
+        except Exception:
+            return None
+
+    def _extract_page_title(html: str) -> str:
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            tag = soup.find('title')
+            if tag:
+                return tag.get_text().strip()
+            og = soup.find('meta', property='og:title')
+            if og:
+                return og.get('content', '').strip()
+            h1 = soup.find('h1')
+            if h1:
+                return h1.get_text().strip()
+        except Exception:
+            pass
+        return ""
+
+    last_http_status = None
+    last_resp_url = cited_url
+
+    for headers in _BROWSER_HEADERS:
+        resp = _try_fetch(cited_url, headers)
+        if resp is None:
+            continue
+        last_http_status = resp.status_code
+        last_resp_url = resp.url
+
+        if resp.status_code == 200:
+            page_title = _extract_page_title(resp.text)
+            page_year = ""
+            m = re.search(r'\b(19|20)\d{2}\b', resp.text[:5000])
+            if m:
+                page_year = m.group(0)
+
             if not page_title:
-                og_title = soup.find('meta', property='og:title')
-                if og_title:
-                    page_title = og_title.get('content', '').strip()
-            
-            if not page_title:
+                # Reachable but no title — pass to AI with what we have
                 return VerificationResult(
-                    key=entry.key,
-                    title=entry.title or "",
-                    status="partial_match",
-                    confidence=0.30,
-                    open_access_url=url,
-                    note="URL reachable but no title found. AI will verify.",
+                    key=entry.key, title=entry.title or "",
+                    status="partial_match", confidence=0.30,
+                    open_access_url=cited_url,
+                    note="URL reachable (HTTP 200) but page title not found. AI will verify.",
                     sources_checked=["url_fetch"],
                 )
-            
+
             sim = _title_similarity(entry.title or "", page_title)
-            
-            # Extract year
-            page_year = ""
-            year_match = re.search(r'\b(19|20)\d{2}\b', resp.text[:5000])
-            if year_match:
-                page_year = year_match.group(0)
-            
-            # HTTP 200 + title ≥ 100% → REAL, save to DB
-            if sim >= 1.0:
+
+            if sim >= 0.95:
                 return VerificationResult(
-                    key=entry.key,
-                    title=entry.title or "",
+                    key=entry.key, title=entry.title or "",
                     status="verified",
                     confidence=min(0.95, 0.70 + sim * 0.25),
                     matched_title=page_title,
-                    open_access_url=url,
+                    open_access_url=cited_url,
                     note=f"URL verified (HTTP 200): title match {int(sim*100)}%",
                     sources_checked=["url_verify"],
-                    corrected_year=page_year if page_year else None,
+                    corrected_year=page_year or None,
                 )
-            
-            # 200 but title sim too low → let AI decide
+
+            # 200 but low title sim — could be a gated/redirected landing page;
+            # still forward to AI with the title we found as a hint
             return VerificationResult(
-                key=entry.key,
-                title=entry.title or "",
-                status="partial_match",
-                confidence=sim,
+                key=entry.key, title=entry.title or "",
+                status="partial_match", confidence=sim,
                 matched_title=page_title if sim >= 0.3 else None,
-                open_access_url=url,
-                note=f"URL reachable (HTTP 200) but title sim only {int(sim*100)}%. AI will verify.",
+                open_access_url=cited_url,
+                note=f"URL reachable (HTTP 200) but title similarity only {int(sim*100)}% (found: '{page_title[:80]}'). AI will verify.",
                 sources_checked=["url_fetch"],
-                corrected_year=page_year if page_year else None,
+                corrected_year=page_year or None,
             )
-                
-        except Exception as e:
+
+        # Non-200: try path-only fallbacks (strip query, strip fragment, PDF→landing).
+        # NEVER fall back to the domain root — that would verify the wrong page.
+        if resp.status_code in (301, 302, 307, 308):
+            # Already followed by allow_redirects=True; if we're here it means the
+            # final destination was also non-200.
+            break
+
+        if resp.status_code in (404, 410):
+            # Try path-level fallbacks (same domain, shorter path — not root)
+            fallbacks = [
+                u for u in _derive_fallback_urls(cited_url)
+                if urlparse(u).netloc == cited_domain           # same domain only
+                and urlparse(u).path not in ('', '/', '//')     # not the root
+            ]
+            for fb_url in fallbacks:
+                fb_resp = _try_fetch(fb_url, headers)
+                if fb_resp and fb_resp.status_code == 200:
+                    # Found a redirected page on the same domain — use it
+                    page_title = _extract_page_title(fb_resp.text)
+                    sim = _title_similarity(entry.title or "", page_title) if page_title else 0.0
+                    if sim >= 0.95:
+                        return VerificationResult(
+                            key=entry.key, title=entry.title or "",
+                            status="verified", confidence=min(0.92, 0.68 + sim * 0.25),
+                            matched_title=page_title, open_access_url=fb_url,
+                            note=f"Original URL returned {resp.status_code}; redirected to {fb_url} — title match {int(sim*100)}%",
+                            sources_checked=["url_verify"],
+                        )
+                    # Fallback 200 but title doesn't match → pass both hints to AI
+                    return VerificationResult(
+                        key=entry.key, title=entry.title or "",
+                        status="partial_match", confidence=sim,
+                        matched_title=page_title if sim >= 0.3 else None,
+                        open_access_url=cited_url,
+                        note=f"Original URL returned HTTP {resp.status_code}. Fallback {fb_url} reached but title sim {int(sim*100)}%. AI will verify.",
+                        sources_checked=["url_fetch"],
+                    )
+            # No path fallback worked
+            break
+
+        # 403/429/5xx — bot-blocked or server error
+        if resp.status_code in (403, 429):
+            # Try next UA before giving up
             continue
-    
-    # URL not reachable at all
+        break  # Any other status: give up immediately
+
+    # Could not get a 200 from any attempt — hand off to AI with HTTP status info
+    http_info = f"HTTP {last_http_status}" if last_http_status else "connection failed"
     return VerificationResult(
-        key=entry.key,
-        title=entry.title or "",
-        status="partial_match",
-        confidence=0.0,
-        open_access_url=url,
-        note="URL not reachable. AI will verify.",
+        key=entry.key, title=entry.title or "",
+        status="partial_match", confidence=0.0,
+        open_access_url=cited_url,
+        note=f"URL fetch returned {http_info}. AI will verify.",
         sources_checked=["url_fetch"],
     )
 

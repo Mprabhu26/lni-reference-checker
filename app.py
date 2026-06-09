@@ -242,6 +242,13 @@ def _assemble_result(
         _raw = (bib_dict.get(vr.key) and bib_dict[vr.key].raw_text or "")[:300]
         # Use vr.title if set; fall back to the parsed bib entry title
         _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""
+        ai_reasoning_text = ai.get("reasoning", "")
+        # For grey literature, the reasoning IS the verification detail — use it for both fields
+        is_grey_lit = "grey_literature" in (vr.sources_checked or [])
+        effective_api_note = (
+            ai_reasoning_text if (is_grey_lit and ai_reasoning_text)
+            else (ai.get("reasoning") or vr.note if ai_verdict == "REAL" and any(w in (vr.note or "") for w in ("unavailable", "unreachable", "Professor should verify")) else vr.note)
+        )
         verification_output.append({
             "key": vr.key,
             "title": _vr_title,
@@ -251,12 +258,12 @@ def _assemble_result(
             "matched_title": vr.matched_title,
             "doi": vr.doi or ai.get("open_access_url"),
             "open_access_url": ai.get("open_access_url") or vr.open_access_url,
-            "note": ai.get("reasoning") or vr.note if ai_verdict == "REAL" and any(w in (vr.note or "") for w in ("unavailable", "unreachable", "Professor should verify")) else vr.note,
-            "api_note": vr.note,   # exposed as api_note for frontend transparency
+            "note": effective_api_note,
+            "api_note": effective_api_note,
             "sources_checked": vr.sources_checked,
             "web_evidence": vr.web_evidence,
             "ai_verdict": ai_verdict,
-            "ai_reasoning": ai.get("reasoning", ""),
+            "ai_reasoning": ai_reasoning_text,
             "ai_risk_factors": ai.get("risk_factors", []),
             "version_note": vr.version_note,
             "is_retracted": getattr(vr, "is_retracted", False),
@@ -1302,6 +1309,31 @@ def db_delete():
             "db_total": stats["total_papers"],
             "db_size_kb": stats.get("db_size_kb", 0),
             "message": "Paper deleted successfully" if ok else "Paper not found"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+@app.route("/api/db_delete_all", methods=["POST"])
+def db_delete_all():
+    """Delete all entries from the local DB."""
+    import sqlite3
+    from local_db import CACHE_DB, _ensure_db, get_cache_stats
+    try:
+        _ensure_db()
+        conn = sqlite3.connect(str(CACHE_DB))
+        conn.execute("PRAGMA journal_mode=WAL")
+        cur = conn.execute("DELETE FROM verified_papers")
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        stats = get_cache_stats()
+        return jsonify({
+            "success": True,
+            "deleted": deleted,
+            "db_total": stats["total_papers"],
+            "db_size_kb": stats.get("db_size_kb", 0),
+            "message": f"Deleted {deleted} entries from database"
         })
     except Exception as e:
         return jsonify({"error": str(e), "success": False}), 500

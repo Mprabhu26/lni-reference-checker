@@ -272,15 +272,6 @@ input:checked + .toggle-slider:before { transform: translateX(18px); }
 
   <button class="btn-run" id="runBtn" onclick="runCheck()" disabled>▶ Run Check</button>
   <button class="btn-start-over" id="startOverBtn" style="display:none" onclick="startOver()">✕ Clear &amp; Start Over</button>
-
-  <div class="db-badge" id="dbBadge" style="display:none" onclick="openDbTab()" title="Click to view database contents">
-    <div class="db-dot"></div>
-    <div>
-      <div>Local DB: <strong id="dbCount">0</strong> papers</div>
-      <div id="dbSize" style="font-size:10px;opacity:0.8;"></div>
-    </div>
-    <div style="margin-left:auto;font-size:10px;opacity:0.6;">View →</div>
-  </div>
 </aside>
 
 <!-- Main Content Area -->
@@ -288,6 +279,7 @@ input:checked + .toggle-slider:before { transform: translateX(18px); }
   <div class="topbar">
     <div class="topbar-title" id="topbarTitle"><strong>LNI Reference Checker</strong> — Upload a document to begin</div>
     <div class="topbar-actions">
+      <button class="btn-sm btn-ghost" id="btnDbTopbar" onclick="openDbTab()" title="View local verified papers database">🗄 Database <span id="topbarDbCount" style="font-family:'JetBrains Mono',monospace;font-size:10px;background:var(--success-bg);color:var(--success);border-radius:20px;padding:1px 6px;margin-left:2px;font-weight:700;">0</span></button>
       <button class="btn-sm btn-primary-sm" id="btnExport" disabled onclick="exportResults()">📊 Download Report (.xlsx)</button>
     </div>
   </div>
@@ -353,7 +345,7 @@ input:checked + .toggle-slider:before { transform: translateX(18px); }
     <div class="content" id="tab-xcheck"><div id="xcheckContent"></div></div>
     <div class="content" id="tab-verify"><div id="verifyContent"></div></div>
     <div class="content" id="tab-score"><div id="scoreContent"></div></div>
-    <div class="content" id="tab-db"><div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 14px 0;border-bottom:1px solid var(--border);margin-bottom:14px;"><span style="font-size:13px;font-weight:700;color:var(--primary);">🗄 Local Verified Papers Database</span><button onclick="closeDbTab()" title="Close database panel" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-muted);" onmouseover="this.style.borderColor='var(--error)';this.style.color='var(--error)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">✕ Close</button></div><div id="dbContent"></div></div>
+    <div class="content" id="tab-db"><div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 14px 0;border-bottom:1px solid var(--border);margin-bottom:14px;"><span style="font-size:13px;font-weight:700;color:var(--primary);">🗄 Local Verified Papers Database</span><div style="display:flex;gap:8px;"><button onclick="dbDeleteAll()" title="Delete all entries from the database" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:12px;cursor:pointer;color:var(--error);border-color:var(--error);" onmouseover="this.style.background='var(--error-bg)'" onmouseout="this.style.background='none'">🗑 Delete All</button><button onclick="startOver()" title="Clear results and start fresh" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-muted);" onmouseover="this.style.borderColor='var(--warning)';this.style.color='var(--warning)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">↩ Start Over</button><button onclick="startOver()" title="Close and clear results" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-muted);" onmouseover="this.style.borderColor='var(--error)';this.style.color='var(--error)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">✕ Close</button></div></div><div id="dbContent"></div></div>
   </div>
 </div>
 </div>
@@ -433,27 +425,33 @@ function switchTab(tab, btn) {
 }
 
 function openDbTab() {
-  // Hide all other tabs — show only the Database tab
   document.querySelectorAll('.tab-btn').forEach(b => {
     const isDb = b.id === 'tabDbBtn' || b.getAttribute('onclick') === "switchTab('db',this)";
     b.style.display = isDb ? '' : 'none';
   });
   document.getElementById('tabsWrap').classList.add('show');
+  document.getElementById('welcomeScreen').style.display = 'none';
   switchTab('db', document.getElementById('tabDbBtn'));
   document.getElementById('tabsWrap').scrollIntoView({behavior:'smooth'});
   window._dbOnlyMode = true;
 }
 
-function closeDbTab() {
-  // Restore all tab buttons if we were in DB-only mode
-  document.querySelectorAll('.tab-btn').forEach(b => b.style.display = '');
-  window._dbOnlyMode = false;
-  if (result) {
-    switchTab("score", document.querySelector(".tab-btn:nth-child(4)"));
-  } else {
-    document.getElementById("tabsWrap").classList.remove("show");
-    document.querySelectorAll(".content").forEach(c => c.classList.remove("active"));
-    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+async function dbDeleteAll() {
+  const confirmed = confirm('Delete ALL entries from the local database?\n\nThis cannot be undone. The database will be empty and will re-populate as new checks are run.');
+  if (!confirmed) return;
+  try {
+    const response = await fetch('/api/db_delete_all', { method: 'POST' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const d = await response.json();
+    if (d.success) {
+      showToast(`🗑 ${d.deleted || 'All'} entries deleted from database`, 'success');
+      await loadDbTab();
+      fetch('/api/db_stats').then(r => r.ok ? r.json() : null).then(stats => { if (stats) updateDbBadge(stats); }).catch(() => {});
+    } else {
+      showToast('Failed to delete: ' + (d.error || 'Unknown error'), 'error');
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
   }
 }
 
@@ -463,27 +461,46 @@ function startOver() {
   bibFile = null;
   markedFakeKeys = new Set();
   window._dbOnlyMode = false;
+
+  // Reset file inputs
   document.getElementById('mainFile').value = '';
   const bibInput = document.getElementById('bibFile');
   if (bibInput) bibInput.value = '';
-  const fileChip = document.getElementById('fileChip');
-  if (fileChip) fileChip.style.display = 'none';
+
+  // Reset sidebar
+  document.getElementById('fileChip').style.display = 'none';
+  document.getElementById('dropZone').style.display = '';
   const bibUpload = document.getElementById('bibUpload');
   if (bibUpload) bibUpload.style.display = 'none';
-  // Show the upload zone again
-  document.getElementById('dropZone').style.display = '';
   document.getElementById('runBtn').disabled = true;
   document.getElementById('startOverBtn').style.display = 'none';
+
+  // Reset topbar
   document.getElementById('btnExport').disabled = true;
+  document.getElementById('topbarTitle').innerHTML = '<strong>LNI Reference Checker</strong> — Upload a document to begin';
+
+  // Hide results UI
   document.getElementById('tabsWrap').classList.remove('show');
   document.getElementById('verdictBanner').classList.remove('show');
   document.getElementById('progressPanel').classList.remove('show');
+
+  // Show welcome screen
   document.getElementById('welcomeScreen').style.display = 'block';
+
+  // Clear all tab content
   document.getElementById('bibContent').innerHTML = '';
   document.getElementById('xcheckContent').innerHTML = '';
   document.getElementById('verifyContent').innerHTML = '';
   document.getElementById('scoreContent').innerHTML = '';
-  document.getElementById('topbarTitle').innerHTML = '<strong>LNI Reference Checker</strong> — Upload a document to begin';
+
+  // Restore all tab buttons (in case DB-only mode was active)
+  document.querySelectorAll('.tab-btn').forEach(b => { b.style.display = ''; b.classList.remove('active'); });
+  document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+}
+
+function closeDbTab() {
+  // Close = same as Start Over: clears PDF and results, DB is preserved
+  startOver();
 }
 
 async function runCheck() {
@@ -1180,10 +1197,11 @@ async function dbDeletePaper(btnEl) {
 
 function updateDbBadge(stats) {
   const n = stats.db_total !== undefined ? stats.db_total : (stats.total_papers || 0);
-  document.getElementById('dbCount').textContent = n;
-  document.getElementById('dbBadge').style.display = 'flex';
+  document.getElementById('topbarDbCount').textContent = n;
   document.getElementById('tabDbBadge').textContent = n;
-  if (stats.db_size_kb) document.getElementById('dbSize').textContent = stats.db_size_kb + ' KB';
+  if (stats.db_size_kb) {
+    // keep for potential future use but sidebar badge is gone
+  }
 }
 
 fetch('/api/db_stats').then(r => r.ok ? r.json() : null).then(stats => { if (stats) updateDbBadge(stats); }).catch(() => {});
