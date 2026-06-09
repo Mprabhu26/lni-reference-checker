@@ -359,7 +359,7 @@ Return ONLY valid JSON:
 {{
   "verdict": "REAL or FAKE or UNCERTAIN",
   "confidence": 0.0-1.0,
-  "explanation": "one-sentence reasoning stating why you think this is real or not based on your knowledge of industry publications and the provided reference details"
+  "explanation": "one-sentence reasoning stating why you think this is real or not, based on your knowledge of industry publications and the provided reference details. Dont say about the URL check result, focus on your knowledge of the publication itself."
 }}
 """
     # PRINT WHAT IS BEING SENT TO AI

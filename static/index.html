@@ -352,7 +352,7 @@ input:checked + .toggle-slider:before { transform: translateX(18px); }
 
 <div class="toast" id="toast"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 let result = null;
 let mainFile = null;
@@ -882,7 +882,7 @@ function verifyCard(v) {
         ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s => { const label = s === 'url_check' ? 'URL Check (direct fetch)' : s === 'content_title_match' ? 'Title Match (page content)' : s; return `<span class="source-chip" title="${s === 'url_check' ? 'The cited URL was fetched and the page title was compared to the cited title' : s === 'content_title_match' ? 'The page content title matched the cited title' : ''}">${escapeHtml(label)}</span>`; }).join('')}</div></div>` : ''}
         ${verdict === 'FAKE' || verdict === 'SUSPICIOUS' ? `<div class="detail-section"><div class="detail-title">➕ Professor Actions</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, save it to the local database. If it is fabricated, mark it as fake to deduct points.</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-            <button onclick="saveToDb(${JSON.stringify(escapeHtml(v.title||''))}, ${JSON.stringify(escapeHtml(v.ai_reasoning||''))}, '${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✓ Confirm as Real — Save to DB</button>
+            <button onclick="saveToDb('${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✓ Confirm as Real — Save to DB</button>
             ${verdict === 'SUSPICIOUS' ? (markedFakeKeys.has(v.key) ? '<button disabled style="padding:6px 14px;background:var(--error);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;font-weight:600;cursor:default;">✕ Confirmed Fake</button>' : '<button onclick="markAsFake(\'' + escapeHtml(v.key) + '\', this)" style="padding:6px 14px;background:var(--error-bg);color:var(--error);border:1px solid var(--error);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✕ Mark as Fake</button>') : ''}
           </div>
         </div>` : ''}
@@ -900,15 +900,67 @@ function filterVerify(q) {
   });
 }
 
-async function saveToDb(title, reason, key) {
-  const bib = (result?.bibliography || []).find(e => e.key === key) || {};
-  const payload = { title: title, authors: bib.authors || '', year: bib.year || '', doi: bib.doi || '', url: bib.url || '' };
-  try {
-    const r = await fetch('/api/inject_paper', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    const d = await r.json();
-    if (d.success) { showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success'); updateDbBadge(d); }
-    else { showToast('Failed: ' + (d.error || 'Unknown error'), 'error'); }
-  } catch(e) { showToast('Network error: ' + e.message, 'error'); }
+async function saveToDb(key) {
+    // Look up all data from result — avoids passing HTML-escaped strings via onclick
+    const bib = (result?.bibliography || []).find(e => e.key === key) || {};
+    const ver = (result?.verification || []).find(e => e.key === key) || {};
+    const title = bib.title || ver.title || key;
+    
+    // Also try to get the URL from the verification card if not in bib
+    let url = bib.url || '';
+    if (!url) {
+        const verifyCard = document.querySelector(`.entry-card[data-key="${key}"]`);
+        if (verifyCard) {
+            const openSourceLink = verifyCard.querySelector('.resource-link');
+            if (openSourceLink && openSourceLink.href) {
+                url = openSourceLink.href;
+            } else {
+                // Try to extract from raw entry
+                const rawTextDiv = verifyCard.querySelector('.explanation-box');
+                if (rawTextDiv && rawTextDiv.innerText) {
+                    const match = rawTextDiv.innerText.match(/https?:\/\/[^\s]+/);
+                    if (match) url = match[0];
+                }
+            }
+        }
+    }
+    
+    const payload = { 
+        title: title, 
+        authors: bib.authors || '', 
+        year: bib.year || '', 
+        doi: bib.doi || '', 
+        url: url 
+    };
+    
+    console.log('Saving to DB:', payload);
+    
+    try {
+        const r = await fetch('/api/inject_paper', { 
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify(payload) 
+        });
+        const d = await r.json();
+        if (d.success) { 
+            showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success'); 
+            // Refresh the database badge
+            if (d.db_total) {
+                document.getElementById('topbarDbCount').textContent = d.db_total;
+                document.getElementById('tabDbBadge').textContent = d.db_total;
+            }
+            // Reload database tab if open
+            if (document.getElementById('tab-db').classList.contains('active')) {
+                loadDbTab();
+            }
+        } else { 
+            showToast('Failed: ' + (d.error || 'Unknown error'), 'error'); 
+            console.error('Save failed:', d);
+        }
+    } catch(e) { 
+        showToast('Network error: ' + e.message, 'error'); 
+        console.error(e);
+    }
 }
 
 function renderScoreTab(data) {
@@ -982,6 +1034,50 @@ function renderDbTab(d) {
   document.getElementById('dbContent').innerHTML = html;
   const si = document.getElementById('dbSearchInput');
   if (si) si.addEventListener('keydown', e => { if (e.key === 'Enter') loadDbTab(); });
+}
+
+async function dbAddPaper() {
+    const title = document.getElementById('dbaTitle')?.value.trim();
+    if (!title) {
+        showToast('Title is required', 'error');
+        return;
+    }
+    const authors = document.getElementById('dbaAuthors')?.value.trim() || '';
+    const year = document.getElementById('dbaYear')?.value.trim() || '';
+    const doi = document.getElementById('dbaDoi')?.value.trim() || '';
+    const url = document.getElementById('dbaUrl')?.value.trim() || '';
+    
+    const payload = { title, authors, year, doi, url };
+    
+    try {
+        const r = await fetch('/api/inject_paper', { 
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'}, 
+            body: JSON.stringify(payload) 
+        });
+        const d = await r.json();
+        if (d.success) {
+            showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success');
+            // Clear form
+            document.getElementById('dbaTitle').value = '';
+            document.getElementById('dbaAuthors').value = '';
+            document.getElementById('dbaYear').value = '';
+            document.getElementById('dbaDoi').value = '';
+            document.getElementById('dbaUrl').value = '';
+            // Refresh database tab
+            loadDbTab();
+            // Update badge
+            if (d.db_total) {
+                document.getElementById('topbarDbCount').textContent = d.db_total;
+                document.getElementById('tabDbBadge').textContent = d.db_total;
+            }
+        } else {
+            showToast('Failed: ' + (d.error || 'Unknown error'), 'error');
+        }
+    } catch(e) {
+        showToast('Network error: ' + e.message, 'error');
+        console.error(e);
+    }
 }
 
 function dbRow(p) {
