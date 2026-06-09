@@ -237,7 +237,7 @@ input:checked + .toggle-slider:before { transform: translateX(18px); }
 
 <!-- Sidebar -->
 <aside class="sidebar">
-  <div class="logo">LNI Reference Checker <span class="ver">v6.3</span></div>
+  <div class="logo">LNI Reference Checker <span class="ver"></span></div>
 
   <div class="upload-zone" id="dropZone" onclick="document.getElementById('mainFile').click()">
     <div class="upload-icon">📄</div>
@@ -345,7 +345,9 @@ input:checked + .toggle-slider:before { transform: translateX(18px); }
     <div class="content" id="tab-xcheck"><div id="xcheckContent"></div></div>
     <div class="content" id="tab-verify"><div id="verifyContent"></div></div>
     <div class="content" id="tab-score"><div id="scoreContent"></div></div>
-    <div class="content" id="tab-db"><div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 14px 0;border-bottom:1px solid var(--border);margin-bottom:14px;"><span style="font-size:13px;font-weight:700;color:var(--primary);">🗄 Local Verified Papers Database</span><div style="display:flex;gap:8px;"><button onclick="dbDeleteAll()" title="Delete all entries from the database" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:12px;cursor:pointer;color:var(--error);border-color:var(--error);" onmouseover="this.style.background='var(--error-bg)'" onmouseout="this.style.background='none'">🗑 Delete All</button><button onclick="startOver()" title="Clear results and start fresh" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-muted);" onmouseover="this.style.borderColor='var(--warning)';this.style.color='var(--warning)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">↩ Start Over</button><button onclick="startOver()" title="Close and clear results" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-muted);" onmouseover="this.style.borderColor='var(--error)';this.style.color='var(--error)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">✕ Close</button></div></div><div id="dbContent"></div></div>
+    <div class="content" id="tab-db"><div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 14px 0;border-bottom:1px solid var(--border);margin-bottom:14px;"><span style="font-size:13px;font-weight:700;color:var(--primary);">🗄 Local Verified Papers Database</span><div style="display:flex;gap:8px;"><button onclick="dbDeleteAll()" title="Delete all entries from the database" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:12px;cursor:pointer;color:var(--error);border-color:var(--error);" onmouseover="this.style.background='var(--error-bg)'" onmouseout="this.style.background='none'">🗑 Delete All</button>
+      
+      <button onclick="startOver()" title="Close and clear results" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 10px;font-size:13px;cursor:pointer;color:var(--text-muted);" onmouseover="this.style.borderColor='var(--error)';this.style.color='var(--error)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-muted)'">✕ Close</button></div></div><div id="dbContent"></div></div>
   </div>
 </div>
 </div>
@@ -359,6 +361,7 @@ let mainFile = null;
 let bibFile = null;
 let dbLoaded = false;
 let markedFakeKeys = new Set();
+let confirmedRealKeys = new Set();
 
 function handleMainFile(inp) {
   mainFile = inp.files[0];
@@ -880,7 +883,7 @@ function verifyCard(v) {
         ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-title">⚠ Red Flags</div><ul class="risk-list">${v.ai_risk_factors.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
         ${links.length ? `<div class="detail-section"><div class="detail-title">🔗 Links & Resources</div><div class="sources-row">${links.join('')}</div></div>` : ''}
         ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s => { const label = s === 'url_check' ? 'URL Check (direct fetch)' : s === 'content_title_match' ? 'Title Match (page content)' : s; return `<span class="source-chip" title="${s === 'url_check' ? 'The cited URL was fetched and the page title was compared to the cited title' : s === 'content_title_match' ? 'The page content title matched the cited title' : ''}">${escapeHtml(label)}</span>`; }).join('')}</div></div>` : ''}
-        ${verdict === 'SUSPICIOUS' ? `<div class="detail-section"><div class="detail-title">➕ Professor Actions</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, save it to the local database. If it is fabricated, mark it as fake to deduct points.</div>
+        ${verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key) && !confirmedRealKeys.has(v.key) ? `<div class="detail-section"><div class="detail-title">➕ Professor Actions</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, save it to the local database. If it is fabricated, mark it as fake to deduct points.</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <button onclick="saveToDb('${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✓ Confirm as Real — Save to DB</button>
             ${markedFakeKeys.has(v.key) ? '<button disabled style="padding:6px 14px;background:var(--error);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;font-weight:600;cursor:default;">✕ Confirmed Fake</button>' : '<button onclick="markAsFake(\'' + escapeHtml(v.key) + '\', this)" style="padding:6px 14px;background:var(--error-bg);color:var(--error);border:1px solid var(--error);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✕ Mark as Fake</button>'}
@@ -901,7 +904,6 @@ function filterVerify(q) {
 }
 
 async function saveToDb(key) {
-    // Look up all data from result — avoids passing HTML-escaped strings via onclick
     const bib = (result?.bibliography || []).find(e => e.key === key) || {};
     const ver = (result?.verification || []).find(e => e.key === key) || {};
     const title = bib.title || ver.title || key;
@@ -943,7 +945,9 @@ async function saveToDb(key) {
         });
         const d = await r.json();
         if (d.success) { 
-            showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success'); 
+            showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success');
+            confirmedRealKeys.add(key);
+            if (result) renderVerifyTab(result);   // re-render so confirmedRealKeys hides the section
             // Refresh the database badge
             if (d.db_total) {
                 document.getElementById('topbarDbCount').textContent = d.db_total;
@@ -1179,9 +1183,13 @@ function buildXLSXReport(data) {
 function markAsFake(key, btnEl) {
   if (markedFakeKeys.has(key)) return;
   markedFakeKeys.add(key);
-  if (btnEl) { btnEl.textContent = '✕ Confirmed Fake'; btnEl.disabled = true; btnEl.style.background = 'var(--error)'; btnEl.style.color = 'white'; btnEl.style.cursor = 'default'; btnEl.style.border = 'none'; }
-  document.querySelectorAll(`.entry-card[data-key="${key}"]`).forEach(card => { const badgeEl = card.querySelector('.badge-suspicious'); if (badgeEl) { badgeEl.className = 'badge badge-fake'; badgeEl.textContent = '✕ FAKE — Confirmed by Professor'; } });
-  if (result) { renderScoreTab(result); const fakeNow = (result.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size; const suspNow = (result.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length; setBadge('tabVerBadge', fakeNow + suspNow, fakeNow ? 'red' : suspNow ? 'orange' : ''); }
+  if (result) {
+    renderVerifyTab(result);   // re-render so markedFakeKeys.has() hides the section
+    renderScoreTab(result);
+    const fakeNow = (result.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size;
+    const suspNow = (result.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length;
+    setBadge('tabVerBadge', fakeNow + suspNow, fakeNow ? 'red' : suspNow ? 'orange' : '');
+  }
   showToast(`✕ [${key}] confirmed as fake — score updated`, 'error');
 }
 
