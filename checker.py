@@ -847,7 +847,8 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             url_note = "No URL in grey literature entry."
 
         # Build full raw reference for AI context
-        raw_ref = f"{entry.authors or ''}: {entry.title or ''}. {getattr(entry, 'publisher', '') or getattr(entry, 'journal', '') or ''}, {entry.year or ''}. {entry_url}"
+        #raw_ref = f"{entry.authors or ''}: {entry.title or ''}. {getattr(entry, 'publisher', '') or getattr(entry, 'journal', '') or ''}, {entry.year or ''}. {entry_url}"
+        raw_ref = entry.raw_text 
         
         # Go straight to AI with full raw reference text
         grey_dict = {

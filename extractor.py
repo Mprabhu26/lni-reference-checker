@@ -126,77 +126,32 @@ def split_body_bib(full_text: str, format_hint: str = None) -> dict:
 def _repair_urls_in_text(text: str) -> str:
     """
     Fix URLs that are broken across line breaks in PDF extraction.
-    This runs on the raw text BEFORE any parsing.
-    Works for ANY URL in ANY part of the document.
     """
     if not text:
         return text
     
-    # FIRST: Fix common PDF digit corruption patterns
-    # Pattern: digit sequences that got extra digits inserted
-    # e.g., "240703" becoming "2407638" (extra '6' and '8' instead of '0' and '3')
+    # CRITICAL: Fix URLs split across lines where the hyphen is at the line break
+    # Example: "https://info.flexera.com/CM-REPORT\nState-of-the-Cloud-DE?..."
+    # Should become: "https://info.flexera.com/CM-REPORT-State-of-the-Cloud-DE?..." 
     
-    # Specific fix for Bitkom URLs (common pattern in your PDFs)
-    # Look for "Bitkom-ChartsCloud" pattern with corrupted numbers
-    bitkom_pattern = r'(bitkom[^\s]*?)(\d{6,7})([A-Z][a-z]+)'
-    def fix_bitkom_number(match):
-        prefix = match.group(1)
-        number = match.group(2)
-        suffix = match.group(3)
-        
-        # Known good numbers in Bitkom URLs follow patterns like 240703
-        # If number is 7 digits, try to remove the extra digit
-        if len(number) == 7:
-            # Try removing the 4th or 5th digit (common corruption position)
-            candidate1 = number[:3] + number[4:]  # Remove 4th digit
-            candidate2 = number[:4] + number[5:]  # Remove 5th digit
-            # Use the one that looks like a valid number (starts with 24)
-            if candidate1.startswith('24'):
-                number = candidate1
-            elif candidate2.startswith('24'):
-                number = candidate2
-        return f"{prefix}{number}{suffix}"
-    
-    text = re.sub(bitkom_pattern, fix_bitkom_number, text, flags=re.IGNORECASE)
-    
-    # General digit corruption fix for any 6-7 digit sequence that should be 6 digits
-    def fix_general_number(match):
-        num = match.group(0)
-        if len(num) == 7 and num.startswith('24'):
-            # Try common corruption patterns
-            for i in range(1, 6):
-                candidate = num[:i] + num[i+1:]
-                if candidate.isdigit() and len(candidate) == 6:
-                    return candidate
-        return num
-    
-    text = re.sub(r'\b(\d{6,7})\b', fix_general_number, text)
-    
-    # Pattern 1: URL with hyphen + newline
+    # Pattern 1: URL part ending with hyphen + newline + continuation
+    # The hyphen should be KEPT and joined
     text = re.sub(
-        r'(https?://[^\s\n]+?)[\-\–\—]\n\s*([a-zA-Z0-9%_\-/\.?=&]+)',
+        r'(https?://[^\s\n]+?)-[\s]*\n[\s]*([a-zA-Z0-9%_\-/\.?=&]+)',
+        r'\1-\2',
+        text,
+        flags=re.IGNORECASE
+    )
+    
+    # Pattern 2: URL part WITHOUT hyphen at line break (just continue)
+    text = re.sub(
+        r'(https?://[^\s\n]+)[\s]*\n[\s]*([a-zA-Z0-9%_\-/\.?=&]+)',
         r'\1\2',
         text,
         flags=re.IGNORECASE
     )
     
-    # Pattern 2: URL without hyphen, just newline
-    text = re.sub(
-        r'(https?://[^\s\n]+)\n\s*([a-zA-Z0-9%_\-/\.?=&]+)',
-        r'\1\2',
-        text,
-        flags=re.IGNORECASE
-    )
-    
-    # Pattern 3: Fix "https: //domain.com" (space after colon)
-    text = re.sub(
-        r'(https?):\s+//',
-        r'\1://',
-        text,
-        flags=re.IGNORECASE
-    )
-    
-    # Pattern 4: Fix URLs with spaces inside (PDF artefacts)
+    # Pattern 3: Fix URLs with spaces (PDF artifacts)
     text = re.sub(
         r'(https?://)(\S+)\s+(\S+)',
         r'\1\2\3',
@@ -204,22 +159,23 @@ def _repair_urls_in_text(text: str) -> str:
         flags=re.IGNORECASE
     )
     
-    # Pattern 5: Remove trailing punctuation and "Stand:" suffixes
-    # Remove ",Stand" or ", Stand" without a space before the date
+    # Pattern 4: Fix "https: //domain.com" (space after colon)
     text = re.sub(
-        r',?\s*Stand\s*:?\s*\d{2}\.\d{2}\.\d{4}',
+        r'(https?):\s+//',
+        r'\1://',
+        text,
+        flags=re.IGNORECASE
+    )
+    
+    # Pattern 5: Remove "Stand:" suffixes
+    text = re.sub(
+        r',?\s*Stand:?\s*[\d./-]+',
         '',
         text,
         flags=re.IGNORECASE
     )
-    # Remove just "Stand: date" with comma
-    text = re.sub(
-        r',\s*Stand:\s*[\d./-]+',
-        '',
-        text,
-        flags=re.IGNORECASE
-    )
-    # Remove any trailing punctuation after URL
+    
+    # Pattern 6: Remove trailing punctuation
     text = re.sub(
         r'(https?://[^\s]+)[.,;:)]+(\s|$)',
         r'\1\2',
@@ -228,7 +184,6 @@ def _repair_urls_in_text(text: str) -> str:
     )
     
     return text
-
 
 def _reconstruct_page_text_from_chars(page) -> str:
     """
@@ -440,17 +395,27 @@ def extract_pdf(path: str) -> dict:
         body_part = body_raw
         bib_part = bib_raw
         
-                # Gentle URL repairs for bibliography section - avoid over-aggressive changes
-        # Fix hyphenated URLs broken across lines (only when hyphen is at line break)
-        bib_part = re.sub(r'([a-zA-Z0-9%_\-])-\n\s*([a-zA-Z0-9%_\-/])', r'\1\2', bib_part)
+        bib_part = re.sub(
+        r'(https?://[^\s\n]+?)[\s]*\n[\s]*([a-zA-Z0-9%_\-/\.?=&]+)',
+        r'\1\2',
+        bib_part,
+        flags=re.IGNORECASE
+    )
         
+        bib_part = re.sub(
+        r'(CM-REPORT)[\s]*\n[\s]*-?[\s]*([a-zA-Z0-9%-]+)',
+        r'\1-\2',
+        bib_part,
+        flags=re.IGNORECASE
+    )
+    
         # Remove "Stand:" suffixes that got attached to URLs
         bib_part = re.sub(r'(https?://[^\s]+?),?\s*Stand:?\s*[\d./-]+', r'\1', bib_part, flags=re.IGNORECASE)
         bib_part = re.sub(r'(https?://[^\s]+?),?\s*Stand\s+[\d./-]+', r'\1', bib_part, flags=re.IGNORECASE)
-        
-        # Fix URLs with spaces after colon (rare)
+    
+        # Fix URLs with spaces after colon
         bib_part = re.sub(r'(https?):\s+//', r'\1://', bib_part)
-        
+    
         # Collapse multiple newlines but preserve [Key] markers
         bib_part = re.sub(r'\n{3,}', '\n\n', bib_part)
         

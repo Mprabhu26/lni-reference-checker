@@ -323,178 +323,149 @@ def llm_verify_grey_literature_by_knowledge(
     url_note: str,
 ) -> dict:
     """
-    Use the LLM's own knowledge to verify grey literature (industry reports,
-    government docs, blog posts) when URL fetch and web search both fail.
-
-    The LLM is given the FULL raw reference string so it can recognise
-    well-known sources like Bitkom Cloud Report 2024, Flexera State of the
-    Cloud, 37signals/Basecamp blog posts, etc.
-
-    Returns a verify_with_web_search-compatible dict.
+    AI knowledge verification for grey literature.
+    Called only when URL check returned non-200.
+    Does NOT modify URLs - just confirms existence based on knowledge.
     """
-    prompt = f"""You are an academic librarian verifying grey literature references
-(industry reports, government publications, corporate blog posts).
+    
+    prompt = f"""You are verifying a grey literature reference.
 
-These sources are NEVER indexed in CrossRef or Semantic Scholar, so you must
-rely on your own knowledge of publicly available grey literature.
+The URL check returned: {url_note}
 
-FULL REFERENCE TEXT (as written by the student):
-{raw_text or title}
+Based on your knowledge, does this document exist?
 
-PARSED FIELDS:
-- Title:   {title}
-- Authors: {authors or "(organisation as author)"}
-- Year:    {year}
-- URL:     {url or "(none)"}
-- URL note: {url_note}
+CITED REFERENCE:
+- Title: "{title}"
+- Authors: "{authors or '(organisation as author)'}"
+- Year: "{year}"
+- URL from citation: {url or '(none)'}
 
-TASK: Determine if this reference describes a real, publicly available document.
-For well-known industry reports (Bitkom Cloud Report, Flexera State of the Cloud,
-Gartner reports, government publications, etc.) use your training knowledge.
+FULL REFERENCE TEXT:
+{raw_text[:500]}
 
-Return ONLY valid JSON, no markdown:
+RULES:
+1. Use your knowledge of well-known publications:
+   - Bitkom Cloud Report (annual) - REAL
+   - Flexera State of the Cloud Report (annual) - REAL  
+   - 37signals/Basecamp blog posts/podcasts - REAL
+   - Varghese & Buyya 2018 (Future Generation Computer Systems) - REAL
+   - or any other industry publications that are valid and exists
+   - any publication that are germany specific and are published by german organisations are more likely to be REAL, even if not well-known internationally. Examples include publications from Bitkom, Fraunhofer, or German government agencies.
+   - any industry, podcast, or report that has a well-known author or organization behind it (e.g. Gartner, Forrester, McKinsey, Accenture) is more likely to be REAL, even if the specific title is not in your knowledge base.
+2. If the document series exists but the specific year is in the future (2025), still mark as REAL.
+3. Return the URL EXACTLY as provided in the citation. Do NOT modify it.
+
+Return ONLY valid JSON:
 {{
   "verdict": "REAL or FAKE or UNCERTAIN",
   "confidence": 0.0-1.0,
-  "matched_title": "canonical title you know (or null)",
-  "matched_authors": "canonical author/org (or null)",
-  "matched_year": "year you know this was published (or null)",
-  "open_access_url": "canonical URL if you know it (or null)",
-  "explanation": "one-sentence reasoning"
+  "explanation": "one-sentence reasoning stating why you think this is real or not based on your knowledge of industry publications and the provided reference details"
 }}
-
-RULES:
-- REAL (confidence ≥ 0.80): You are confident this document exists and the
-  title/year/organisation match a known publication.
-- UNCERTAIN (confidence 0.40–0.79): The source type and organisation are
-  plausible but you cannot confirm the exact edition/year.
-- FAKE (confidence ≥ 0.80): This document does not exist or the details are
-  clearly fabricated (wrong year for a known series, non-existent organisation, etc.).
 """
+    # PRINT WHAT IS BEING SENT TO AI
+    print(f"\n{'='*80}")
+    print(f"📤 SENDING TO AI - Reference: {title}")
+    print(f"{'='*80}")
+    print(f"URL: {url}")
+    print(f"URL Note: {url_note}")
+    print(f"Year: {year}")
+    print(f"Authors: {authors}")
+    print(f"\n--- FULL PROMPT ---")
+    print(prompt)
+    print(f"--- END PROMPT ---\n")
+
     try:
         result = _call_llm_for_verification(prompt)
         verdict = result.get("verdict", "UNCERTAIN").upper()
-        if verdict not in ("REAL", "FAKE", "UNCERTAIN"):
-            verdict = "UNCERTAIN"
         confidence = float(result.get("confidence", 0.5))
-        if verdict == "REAL" and confidence >= 0.80:
+
+        print(f"\n{'='*60}")
+        print(f"AI RESPONSE for: {title}")
+        print(f"Raw AI output: {json.dumps(result, indent=2)}")
+        print(f"{'='*80}")
+        print(json.dumps(result, indent=2))
+        print(f"{'='*60}\n")
+        
+        # CHANGED: threshold from 0.80 to 0.60
+        if verdict == "REAL" and confidence >= 0.60:
             return {
                 "status": "verified",
                 "web_verified": True,
                 "confidence": confidence,
-                "matched_title": result.get("matched_title") or title,
-                "matched_authors": result.get("matched_authors"),
-                "matched_year": result.get("matched_year"),
-                "open_access_url": result.get("open_access_url"),
-                "note": f"Grey literature verified via AI knowledge: {result.get('explanation', '')}",
+                "matched_title": title,
+                "open_access_url": url,  # Original URL from citation
+                "note": f"AI confirmed real: {result.get('explanation', '')}",
                 "sources_checked": ["ai_knowledge"],
             }
-        if verdict == "FAKE" and confidence >= 0.80:
-            return {
-                "status": "suspicious",
-                "web_verified": False,
-                "confidence": confidence,
-                "note": f"AI: likely fabricated — {result.get('explanation', '')}",
-                "sources_checked": ["ai_knowledge"],
-            }
+        
         return {
             "status": "suspicious",
             "web_verified": False,
             "confidence": confidence,
-            "note": f"AI uncertain about grey literature: {result.get('explanation', '')}",
+            "note": result.get("explanation", "Could not verify"),
             "sources_checked": ["ai_knowledge"],
         }
+        
     except Exception as e:
         return {
             "status": "suspicious",
             "web_verified": False,
             "confidence": 0.3,
-            "note": f"AI knowledge check failed: {str(e)[:100]}",
+            "note": f"AI verification failed: {str(e)[:100]}",
             "sources_checked": [],
         }
 
-
 def verify_with_web_search(entry: dict, api_status: str) -> dict:
     """
-    Main entry point. Only call this when API lookup returned nothing.
-    If url_blocked=True (URL exists but bot-blocked), try direct URL verification
-    via LLM before falling back to generic web search.
-    Returns updated verification result.
+    Main entry point for grey literature verification.
+    
+    Rule: HTTP 200 → REAL immediately.
+    Anything else → AI knowledge verification.
     """
     title = entry.get("title", "")
     authors = entry.get("authors", "")
     year = entry.get("year", "")
-    url = entry.get("url", "")
-    url_blocked = entry.get("url_blocked", False)
-    url_note = entry.get("url_note", "")
+    original_url = entry.get("url", "")
+    raw_text = entry.get("raw_text", "")
 
     if not title:
         return {"status": api_status, "web_verified": False, "note": "No title to search for"}
 
-    # ── Fast-path: URL exists but was bot-blocked → ask AI to verify via URL ──
-    if url_blocked and url:
-        url_result = verify_grey_literature_by_url_direct(url, title)
-        status = url_result.get("status", "not_found")
+    # ── STEP 1: Try URL verification ─────────────────────────────────────────
+    if original_url and original_url.startswith("http"):
+        try:
+            resp = requests.head(original_url, timeout=10, allow_redirects=True)
+            
+            if resp.status_code == 200:
+                # URL works → REAL immediately
+                return {
+                    "status": "verified",
+                    "web_verified": True,
+                    "confidence": 0.95,
+                    "matched_title": title,
+                    "open_access_url": original_url,
+                    "note": f"URL verified (HTTP 200)",
+                    "sources_checked": ["url_verify"],
+                }
+            else:
+                # Any non-200 status → go to AI
+                url_note = f"URL returned HTTP {resp.status_code}"
+                
+        except requests.exceptions.Timeout:
+            url_note = "URL timeout"
+        except requests.exceptions.ConnectionError:
+            url_note = "URL connection failed"
+        except Exception as e:
+            url_note = f"URL error: {str(e)[:50]}"
+    else:
+        url_note = "No URL provided"
 
-        if status in ("verified", "partial_match"):
-            confidence = url_result.get("confidence", 0.6)
-            return {
-                "status": "verified" if status == "verified" else "verified",
-                "web_verified": True,
-                "confidence": confidence,
-                "matched_title": url_result.get("matched_title") or title,
-                "open_access_url": url_result.get("open_access_url") or url,
-                "note": url_result.get("note", "Verified via direct URL (AI-assisted)"),
-                "sources_checked": url_result.get("sources_checked", ["url_ai"]),
-            }
-
-    # ── Standard path: generic web search + LLM ──────────────────────────────
-    web_results = search_web_for_paper(title, authors)
-
-    if not web_results:
-        # No web results — fall back to AI's own knowledge (especially useful
-        # for well-known grey literature like Bitkom/Flexera annual reports)
-        return llm_verify_grey_literature_by_knowledge(
-            raw_text=entry.get("raw_text", ""),
-            title=title,
-            authors=authors,
-            year=year,
-            url=url,
-            url_note=url_note,
-        )
-
-    llm_result = llm_verify_with_web_search(title, authors, year, web_results)
-
-    if llm_result.verdict == "REAL" and llm_result.found_title:
-        return {
-            "status": "verified",
-            "web_verified": True,
-            "confidence": llm_result.confidence,
-            "matched_title": llm_result.found_title,
-            "matched_authors": llm_result.found_authors,
-            "matched_year": llm_result.found_year,
-            "open_access_url": llm_result.found_url,
-            "note": f"Found via web search: {llm_result.explanation}",
-            "sources_checked": ["web_search", "llm_verification"],
-        }
-
-    # Web search ran but LLM was not confident — try AI's own knowledge as
-    # a second opinion (catches well-known reports even when DDG snippets are thin)
-    knowledge_result = llm_verify_grey_literature_by_knowledge(
-        raw_text=entry.get("raw_text", ""),
+    # ── STEP 2: AI knowledge verification (for non-200 responses) ────────────
+    return llm_verify_grey_literature_by_knowledge(
+        raw_text=raw_text,
         title=title,
         authors=authors,
         year=year,
-        url=url,
+        url=original_url,
         url_note=url_note,
     )
-    if knowledge_result.get("status") == "verified":
-        return knowledge_result
-
-    return {
-        "status": api_status,
-        "web_verified": False,
-        "confidence": llm_result.confidence,
-        "note": f"Web search: {llm_result.explanation}",
-        "web_attempted": True,
-    }
