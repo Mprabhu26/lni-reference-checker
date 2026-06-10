@@ -466,7 +466,7 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             yield _sse("progress", {"step": "verify_start",
                 "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
             from checker import VerificationResult
 
             future_to_key = {}
@@ -475,36 +475,52 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                     future_to_key[executor.submit(verify_reference, entry)] = key
 
                 done_count = verified_count = suspicious_count = 0
-                for future in as_completed(future_to_key, timeout=120):
-                    key = future_to_key[future]
-                    try:
-                        vr = future.result()
-                    except Exception as e:
-                        vr = VerificationResult(
-                            key=key, title=bib_dict[key].title or "",
-                            status="suspicious", confidence=0.0,
-                            note=f"Verification error: {e}", sources_checked=[])
-                    api_results_raw.append(vr)
-                    done_count += 1
-                    if vr.status == "verified":
-                        verified_count += 1
-                    elif vr.status == "suspicious":
-                        suspicious_count += 1
+                try:
+                    for future in as_completed(future_to_key, timeout=120):
+                        key = future_to_key[future]
+                        try:
+                            vr = future.result()
+                        except Exception as e:
+                            vr = VerificationResult(
+                                key=key, title=bib_dict[key].title or "",
+                                status="suspicious", confidence=0.0,
+                                note=f"Verification error: {e}", sources_checked=[])
+                        api_results_raw.append(vr)
+                        done_count += 1
+                        if vr.status == "verified":
+                            verified_count += 1
+                        elif vr.status == "suspicious":
+                            suspicious_count += 1
 
-                    progress_data = {
-                        "step": "verify",
-                        "message": f"Verifying: {done_count}/{total}",
-                        "key": vr.key,
-                        "status": vr.status,
-                        "confidence": round(vr.confidence, 2),
-                        "done": done_count,
-                        "total": total,
-                        "verified_count": verified_count,
-                        "suspicious_count": suspicious_count,
-                    }
-                    if vr.version_note:
-                        progress_data["version_note"] = vr.version_note
-                    yield _sse("progress", progress_data)
+                        progress_data = {
+                            "step": "verify",
+                            "message": f"Verifying: {done_count}/{total}",
+                            "key": vr.key,
+                            "status": vr.status,
+                            "confidence": round(vr.confidence, 2),
+                            "done": done_count,
+                            "total": total,
+                            "verified_count": verified_count,
+                            "suspicious_count": suspicious_count,
+                        }
+                        if vr.version_note:
+                            progress_data["version_note"] = vr.version_note
+                        yield _sse("progress", progress_data)
+
+                except FuturesTimeout:
+                    # Some futures timed out — add remaining entries as suspicious
+                    completed_keys = {vr.key for vr in api_results_raw}
+                    for key in bib_dict:
+                        if key not in completed_keys:
+                            vr = VerificationResult(
+                                key=key, title=bib_dict[key].title or "",
+                                status="suspicious", confidence=0.0,
+                                note="Verification timed out — manual review recommended.",
+                                sources_checked=[])
+                            api_results_raw.append(vr)
+                            suspicious_count += 1
+                    yield _sse("progress", {"step": "warning",
+                        "message": f"⚠️ Some references timed out and were marked suspicious for manual review."})
 
             # Restore original order
             key_order = list(bib_dict.keys())
@@ -517,7 +533,7 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
 
         # ── AI final verdict pass (only suspicious entries) ───────────────────
         yield _sse("progress", {"step": "ai_verify",
-            "message": "🤖 AI hallucination check on suspicious entries..."})
+            "message": "🤖 AI review of suspicious entries..."})
         api_results_dicts = _vr_to_dicts(api_results_raw)
         verification_result = ai_verify_references(bib_dicts, api_results_dicts)
 

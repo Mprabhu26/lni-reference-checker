@@ -763,13 +763,17 @@ function renderVerifyTab(data) {
   const susp = ver.filter(v => v.ai_verdict === 'SUSPICIOUS');
   const real = ver.filter(v => v.ai_verdict === 'REAL');
 
-  // Sort REAL: those with differences first, then exact matches
+  // Sort REAL: Title differs first, then Case difference, then exact/clean matches
   const realSorted = [...real].sort((a, b) => {
-    const aHasDiff = hasTitleDifference(a);
-    const bHasDiff = hasTitleDifference(b);
-    if (aHasDiff && !bHasDiff) return -1;
-    if (!aHasDiff && bHasDiff) return 1;
-    return 0;
+    function sortRank(v) {
+      if (!v.matched_title || v.matched_title === v.title) return 2; // clean
+      const cN = (v.title || '').toLowerCase().trim();
+      const fN = v.matched_title.toLowerCase().trim();
+      if (cN === fN) return 1; // case difference only
+      if (cN.replace(/[^a-z0-9]/g, '') === fN.replace(/[^a-z0-9]/g, '')) return 1; // minor punctuation
+      return 0; // title differs (wording mismatch) — show first
+    }
+    return sortRank(a) - sortRank(b);
   });
 
   let html = `<div class="tab-description">Each bibliography entry is looked up against CrossRef, Semantic Scholar, OpenAlex, arXiv, and a local database. If no API match is found, an AI-assisted web search is used as a fallback. Entries that cannot be found in any source are flagged as potentially fabricated.</div>
