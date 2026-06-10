@@ -1,12 +1,13 @@
 """
-AI Checker — v6.5 (FIXED for German venues)
+AI Checker — v7.0 (STRICT, NO LENIENCY)
 --------------------------
-FIXES v6.5:
-  - Lowered SUSPICIOUS threshold: composite_risk >= 0.70 triggers SUSPICIOUS (was 0.55)
-  - FAKE threshold raised: composite_risk >= 0.85 (was 0.75)
-  - Default verdict changed from SUSPICIOUS to REAL when confidence >= 0.65
-  - German venue detection integrated (lower thresholds for GI/LNI papers)
-  - Whitelist check now boosts confidence for German venues
+CHANGES v7.0:
+  - REMOVED all German venue leniency (no special treatment for GI/LNI)
+  - REMOVED whitelist confidence boosts
+  - FAKE threshold: composite_risk >= 0.75
+  - SUSPICIOUS threshold: composite_risk >= 0.50
+  - AI failures are now transparent with clear explanation
+  - Same strict rules apply to ALL venues
 """
 
 import hashlib
@@ -146,11 +147,12 @@ def _ai_available() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# German venue detection helper
+# German venue detection helper (for INFORMATION only, not used for leniency)
 # ---------------------------------------------------------------------------
 
 def _is_german_academic_venue(entry: dict) -> bool:
-    """Detect if this is a German academic venue (GI/LNI related)."""
+    """Detect if this is a German academic venue (GI/LNI related).
+    This is for INFORMATION only - no leniency is applied based on this."""
     venue_name = (
         (entry.get("journal") or "") + " " + 
         (entry.get("booktitle") or "") + " " + 
@@ -361,7 +363,7 @@ def _is_grey_literature(entry: dict) -> tuple:
 
 
 # ---------------------------------------------------------------------------
-# 3. Composite Fake Detection Signals (FIXED thresholds)
+# 3. Composite Fake Detection Signals (STRICT, NO LENIENCY)
 # ---------------------------------------------------------------------------
 
 def _check_journal_plausibility(journal: str) -> tuple:
@@ -522,14 +524,8 @@ def _get_user_friendly_message(status: str, details: str = "") -> str:
 
 def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: float) -> dict:
     """
-    Compute verdict based on API results FIRST.
-    If API confirmed it, return REAL immediately.
-    Only apply composite risk when API returns no match.
-    
-    FIXED v6.5:
-      - Lowered SUSPICIOUS threshold to 0.70 (was 0.55)
-      - FAKE threshold raised to 0.85 (was 0.75)
-      - Default verdict changed to REAL when no evidence and venue is German/whitelisted
+    Compute verdict based on available evidence.
+    NO special treatment for any venue. Same strict rules for everyone.
     """
     
     # ─────────────────────────────────────────────────────────────────────────
@@ -542,15 +538,10 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     has_doi = bool(entry.get("doi") or api_result.get("doi"))
     has_url_confirmed = bool(api_result.get("open_access_url") and api_status == "verified")
     
-    # Detect German venue for lower thresholds
-    is_german = _is_german_academic_venue(entry)
-    whitelist_check = is_venue_whitelisted(entry.get("journal") or entry.get("booktitle") or "")
-    is_whitelisted = whitelist_check.get("whitelisted", False)
-    
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 2: If API confirmed it, return REAL immediately
     # ─────────────────────────────────────────────────────────────────────────
-    if api_status == "verified" and api_confidence >= 0.85 and matched_title:
+    if api_status == "verified" and api_confidence >= 0.80 and matched_title:
         return {
             "verdict": "REAL",
             "confidence": api_confidence,
@@ -559,9 +550,8 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             "reasoning": f"Confirmed in {', '.join(sources[:2])}: '{matched_title[:60]}'",
         }
     
-    # DOI match is strongest evidence (lower threshold for German)
-    doi_threshold = 0.75 if (is_german or is_whitelisted) else 0.80
-    if has_doi and api_status == "verified" and api_confidence >= doi_threshold:
+    # DOI match is strongest evidence
+    if has_doi and api_status == "verified" and api_confidence >= 0.80:
         return {
             "verdict": "REAL",
             "confidence": 0.92,
@@ -586,137 +576,122 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     is_grey, grey_reason = _is_grey_literature(entry)
     
     if is_grey:
-        url_confirmed = (
-            api_status == "verified"
-            or "url_check" in sources
-            or "trusted_publisher" in sources
-        )
         has_url = bool(entry.get("url"))
 
-        if url_confirmed and api_confidence >= 0.60:
-            return {
-                "verdict": "REAL",
-                "confidence": min(api_confidence + 0.05, 0.92),
-                "composite_risk": 0.10,
-                "risk_factors": [
-                    f"Grey/industry literature ({grey_reason}). "
-                    "URL was checked and content verified."
-                ],
-            }
         if has_url and api_status in ("partial_match", "not_found", "suspicious"):
             return {
                 "verdict": "SUSPICIOUS",
                 "confidence": 0.55,
-                "composite_risk": 0.45,
+                "composite_risk": 0.55,
                 "risk_factors": [
-                    f"Grey/industry literature ({grey_reason}) — URL present, escalating to AI for verification."
+                    f"Grey/industry literature ({grey_reason}) — verify the URL manually."
                 ],
+                "reasoning": "Industry/government report. Not expected in academic databases.",
             }
         return {
             "verdict": "SUSPICIOUS",
-            "confidence": 0.55,
-            "composite_risk": 0.55,
+            "confidence": 0.50,
+            "composite_risk": 0.60,
             "risk_factors": [
-                f"Grey/industry literature ({grey_reason}). "
-                "Not indexed in academic databases and no URL provided."
+                f"Grey/industry literature ({grey_reason}) with no URL to verify."
             ],
+            "reasoning": "Manual verification required.",
         }
     
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 4: No API confirmation → Compute risk signals
-    # FIXED: Lower thresholds for German/whitelisted venues
+    # STEP 4: No API confirmation → Compute risk signals (STRICT, NO LENIENCY)
     # ─────────────────────────────────────────────────────────────────────────
     signals = []
     total_weight = 0
     weighted_sum = 0
     
-    # Signal 1: API status
+    # Signal 1: API status (same for everyone)
     status_scores = {
         "verified": 0.0,
         "retracted": 0.1,
-        "partial_match": 0.3 if (is_german or is_whitelisted) else 0.4,
-        "not_checked": 0.4 if (is_german or is_whitelisted) else 0.5,
-        "not_found": 0.5 if (is_german or is_whitelisted) else 0.7,
-        "suspicious": 0.5 if (is_german or is_whitelisted) else 0.7,
-        "error": 0.4 if (is_german or is_whitelisted) else 0.5,
+        "partial_match": 0.5,
+        "not_checked": 0.6,
+        "not_found": 0.8,
+        "suspicious": 0.8,
+        "error": 0.6,
     }
-    status_risk = status_scores.get(api_status, 0.4 if (is_german or is_whitelisted) else 0.5)
-    signals.append({"name": "database_match", "risk": status_risk, "weight": 0.35, 
+    status_risk = status_scores.get(api_status, 0.7)
+    signals.append({"name": "database_match", "risk": status_risk, "weight": 0.40, 
                     "friendly": _get_user_friendly_message(api_status)})
-    weighted_sum += status_risk * 0.35
-    total_weight += 0.35
+    weighted_sum += status_risk * 0.40
+    total_weight += 0.40
     
     # Signal 2: Title similarity (only if we have a match from API)
     if title_sim is not None and matched_title:
         title_risk = 1.0 - title_sim
-        signals.append({"name": "title_match", "risk": title_risk, "weight": 0.25, 
+        signals.append({"name": "title_match", "risk": title_risk, "weight": 0.30, 
                         "friendly": f"Title match: {int(title_sim*100)}%"})
-        weighted_sum += title_risk * 0.25
-        total_weight += 0.25
+        weighted_sum += title_risk * 0.30
+        total_weight += 0.30
     
     # Signal 3: Missing required fields
     required_fields = ["authors", "title", "year"]
     missing_count = sum(1 for f in required_fields if not entry.get(f))
-    missing_risk = min(missing_count / 3, 0.5)
+    missing_risk = min(missing_count / 3, 0.6)
     if missing_count > 0:
-        signals.append({"name": "missing_fields", "risk": missing_risk, "weight": 0.1, 
+        signals.append({"name": "missing_fields", "risk": missing_risk, "weight": 0.15, 
                         "friendly": f"Missing {missing_count} required field(s)"})
-        weighted_sum += missing_risk * 0.1
-        total_weight += 0.1
+        weighted_sum += missing_risk * 0.15
+        total_weight += 0.15
     
     # Signal 4: Key consistency
     if entry.get("key_consistent") is False:
-        signals.append({"name": "key_mismatch", "risk": 0.6, "weight": 0.1, 
+        signals.append({"name": "key_mismatch", "risk": 0.7, "weight": 0.15, 
                         "friendly": "Key doesn't match author/year"})
-        weighted_sum += 0.6 * 0.1
-        total_weight += 0.1
+        weighted_sum += 0.7 * 0.15
+        total_weight += 0.15
     
     # Signal 5: Journal plausibility
     journal = entry.get("journal", "")
     if journal:
         journal_plausible, journal_flags = _check_journal_plausibility(journal)
         if not journal_plausible:
-            signals.append({"name": "journal", "risk": 0.55, "weight": 0.1, 
+            signals.append({"name": "journal", "risk": 0.65, "weight": 0.0,  # Reduced weight - informational
                             "friendly": "Journal name appears suspicious"})
-            weighted_sum += 0.55 * 0.1
-            total_weight += 0.1
+            # No weight added - just informational
     
     # Signal 6: Page range
     pages = entry.get("pages", "")
     if pages:
         pages_plausible, page_flags = _check_page_range_implausibility(pages, entry.get("year", ""))
         if not pages_plausible:
-            risk_val = 0.90 if any("Extremely long" in f for f in page_flags) else 0.55
-            signals.append({"name": "page_range", "risk": risk_val, "weight": 0.20,
+            risk_val = 0.90 if any("Extremely long" in f for f in page_flags) else 0.60
+            signals.append({"name": "page_range", "risk": risk_val, "weight": 0.0,  # Reduced weight - informational
                             "friendly": page_flags[0] if page_flags else "Page range seems unusual"})
-            weighted_sum += risk_val * 0.20
-            total_weight += 0.20
+            # No weight added - just informational
     
     # Normalize
-    composite_risk = weighted_sum / total_weight if total_weight > 0 else 0.5
+    composite_risk = weighted_sum / total_weight if total_weight > 0 else 0.6
     
     # ─────────────────────────────────────────────────────────────────────────
-    # FIXED v6.5: Lower thresholds for German/whitelisted venues
+    # STRICT thresholds - NO LENIENCY for anyone
+    # FAKE: >= 0.75, SUSPICIOUS: 0.50-0.74, REAL: < 0.50
     # ─────────────────────────────────────────────────────────────────────────
-    fake_threshold = 0.85  # Only if composite_risk >= 0.85
-    suspicious_threshold = 0.80 if (is_german or is_whitelisted) else 0.70  # Unified threshold
-    
-    if composite_risk >= fake_threshold:
+    if composite_risk >= 0.75:
         verdict = "FAKE"
-        confidence = min(0.7 + (composite_risk - fake_threshold) * 1.5, 0.95)
-    elif composite_risk >= suspicious_threshold:
+        confidence = min(0.7 + (composite_risk - 0.75) * 1.5, 0.95)
+    elif composite_risk >= 0.50:
         verdict = "SUSPICIOUS"
-        confidence = 0.5 + (composite_risk - suspicious_threshold) * 1.2
+        confidence = 0.5 + (composite_risk - 0.50) * 1.2
     else:
-        # FIXED: Default to REAL when risk is low, especially for German venues
-        base_confidence = 0.65 if (is_german or is_whitelisted) else 0.60
-        confidence = base_confidence + (0.35 - composite_risk) * 0.5
-        verdict = "REAL"
+        # Low risk, but only REAL if we have some evidence (not just all zeros)
+        if api_status == "not_found" and composite_risk < 0.30:
+            # No API match at all, but everything else looks good? Still suspicious.
+            verdict = "SUSPICIOUS"
+            confidence = 0.55
+        else:
+            verdict = "REAL"
+            confidence = 0.65 + (0.30 - composite_risk) * 0.5
     
-    # Collect user-friendly risk factors
+    # Collect user-friendly risk factors (only medium/high risk)
     risk_factors = []
     for s in signals:
-        if s["risk"] >= 0.4:
+        if s["risk"] >= 0.5:
             risk_factors.append(s["friendly"])
     
     return {
@@ -724,7 +699,7 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
         "confidence": round(confidence, 2),
         "composite_risk": round(composite_risk, 2),
         "risk_factors": risk_factors[:4],
-        "reasoning": f"Analysis: {int(composite_risk*100)}% risk score -> {verdict}",
+        "reasoning": f"Analysis: {int(composite_risk*100)}% risk score -> {verdict}. No API match found.",
     }
 
 
@@ -740,11 +715,6 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
     has_oa_url = bool(api_result.get("open_access_url"))
     has_version_note = bool(api_result.get("version_note"))
     matched_title = api_result.get("matched_title", "")
-    
-    # Detect German venue for lower thresholds
-    is_german = _is_german_academic_venue(entry)
-    whitelist_check = is_venue_whitelisted(entry.get("journal") or entry.get("booktitle") or "")
-    is_whitelisted = whitelist_check.get("whitelisted", False)
 
     # Grey literature: never pre-screen as FAKE
     is_grey, _ = _is_grey_literature(entry)
@@ -756,16 +726,12 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
                 "reasoning": "Paper confirmed to exist but RETRACTED — do not cite",
                 "risk_factors": ["RETRACTED"]}
     
-    # Lower thresholds for German/whitelisted venues
-    doi_threshold = 0.75 if (is_german or is_whitelisted) else 0.80
-    oa_threshold = 0.70 if (is_german or is_whitelisted) else 0.75
-    
-    if has_doi and api_status == "verified" and confidence >= doi_threshold and matched_title:
+    if has_doi and api_status == "verified" and confidence >= 0.80 and matched_title:
         return {"verdict": "REAL", "confidence": 0.95,
                 "reasoning": f"DOI confirmed + title match",
                 "risk_factors": []}
     
-    if has_oa_url and confidence >= oa_threshold and matched_title:
+    if has_oa_url and confidence >= 0.75 and matched_title:
         return {"verdict": "REAL", "confidence": 0.91,
                 "reasoning": "Open-access copy retrieved and verified",
                 "risk_factors": []}
@@ -795,16 +761,13 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
         return None
     pct = int(overlap * 100)
     
-    # Lower thresholds for German venues
-    fake_overlap_threshold = 0.20 if (is_german or is_whitelisted) else 0.25
-    
-    if overlap < fake_overlap_threshold and api_status in ("verified", "partial_match") and title_sim >= 0.40:
+    # Strict thresholds - no leniency
+    if overlap < 0.25 and api_status in ("verified", "partial_match") and title_sim >= 0.40:
         return {"verdict": "FAKE", "confidence": 0.88,
                 "reasoning": f"Title matches but author overlap is only {pct}% — possible fabrication",
                 "risk_factors": [f"Author mismatch ({pct}%)"]}
     
-    real_overlap_threshold = 0.50 if (is_german or is_whitelisted) else 0.60
-    if overlap >= real_overlap_threshold and api_status in ("verified", "partial_match") and confidence >= 0.65:
+    if overlap >= 0.60 and api_status in ("verified", "partial_match") and confidence >= 0.65:
         return {"verdict": "REAL", "confidence": round(min(0.80 + overlap * 0.18, 0.97), 2),
                 "reasoning": f"Author overlap {pct}% + title match",
                 "risk_factors": []}
@@ -862,7 +825,8 @@ Respond ONLY with valid JSON:
 def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     """
     Determine REAL / SUSPICIOUS / FAKE for each reference.
-    FIXED v6.5: German venues get lower thresholds; default to REAL when confidence >= 0.60
+    STRICT mode: No leniency for any venue. AI is used when available.
+    If AI fails, the API/URL verdict is final with clear explanation.
     """
     from review_queue import is_venue_whitelisted
     
@@ -902,15 +866,10 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         else:
             composite = _compute_verdict_with_confidence(entry, vr, title_sim)
             
-            if whitelist_check.get("whitelisted") and composite["verdict"] == "FAKE":
-                composite["verdict"] = "SUSPICIOUS"
-                composite["confidence"] = 0.6
-                composite["reasoning"] = f"Venue is whitelisted ({whitelist_check.get('venue')})"
+            # No whitelist override anymore - removed
             
-            # Only send to AI if confidence is low and not already REAL
-            if composite["verdict"] != "REAL" and composite["confidence"] < 0.70:
-                vr_status = vr.get("status", "not_checked")
-                vr_doi = vr.get("doi") or vr.get("open_access_url")
+            # Only send to AI if confidence is low and AI is available
+            if composite["verdict"] != "REAL" and composite["confidence"] < 0.70 and _ai_available():
                 needs_ai.append((entry, vr, title_sim, composite))
             else:
                 pre_screen_cache[entry["key"]] = {
@@ -921,40 +880,47 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 }
     
     ai_verdicts_by_key: Dict[str, dict] = {}
+    ai_failed = False
+    ai_error_message = ""
     
     # Process AI for uncertain entries
     if _ai_available() and needs_ai:
-        for chunk in _chunk(needs_ai, 15):
-            combined = []
-            for entry, vr, title_sim, composite in chunk:
-                combined.append({
-                    "key": entry["key"],
-                    "title": entry.get("title") or "",
-                    "authors": entry.get("authors") or "",
-                    "year": entry.get("year") or "",
-                    "entry_type": entry.get("entry_type") or "unknown",
-                    "doi": entry.get("doi") or "",
-                    "journal": entry.get("journal") or "",
-                    "publisher": entry.get("publisher") or "",
-                    "url": entry.get("url") or "",
-                    "booktitle": entry.get("booktitle") or "",
-                    "pages": entry.get("pages") or "",
-                    "key_consistent": entry.get("key_consistent"),
-                    "api_status": vr.get("status", "not_checked"),
-                    "api_confidence": round(vr.get("confidence", 0), 2),
-                    "api_matched_title": vr.get("matched_title") or "",
-                    "api_sources": vr.get("sources_checked", []),
-                    "open_access_url": vr.get("open_access_url") or "",
-                    "web_evidence": vr.get("web_evidence") or "",
-                    "arxiv_version_note": vr.get("version_note") or "",
-                    "composite_risk": composite.get("composite_risk", 0.5),
-                })
-            
-            prompt = f"""You are a senior academic librarian familiar with German CS venues (GI, LNI, Informatik Spektrum, BTW, etc.).
+        try:
+            for chunk in _chunk(needs_ai, 15):
+                combined = []
+                for entry, vr, title_sim, composite in chunk:
+                    combined.append({
+                        "key": entry["key"],
+                        "title": entry.get("title") or "",
+                        "authors": entry.get("authors") or "",
+                        "year": entry.get("year") or "",
+                        "entry_type": entry.get("entry_type") or "unknown",
+                        "doi": entry.get("doi") or "",
+                        "journal": entry.get("journal") or "",
+                        "publisher": entry.get("publisher") or "",
+                        "url": entry.get("url") or "",
+                        "booktitle": entry.get("booktitle") or "",
+                        "pages": entry.get("pages") or "",
+                        "key_consistent": entry.get("key_consistent"),
+                        "api_status": vr.get("status", "not_checked"),
+                        "api_confidence": round(vr.get("confidence", 0), 2),
+                        "api_matched_title": vr.get("matched_title") or "",
+                        "api_sources": vr.get("sources_checked", []),
+                        "open_access_url": vr.get("open_access_url") or "",
+                        "web_evidence": vr.get("web_evidence") or "",
+                        "arxiv_version_note": vr.get("version_note") or "",
+                        "composite_risk": composite.get("composite_risk", 0.5),
+                    })
+                
+                prompt = f"""You are a senior academic librarian. Analyze each reference below and return REAL / SUSPICIOUS / FAKE.
 
-Analyze each reference below and return REAL / SUSPICIOUS / FAKE.
+CRITERIA:
+- REAL: Paper exists in academic databases or has verifiable evidence (DOI, working URL, known publisher)
+- SUSPICIOUS: Partial evidence or missing critical information
+- FAKE: No evidence found, suspicious metadata (fake publisher, placeholder authors, example citations)
 
-IMPORTANT: German academic venues (GI, LNI, Informatik Spektrum, BTW, Wirtschaftsinformatik, Mensch und Computer, DeLFI, etc.) legitimate venues, but the SPECIFIC REFERENCE may still be fake. You MUST verify the publisher and authors Check if its real reference or example citation or fake. If its not real then it should be flagged as suspicious or fake. If the venue is German and there is no strong evidence of fakery, you can be more lenient and lean towards REAL. But some of the reference make be fake even if they are from German venues, so you should still check for red flags in the metadata and web evidence.As many papers mention example references to show students how to format citations, these example references are often not real papers and should be flagged as FAKE. Look for red flags like generic titles, implausible author names, missing fields, and lack of web evidence. Use the composite risk score as a guide but apply your expert judgment, especially for German venues.
+Be strict. Do not assume a reference is real just because it looks well-formatted.
+Example citations in style guides should be marked FAKE.
 
 Return ONLY valid JSON:
 {{
@@ -966,35 +932,13 @@ Return ONLY valid JSON:
 
 References:
 {json.dumps(combined, ensure_ascii=False, indent=2)}"""
-            
-            try:
+                
                 chunk_result = _call_ai_json(prompt, max_tokens=4000)
                 for v in chunk_result.get("verdicts", []):
                     ai_verdicts_by_key[v["key"]] = v
-            except Exception:
-                # AI failed - fall back to composite results with lower threshold for REAL
-                for entry, vr, title_sim, composite in chunk:
-                    # Check if it's a German venue
-                    venue = entry.get("journal") or entry.get("booktitle") or ""
-                    whitelist = is_venue_whitelisted(venue)
-                    is_german_venue = whitelist.get("whitelisted") or _is_german_academic_venue(entry)
-                    
-                    if is_german_venue and composite.get("composite_risk", 0.5) < 0.20:
-                        verdict = "REAL"
-                        confidence = 0.75
-                        reasoning = "German academic venue — likely real even if not in international databases"
-                    else:
-                        verdict = composite["verdict"]
-                        confidence = composite["confidence"]
-                        reasoning = composite.get("reasoning", "")
-                    
-                    ai_verdicts_by_key[entry["key"]] = {
-                        "key": entry["key"],
-                        "verdict": verdict,
-                        "confidence": confidence,
-                        "reasoning": reasoning,
-                        "risk_factors": composite.get("risk_factors", []),
-                    }
+        except Exception as e:
+            ai_failed = True
+            ai_error_message = f"AI analysis failed: {str(e)[:200]}"
     
     # Collect all verdicts with deduplication by key
     seen_keys = set()
@@ -1010,24 +954,21 @@ References:
         elif key in ai_verdicts_by_key:
             all_verdicts.append(ai_verdicts_by_key[key])
         else:
+            # AI was not run or failed - use composite result with explanation
             vr = vr_by_key.get(key, {})
             matched_title = vr.get("matched_title", "")
             title_sim = 0.0
             if entry.get("title") and matched_title:
                 title_sim = _local_title_similarity(entry["title"], matched_title)
             composite = _compute_verdict_with_confidence(entry, vr, title_sim)
-            venue = entry.get("journal") or entry.get("booktitle") or ""
-            whitelist_check = is_venue_whitelisted(venue)
             
-            # Final check: if venue is whitelisted or German, boost confidence
-            if key not in ai_verdicts_by_key and not entry.get("title"):
-                if (whitelist_check.get("whitelisted") or _is_german_academic_venue(entry)):
-                    if composite["verdict"] == "SUSPICIOUS" and composite["confidence"] < 0.70:
-                        composite["verdict"] = "REAL"
-                        composite["confidence"] = 0.75
-            elif whitelist_check.get("whitelisted") and composite["verdict"] == "FAKE":
-                composite["verdict"] = "SUSPICIOUS"
-                composite["confidence"] = 0.6
+            # Add explanation about AI status
+            if not _ai_available():
+                composite["reasoning"] += " AI was not available (no API key configured)."
+            elif ai_failed and key not in ai_verdicts_by_key:
+                composite["reasoning"] += f" {ai_error_message}"
+            elif needs_ai and key not in ai_verdicts_by_key:
+                composite["reasoning"] += " AI analysis was attempted but did not return a verdict for this entry."
             
             all_verdicts.append({
                 "key": key,
@@ -1085,20 +1026,21 @@ Return JSON: {{"verdict": "PASS/FLAG/FAIL", "score": 0-100, "grade": "A-F",
         except Exception:
             pass
     
-    # Deterministic fallback (more lenient)
+    # Deterministic fallback (strict)
     score = 100
-    score -= min(fake_count * 15, 50)  # Reduced from 20 to 15
-    score -= min(missing_cit * 8, 25)  # Reduced from 10 to 8
-    score -= min(incomplete * 3, 15)   # Reduced from 5 to 3
-    score -= min(orphaned * 2, 10)     # Reduced from 3 to 2
-    score -= min(len(key_issues) * 3, 10)  # Reduced from 5 to 3
+    score -= min(fake_count * 20, 60)      # FAKE references: -20 each, max 60
+    score -= min(suspicious * 8, 30)       # SUSPICIOUS: -8 each, max 30
+    score -= min(missing_cit * 10, 30)     # Missing citations: -10 each, max 30
+    score -= min(incomplete * 5, 20)       # Incomplete entries: -5 each, max 20
+    score -= min(orphaned * 3, 15)         # Orphaned: -3 each, max 15
+    score -= min(len(key_issues) * 5, 15)  # Key mismatches: -5 each, max 15
     score = max(0, min(100, score))
     
     grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F"
     
-    if fake_count >= 2:  # Changed from >=1 to >=2 for FAIL
+    if fake_count >= 1:                    # Any fake = FAIL
         verdict = "FAIL"
-    elif suspicious >= 2 or score < 70:  # Changed from 75 to 70
+    elif suspicious >= 2 or score < 70:
         verdict = "FLAG"
     else:
         verdict = "PASS"
