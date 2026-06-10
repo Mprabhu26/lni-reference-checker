@@ -937,7 +937,7 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         )
 
     # Detect if this is a German venue (lower thresholds)
-    is_german = _is_german_venue(entry)
+    #is_german = _is_german_venue(entry)
 
     # ── STEP 1: Local SQLite DB ───────────────────────────────────────────────
     cached = search_cache(entry.title or "", entry.authors or "")
@@ -1065,17 +1065,16 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         api_result = best
 
     # Strict match with lower thresholds for German venues
+        # Strict match - same thresholds for everyone
     if api_result and api_result.status == "verified":
-        # Lower confidence threshold for German venues (0.75 vs 0.85)
-        min_confidence = 0.75 if is_german else 0.85
-        
-        if api_result.confidence >= min_confidence:
+        # Same confidence threshold for everyone
+        if api_result.confidence >= 0.80:
             year_ok = True
             if entry.year and api_result.corrected_year:
                 try:
-                    # Allow 2-year difference for German venues
+                    # Allow 1-year difference for everyone
                     year_diff = abs(int(entry.year) - int(api_result.corrected_year))
-                    year_ok = year_diff <= (2 if is_german else 1)
+                    year_ok = year_diff <= 1
                 except (ValueError, TypeError):
                     year_ok = True
 
@@ -1083,11 +1082,12 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             if entry.authors and api_result.correct_authors:
                 overlap = author_overlap_score(entry.authors, api_result.correct_authors)
                 if overlap is not None:
-                    # Lower author threshold for German venues (0.35 vs 0.50)
-                    min_author_overlap = 0.35 if is_german else 0.50
-                    author_ok = overlap >= min_author_overlap
+                    # Same author threshold for everyone
+                    author_ok = overlap >= 0.50
 
             if year_ok and author_ok:
+        
+       
                 save_to_cache(
                     title=api_result.matched_title or entry.title,
                     authors=entry.authors or "",
@@ -1152,10 +1152,10 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     web_result = verify_with_web_search(entry_dict, "not_found")
     
     # Lower AI threshold for German venues (0.70 vs 0.75 for general)
-    ai_threshold = 0.70 if is_german else 0.75
+    #ai_threshold = 0.70 if is_german else 0.75
     
     if (web_result.get("status") == "verified"
-            and web_result.get("confidence", 0) >= ai_threshold):
+            and web_result.get("confidence", 0) >= 0.75):
         matched = web_result.get("matched_title") or entry.title
         save_to_cache(
             title=matched,

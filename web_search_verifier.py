@@ -204,8 +204,8 @@ Analyze the reference using the criteria above. Be strict. Return ONLY valid JSO
         confidence = result.get("confidence", 0.5)
         
         # Apply confidence boost for German venues that the AI confirms as REAL
-        if is_german and verdict == "REAL":
-            confidence = max(confidence, 0.70)
+        #if is_german and verdict == "REAL":
+         #   confidence = max(confidence, 0.70)
         
         return WebVerificationResult(
             found=verdict == "REAL",
@@ -397,8 +397,8 @@ Return ONLY valid JSON:
         confidence = float(result.get("confidence", 0.5))
         
         # Boost for German venues
-        if is_german and verdict == "REAL":
-            confidence = max(confidence, 0.70)
+        #if is_german and verdict == "REAL":
+         #   confidence = max(confidence, 0.70)
         
         # Lowered threshold from 0.60 to 0.55
         if verdict == "REAL" and confidence >= 0.55:
@@ -503,8 +503,8 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
     if web_results:
         result = llm_verify_with_web_search(title, authors, year, web_results)
         # Lowered threshold from 0.70 to 0.60, and 0.55 for German
-        real_threshold = 0.55 if is_german else 0.60
-        if result.verdict == "REAL" and result.confidence >= real_threshold:
+        #real_threshold = 0.55 if is_german else 0.60
+        if result.verdict == "REAL" and result.confidence >= 0.60:
             return {
                 "status": "verified",
                 "web_verified": True,
