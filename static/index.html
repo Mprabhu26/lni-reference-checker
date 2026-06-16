@@ -763,15 +763,20 @@ function renderVerifyTab(data) {
   const susp = ver.filter(v => v.ai_verdict === 'SUSPICIOUS');
   const real = ver.filter(v => v.ai_verdict === 'REAL');
 
-  // Sort REAL: Title differs first, then Case difference, then exact/clean matches
+  // Sort REAL: metadata warnings first (author/year mismatch), then title differs, then clean
   const realSorted = [...real].sort((a, b) => {
     function sortRank(v) {
-      if (!v.matched_title || v.matched_title === v.title) return 2; // clean
+      const warns = v.metadata_warnings || [];
+      const hasError = warns.some(w => w.severity === 'error');
+      const hasWarn  = warns.some(w => w.severity === 'warn');
+      if (hasError) return 0; // metadata error — show first
+      if (hasWarn)  return 1; // metadata warning — show second
+      if (!v.matched_title || v.matched_title === v.title) return 4; // clean
       const cN = (v.title || '').toLowerCase().trim();
       const fN = v.matched_title.toLowerCase().trim();
-      if (cN === fN) return 1; // case difference only
-      if (cN.replace(/[^a-z0-9]/g, '') === fN.replace(/[^a-z0-9]/g, '')) return 1; // minor punctuation
-      return 0; // title differs (wording mismatch) — show first
+      if (cN === fN) return 3; // case difference only
+      if (cN.replace(/[^a-z0-9]/g, '') === fN.replace(/[^a-z0-9]/g, '')) return 3;
+      return 2; // title differs
     }
     return sortRank(a) - sortRank(b);
   });
@@ -864,6 +869,19 @@ function verifyCard(v) {
             if (cN.replace(/[^a-z0-9]/g,'') === fN.replace(/[^a-z0-9]/g,'')) return '<span class="conf-pill med" style="cursor:help;" title="Titles match except for punctuation or spacing — likely the same publication.">⚠ Minor difference</span>';
             return '<span class="conf-pill low" style="cursor:help;" title="The cited title and the database title differ in wording — confirm it is the correct publication.">⚠ Title differs</span>';
           })()}
+          ${(()=>{
+            const warns = v.metadata_warnings || [];
+            if (!warns.length) return '';
+            return warns.map(w => {
+              const isErr = w.severity === 'error';
+              const style = isErr
+                ? 'background:#fef2f2;color:#dc2626;border:1px solid #fca5a5;'
+                : 'background:#fff7ed;color:#ea580c;border:1px solid #fed7aa;';
+              const icon = isErr ? '✕' : '⚠';
+              const tip = (w.detail || w.label).replace(/"/g, '&quot;');
+              return `<span class="conf-pill" style="${style}cursor:help;" title="${tip}">${icon} ${w.label}</span>`;
+            }).join('');
+          })()}
         </div>
       </div>
       ${launchBtn}
@@ -882,6 +900,23 @@ function verifyCard(v) {
           else if (isMinorDiff) { flag = `<div class="issue-item warn" style="margin-top:6px;">⚠ <strong>Minor punctuation / spacing difference</strong> — The titles match when punctuation is removed. Likely the same publication; verify it is correct.</div>`; }
           else { flag = `<div class="issue-item warn" style="margin-top:6px;">⚠ <strong>Title wording differs</strong> — The titles are similar but not identical. Confirm this is the correct publication.</div>`; }
           return `<div class="detail-section"><div class="detail-title">📌 Database Match</div><div class="explanation-box" style="border-left-color:var(--primary);"><strong>Cited as:</strong> ${escapeHtml(v.title||'')}<br><strong>Found as:</strong> ${escapeHtml(v.matched_title)}</div>${flag}</div>`;
+        })()}
+        ${(()=>{
+          const warns = v.metadata_warnings || [];
+          if (!warns.length) return '';
+          const rows = warns.map(w => {
+            const isErr = w.severity === 'error';
+            const cls = isErr ? 'issue-item error' : 'issue-item warn';
+            const icon = isErr ? '✕' : '⚠';
+            let detail = `<div class="${cls}" style="margin-top:6px;">${icon} <strong>${escapeHtml(w.label)}</strong> — ${escapeHtml(w.detail || '')}`;
+            if (w.cited && w.correct) {
+              detail += `<br><span style="font-size:11px;opacity:0.85;"><strong>Cited:</strong> ${escapeHtml(w.cited)}<br><strong>Correct:</strong> ${escapeHtml(w.correct)}</span>`;
+            }
+            detail += `</div>`;
+            return detail;
+          }).join('');
+          const borderColor = warns.some(w=>w.severity==='error') ? 'var(--error)' : 'var(--warning)';
+          return `<div class="detail-section"><div class="detail-title">⚠ Metadata Issues</div><div class="explanation-box" style="border-left-color:${borderColor};">The reference was found in the database but contains metadata discrepancies that should be corrected.</div>${rows}</div>`;
         })()}
         ${v.ai_reasoning ? `<div class="detail-section"><div class="detail-title">🤖 AI Reasoning</div><div class="explanation-box">${escapeHtml(v.ai_reasoning)}</div></div>` : ''}
         ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-title">⚠ Red Flags</div><ul class="risk-list">${v.ai_risk_factors.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
