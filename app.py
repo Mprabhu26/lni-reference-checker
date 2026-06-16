@@ -166,6 +166,142 @@ def _vr_to_dicts(api_results_raw: list) -> list:
     ]
 
 
+def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) -> list:
+    """
+    Compare cited metadata against what the database found.
+    Returns a list of warning dicts: {type, cited, correct, severity}
+    Severity: 'error' (clear wrong data) | 'warn' (minor/ambiguous)
+    Covers: author mismatch, year mismatch, extra/fake authors,
+            missing authors, publisher mismatch, title case, journal mismatch.
+    """
+    import re as _re
+    from checker import author_overlap_score
+    warnings = []
+
+    cited_authors = (entry_dict.get("authors") or "").strip()
+    correct_authors = (vr_dict.get("correct_authors") or
+                       vr_dict.get("corrected_authors") or "").strip()
+    cited_year = str(entry_dict.get("year") or "").strip()
+    corrected_year = str(vr_dict.get("corrected_year") or "").strip()
+    cited_title = (entry_dict.get("title") or "").strip()
+    matched_title = (vr_dict.get("matched_title") or
+                     vr_dict.get("corrected_title") or "").strip()
+    cited_publisher = (entry_dict.get("publisher") or "").strip()
+    corrected_publisher = (vr_dict.get("corrected_publisher") or "").strip()
+    cited_journal = (entry_dict.get("journal") or "").strip()
+    corrected_journal = (vr_dict.get("corrected_journal") or "").strip()
+
+    # ── Author warnings ──────────────────────────────────────────────────────
+    # Detect et al. — if present, author count comparisons are suppressed
+    _has_et_al = bool(_re.search(r'\bet\.?\s*al\.?', cited_authors, _re.IGNORECASE))
+
+    if cited_authors and correct_authors:
+        overlap = author_overlap_score(cited_authors, correct_authors)
+        if overlap is not None:
+            # Count authors in each
+            def _count_authors(s):
+                parts = [p.strip() for p in _re.split(r';|\band\b|\bund\b', s, flags=_re.IGNORECASE) if p.strip()]
+                return [p for p in parts if not _re.match(r'^et\.?\s*al\.?$', p.lower())]
+
+            cited_list = _count_authors(cited_authors)
+            correct_list = _count_authors(correct_authors)
+            n_cited = len(cited_list)
+            n_correct = len(correct_list)
+
+            if overlap < 0.40:
+                warnings.append({
+                    "type": "author_mismatch",
+                    "label": "Author mismatch",
+                    "cited": cited_authors[:120],
+                    "correct": correct_authors[:120],
+                    "severity": "error",
+                    "detail": f"Only {int(overlap*100)}% of cited authors match the database record"
+                })
+            elif overlap < 0.75:
+                warnings.append({
+                    "type": "author_mismatch",
+                    "label": "Author mismatch",
+                    "cited": cited_authors[:120],
+                    "correct": correct_authors[:120],
+                    "severity": "warn",
+                    "detail": f"Partial author match ({int(overlap*100)}%) — verify author list"
+                })
+            elif not _has_et_al:
+                # Good overlap but count differs → extra or missing authors
+                # Skip if et al. is used (intentional truncation)
+                if n_cited > n_correct:
+                    warnings.append({
+                        "type": "extra_authors",
+                        "label": "Extra authors",
+                        "cited": cited_authors[:120],
+                        "correct": correct_authors[:120],
+                        "severity": "warn",
+                        "detail": f"Cited {n_cited} authors but database lists {n_correct} — possible fabricated co-author"
+                    })
+                elif n_correct > n_cited + 1:
+                    warnings.append({
+                        "type": "missing_authors",
+                        "label": "Missing authors",
+                        "cited": cited_authors[:120],
+                        "correct": correct_authors[:120],
+                        "severity": "warn",
+                        "detail": f"Cited {n_cited} authors but database lists {n_correct} — some authors omitted"
+                    })
+
+    # ── Year warnings ────────────────────────────────────────────────────────
+    if cited_year and corrected_year:
+        try:
+            m_c = _re.search(r'\d{4}', cited_year)
+            m_d = _re.search(r'\d{4}', corrected_year)
+            y_cited   = int(m_c.group()) if m_c else None
+            y_correct = int(m_d.group()) if m_d else None
+            if y_cited is None or y_correct is None:
+                raise ValueError("no year found")
+            diff = abs(y_cited - y_correct)
+            if diff > 0:
+                sev = "error" if diff > 2 else "warn"
+                warnings.append({
+                    "type": "year_mismatch",
+                    "label": "Year mismatch",
+                    "cited": cited_year,
+                    "correct": corrected_year,
+                    "severity": sev,
+                    "detail": f"Cited year {cited_year} but publication year is {corrected_year} (off by {diff} year{'s' if diff > 1 else ''})"
+                })
+        except (ValueError, TypeError):
+            pass
+
+    # ── Publisher warnings ───────────────────────────────────────────────────
+    if cited_publisher and corrected_publisher:
+        cp_norm = cited_publisher.lower().replace(" ", "")
+        db_norm = corrected_publisher.lower().replace(" ", "")
+        if cp_norm not in db_norm and db_norm not in cp_norm:
+            warnings.append({
+                "type": "publisher_mismatch",
+                "label": "Publisher mismatch",
+                "cited": cited_publisher[:80],
+                "correct": corrected_publisher[:80],
+                "severity": "warn",
+                "detail": f"Cited publisher '{cited_publisher}' differs from database record '{corrected_publisher}'"
+            })
+
+    # ── Journal warnings ─────────────────────────────────────────────────────
+    if cited_journal and corrected_journal:
+        cj_norm = cited_journal.lower().replace(" ", "")
+        dj_norm = corrected_journal.lower().replace(" ", "")
+        if cj_norm not in dj_norm and dj_norm not in cj_norm:
+            warnings.append({
+                "type": "journal_mismatch",
+                "label": "Journal mismatch",
+                "cited": cited_journal[:80],
+                "correct": corrected_journal[:80],
+                "severity": "warn",
+                "detail": f"Cited journal name differs from database record"
+            })
+
+    return warnings
+
+
 def _apply_ai_improvements(bib_list: list, improvements: dict) -> list:
     for entry in bib_list:
         imp = improvements.get(entry.key)
@@ -240,6 +376,25 @@ def _assemble_result(
             "corrected_volume": getattr(vr, "corrected_volume", None),
             "corrected_pages": getattr(vr, "corrected_pages", None),
         })
+        # Compute metadata warnings for this entry
+        _entry_obj = bib_dict.get(vr.key)
+        _entry_raw = {
+            "authors": getattr(_entry_obj, "authors", "") or "",
+            "year": getattr(_entry_obj, "year", "") or "",
+            "title": getattr(_entry_obj, "title", "") or "",
+            "publisher": getattr(_entry_obj, "publisher", "") or "",
+            "journal": getattr(_entry_obj, "journal", "") or "",
+        }
+        _vr_raw = {
+            "correct_authors": vr.correct_authors,
+            "corrected_authors": getattr(vr, "corrected_authors", None),
+            "corrected_year": getattr(vr, "corrected_year", None),
+            "matched_title": vr.matched_title,
+            "corrected_title": getattr(vr, "corrected_title", None),
+            "corrected_publisher": getattr(vr, "corrected_publisher", None),
+            "corrected_journal": getattr(vr, "corrected_journal", None),
+        }
+        verification_output[-1]["metadata_warnings"] = _compute_metadata_warnings(_entry_raw, _vr_raw)
 
     # Entries that never went through API verification (e.g. no title/DOI)
     api_keys = {vr.key for vr in api_results_raw}
@@ -265,6 +420,7 @@ def _assemble_result(
                 "ai_reasoning": ai.get("reasoning", ""),
                 "ai_risk_factors": ai.get("risk_factors", []),
                 "version_note": None,
+                "metadata_warnings": [],
             })
 
     # Score
