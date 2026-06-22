@@ -161,6 +161,8 @@ def _vr_to_dicts(api_results_raw: list) -> list:
          "corrected_publisher": getattr(vr, "corrected_publisher", None),
          "corrected_volume": getattr(vr, "corrected_volume", None),
          "corrected_pages": getattr(vr, "corrected_pages", None),
+         "title_match_score": getattr(vr, "title_match_score", None),
+         "author_match_score": getattr(vr, "author_match_score", None),
          }
         for vr in api_results_raw
     ]
@@ -321,6 +323,76 @@ def _apply_ai_improvements(bib_list: list, improvements: dict) -> list:
     return bib_list
 
 
+def _build_match_breakdown(vr, ai: dict) -> dict:
+    """
+    Build a structured match-quality breakdown for display in the UI.
+
+    The 'confidence' number on a reference card is MATCH QUALITY (how well the
+    bibliography entry matched a database record), NOT a probability that the
+    paper exists. This dict gives the UI enough information to show a clear,
+    honest label like:
+
+        Title match: 78% | Author match: 65% | Source: CrossRef
+        Verdict: ⚠ Suspicious — needs manual review
+
+    instead of the ambiguous bare "78% — no database found this".
+
+    Fields
+    ------
+    title_match   : int|None   — title similarity %, None if no DB match attempted
+    author_match  : int|None   — author overlap %, None if unavailable
+    api_found     : bool       — True if any academic API returned a candidate
+    sources       : list[str]  — which APIs were queried
+    confidence_label : str     — short human label for the confidence band
+    confidence_tooltip : str   — one-sentence explanation of what the number means
+    """
+    title_sim = getattr(vr, "title_match_score", None) if vr else None
+    author_sim = getattr(vr, "author_match_score", None) if vr else None
+    sources = (getattr(vr, "sources_checked", []) if vr else []) or []
+    api_found = bool(getattr(vr, "matched_title", None) if vr else None)
+
+    # Pull per-signal info surfaced by ai_checker if available
+    ai_risk = ai.get("risk_factors", [])
+    for rf in ai_risk:
+        if isinstance(rf, str) and rf.startswith("Title match:"):
+            try:
+                pct = int(rf.split(":")[1].strip().rstrip("%"))
+                if title_sim is None:
+                    title_sim = pct / 100.0
+            except (ValueError, IndexError):
+                pass
+
+    conf = ai.get("confidence") or (getattr(vr, "confidence", 0.0) if vr else 0.0)
+
+    # Band label
+    if conf >= 0.95:
+        band = "Strong match"
+    elif conf >= 0.80:
+        band = "Good match"
+    elif conf >= 0.70:
+        band = "Partial match"
+    elif conf >= 0.50:
+        band = "Weak match"
+    else:
+        band = "No match found"
+
+    tooltip = (
+        "This percentage is match quality — how closely the bibliography entry "
+        "matches a record in academic databases. "
+        "≥95%: confirmed real. 70–94%: suspicious (may be real but poorly formatted). "
+        "<70%: likely hallucinated or a very obscure work."
+    )
+
+    return {
+        "title_match": round(title_sim * 100) if title_sim is not None else None,
+        "author_match": round(author_sim * 100) if author_sim is not None else None,
+        "api_found": api_found,
+        "sources": sources,
+        "confidence_label": band,
+        "confidence_tooltip": tooltip,
+    }
+
+
 def _assemble_result(
     filename, fmt, body, bib_text, bib_list, bib_dict,
     cited_keys, has_numeric, xcheck, citation_contexts,
@@ -375,6 +447,10 @@ def _assemble_result(
             "corrected_publisher": getattr(vr, "corrected_publisher", None),
             "corrected_volume": getattr(vr, "corrected_volume", None),
             "corrected_pages": getattr(vr, "corrected_pages", None),
+            # match_breakdown: explicit per-signal scores so the UI can show
+            # "Title match: 78% | Author match: 65%" instead of a bare confidence %.
+            # confidence = match quality against DB records, NOT probability of existence.
+            "match_breakdown": _build_match_breakdown(vr, ai),
         })
         # Compute metadata warnings for this entry
         _entry_obj = bib_dict.get(vr.key)
@@ -421,6 +497,7 @@ def _assemble_result(
                 "ai_risk_factors": ai.get("risk_factors", []),
                 "version_note": None,
                 "metadata_warnings": [],
+                "match_breakdown": _build_match_breakdown(None, ai),
             })
 
     # Score

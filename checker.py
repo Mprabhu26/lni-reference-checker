@@ -293,6 +293,10 @@ class VerificationResult:
     corrected_journal: Optional[str] = None
     corrected_volume: Optional[str] = None
     corrected_pages: Optional[str] = None
+    # Match quality breakdown — shown to users so they understand what the
+    # confidence number actually measures (match quality, NOT probability of existence)
+    title_match_score: Optional[float] = None   # 0.0–1.0, title similarity to DB record
+    author_match_score: Optional[float] = None  # 0.0–1.0, author overlap score
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +386,7 @@ def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
             if sim >= 0.85:
                 meta = _extract_corrected_metadata(work)
                 is_ret, ret_doi, ret_note = _check_retraction(entry.doi)
+                author_sim = author_overlap_score(entry.authors or "", meta["corrected_authors"] or "") if meta["corrected_authors"] else None
                 return VerificationResult(
                     key=entry.key, title=entry.title or "",
                     status="verified", confidence=sim,
@@ -394,6 +399,8 @@ def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
                     corrected_title=title, corrected_authors=meta["corrected_authors"],
                     corrected_year=meta["corrected_year"],
                     corrected_journal=meta["corrected_journal"],
+                    title_match_score=round(sim, 4),
+                    author_match_score=round(author_sim, 4) if author_sim is not None else None,
                 )
     except Exception:
         pass
@@ -473,6 +480,7 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                             f"{a.get('family','')}, {a.get('given','')}"
                             for a in authors[:3]
                         ) if authors else None
+                        author_sim = author_overlap_score(entry.authors or "", meta["corrected_authors"] or "") if meta["corrected_authors"] else None
                         return VerificationResult(
                             key=entry.key, title=entry.title,
                             status="verified", confidence=sim,
@@ -485,6 +493,8 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                             corrected_authors=meta["corrected_authors"],
                             corrected_year=meta["corrected_year"],
                             corrected_journal=meta["corrected_journal"],
+                            title_match_score=round(sim, 4),
+                            author_match_score=round(author_sim, 4) if author_sim is not None else None,
                         )
                 return None  # 200 but no match
             elif resp.status_code in (429, 503):
@@ -530,6 +540,7 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
                         ) if authors else None
                         oa = (paper.get("openAccessPdf") or {}).get("url")
                         doi = paper.get("externalIds", {}).get("DOI")
+                        author_sim = author_overlap_score(entry.authors or "", author_str or "") if author_str else None
                         return VerificationResult(
                             key=entry.key, title=entry.title,
                             status="verified", confidence=sim,
@@ -538,6 +549,8 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
                             note=f"Semantic Scholar match ({int(sim*100)}%)",
                             sources_checked=["Semantic Scholar"],
                             correct_authors=author_str,
+                            title_match_score=round(sim, 4),
+                            author_match_score=round(author_sim, 4) if author_sim is not None else None,
                         )
                 return None  # 200 but no match
             elif resp.status_code in (429, 503):
@@ -587,6 +600,7 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
                     for a in auth_list[:3]
                 ) if auth_list else None
                 pub_year = str(work.get("publication_year") or "")
+                author_sim = author_overlap_score(entry.authors or "", author_str or "") if author_str else None
                 return VerificationResult(
                     key=entry.key, title=entry.title,
                     status="verified", confidence=sim,
@@ -597,6 +611,8 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
                     correct_authors=author_str,
                     corrected_title=title,
                     corrected_year=pub_year or None,
+                    title_match_score=round(sim, 4),
+                    author_match_score=round(author_sim, 4) if author_sim is not None else None,
                 )
     except requests.exceptions.Timeout:
         print(f"OpenAlex timeout for {entry.key}")
