@@ -159,62 +159,85 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     if isbn_match:
         entry.isbn = re.sub(r'[\s-]', '', isbn_match.group(1))
 
-    # ── Website detection ─────────────────────────────────────────────────────
+    # ── URL / DOI detection ──────────────────────────────────────────────────
     # Extract URL as-is, no cleaning except basic whitespace
     url_match = re.search(r'(https?://\S+|https?:\s+//\S+|www\.\S+)', raw)
     if url_match:
-        entry.entry_type = "website"
-        # Fix "https: //domain.com" space artefact if present
         raw_url = re.sub(r'^(https?):\s+//', r'\1://', url_match.group(1))
-        # Take URL as-is - no removal of "Stand:" or anything else
-        entry.url = raw_url.strip()
+        raw_url = raw_url.strip()
+        url_start = url_match.start()
+        
+        # ── Check if this is a DOI URL (doi.org) ──────────────────────────────
+        # If it's a DOI URL, extract DOI and continue processing as normal
+        # (don't classify as "website" - it's an academic paper with a DOI)
+        if 'doi.org' in raw_url.lower() or 'dx.doi.org' in raw_url.lower():
+            entry.doi = re.sub(r'https?://(dx\.)?doi\.org/', '', raw_url).strip()
+            # Remove the DOI from raw text so it doesn't interfere with title extraction
+            raw = re.sub(r'https?://(dx\.)?doi\.org/[^\s,;]+', '', raw).strip()
+            # Continue with normal classification (not website)
+            # The entry will be classified as article/proceedings/book below
+        
+        # ── Check if this is a arXiv URL ──────────────────────────────────────
+        elif 'arxiv.org' in raw_url.lower():
+            # Extract arXiv ID
+            arxiv_match = re.search(r'arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})', raw_url, re.IGNORECASE)
+            if arxiv_match:
+                entry.doi = f"arXiv:{arxiv_match.group(1)}"
+            # Remove arXiv URL from raw text
+            raw = re.sub(r'https?://arxiv\.org/[^\s,;]+', '', raw).strip()
+            # Continue with normal classification
+        
+        # ── Otherwise, it's a real website URL ──────────────────────────────
+        else:
+            entry.entry_type = "website"
+            entry.url = raw_url
 
-        # Extract urldate separately if present
-        date_match = re.search(
-            r'(?:Stand:|Abruf:|abgerufen am|accessed|besucht am)[:\s]*([\d./-]+)',
-            raw, re.IGNORECASE,
-        )
-        if date_match:
-            entry.urldate = date_match.group(1)
+            # Extract urldate separately if present
+            date_match = re.search(
+                r'(?:Stand:|Abruf:|abgerufen am|accessed|besucht am)[:\s]*([\d./-]+)',
+                raw, re.IGNORECASE,
+            )
+            if date_match:
+                entry.urldate = date_match.group(1)
 
-        # Extract authors and clean title from text before the URL
-        pre_url = raw[:url_match.start()].strip().rstrip(',')
+            # Extract authors and clean title from text before the URL
+            pre_url = raw[:url_start].strip().rstrip(',')
 
-        # Pattern 1: "Lastname[ Lastname2], Firstname[ and ...]: Title"
-        author_m = re.match(
-            r'^((?:[A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+)*'
-            r'(?:,\s*[A-Za-zÄÖÜäöüß.\s\-]+)?'
-            r'(?:\s+and\s+|\s*;\s*)?)+):\s*(.*)',
-            pre_url,
-        )
-        if author_m:
-            cand = author_m.group(1).strip()
-            if len(cand) < 150 and not re.search(r'\b(19|20)\d{2}\b', cand):
-                entry.authors = cand
-                pre_url = author_m.group(2).strip()
+            # Pattern 1: "Lastname[ Lastname2], Firstname[ and ...]: Title"
+            author_m = re.match(
+                r'^((?:[A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+)*'
+                r'(?:,\s*[A-Za-zÄÖÜäöüß.\s\-]+)?'
+                r'(?:\s+and\s+|\s*;\s*)?)+):\s*(.*)',
+                pre_url,
+            )
+            if author_m:
+                cand = author_m.group(1).strip()
+                if len(cand) < 150 and not re.search(r'\b(19|20)\d{2}\b', cand):
+                    entry.authors = cand
+                    pre_url = author_m.group(2).strip()
 
-        # Pattern 2: Organisation name "Flexera Inc.: Title" or "Bitkom: Title"
-        if not entry.authors:
-            org_m = re.match(r'^([A-ZÄÖÜ][A-Za-z0-9äöüÄÖÜ\s\.\-]{1,50}?):\s*(.*)', pre_url)
-            if org_m:
-                org_cand = org_m.group(1).strip().rstrip(',.')
-                rest_after = org_m.group(2).strip()
-                if 2 < len(org_cand) < 80 and not re.search(r'\b(19|20)\d{2}\b', org_cand) and rest_after:
-                    entry.authors = org_cand
-                    pre_url = rest_after
+            # Pattern 2: Organisation name
+            if not entry.authors:
+                org_m = re.match(r'^([A-ZÄÖÜ][A-Za-z0-9äöüÄÖÜ\s\.\-]{1,50}?):\s*(.*)', pre_url)
+                if org_m:
+                    org_cand = org_m.group(1).strip().rstrip(',.')
+                    rest_after = org_m.group(2).strip()
+                    if 2 < len(org_cand) < 80 and not re.search(r'\b(19|20)\d{2}\b', org_cand) and rest_after:
+                        entry.authors = org_cand
+                        pre_url = rest_after
 
-        # Extract year from pre-URL region
-        year_m = re.search(r'\b(19|20)\d{2}\b', raw[:url_match.start()])
-        if year_m:
-            entry.year = year_m.group(0)
+            # Extract year from pre-URL region
+            year_m = re.search(r'\b(19|20)\d{2}\b', raw[:url_start])
+            if year_m:
+                entry.year = year_m.group(0)
 
-        # Clean title: strip leading/trailing year
-        title_text = re.sub(r'^\s*\b(19|20)\d{2}\b\s*', '', pre_url).strip()
-        title_text = re.sub(r',?\s*\b(19|20)\d{2}\b\s*$', '', title_text).strip().rstrip(',.')
-        entry.title = title_text if title_text else None
-        if not entry.title:
-            entry.needs_ai_parsing = True
-        return
+            # Clean title: strip leading/trailing year
+            title_text = re.sub(r'^\s*\b(19|20)\d{2}\b\s*', '', pre_url).strip()
+            title_text = re.sub(r',?\s*\b(19|20)\d{2}\b\s*$', '', title_text).strip().rstrip(',.')
+            entry.title = title_text if title_text else None
+            if not entry.title:
+                entry.needs_ai_parsing = True
+            return
 
     # ── Entry type classification ─────────────────────────────────────────────
     # IMPORTANT: check proceedings FIRST — a proceedings entry often contains

@@ -248,13 +248,14 @@ def extract_pdf(path: str) -> dict:
     from pathlib import Path as _Path
     if not _Path(path).exists():
         raise FileNotFoundError(f"PDF file not found: {path}")
+    
     text = ""
     extraction_method = "pdfplumber"
     is_scanned = False
     page_count = 0
     pages_with_text = 0
     
-    # Try pdfplumber first (best for most PDFs)
+    # ── METHOD 1: pdfplumber ──────────────────────────────────────────────────
     try:
         import pdfplumber
         
@@ -263,30 +264,23 @@ def extract_pdf(path: str) -> dict:
             extracted_pages = []
             
             for i, page in enumerate(pdf.pages):
-                # Use char-gap reconstruction as primary method — fixes PDFs
-                # where font encoding produces merged words (no space glyphs).
-                t = _reconstruct_page_text_from_chars(page)
-                if t and len(t.strip()) > 50:  # Substantial text on page
-                    extracted_pages.append(t)
-                    pages_with_text += 1
-                elif t and len(t.strip()) > 10:
+                # Try extract_text first
+                t = page.extract_text()
+                if t and len(t.strip()) > 10:
                     extracted_pages.append(t)
                     pages_with_text += 1
                 else:
-                    # Try extracting with different settings for this page
-                    try:
-                        t = page.extract_text(x_tolerance=1, y_tolerance=1)
-                        if t and len(t.strip()) > 10:
-                            extracted_pages.append(t)
-                            pages_with_text += 1
-                        else:
-                            extracted_pages.append("[Page with little extractable text]")
-                    except:
-                        extracted_pages.append("[Page extraction failed]")
+                    # Try char-gap reconstruction
+                    t = _reconstruct_page_text_from_chars(page)
+                    if t and len(t.strip()) > 10:
+                        extracted_pages.append(t)
+                        pages_with_text += 1
+                    else:
+                        extracted_pages.append("")
             
             text = "\n".join(extracted_pages)
             
-            # Check if PDF might be scanned - FIXED division by zero
+            # Check if PDF might be scanned
             if pages_with_text == 0 or (page_count > 0 and pages_with_text / page_count < 0.3):
                 is_scanned = True
                 extraction_method = "pdfplumber (likely scanned)"
@@ -295,8 +289,8 @@ def extract_pdf(path: str) -> dict:
         extraction_method = f"pdfplumber failed: {e}"
         text = ""
     
-    # Fallback to pypdf if pdfplumber got little or no text
-    if len(text.strip()) < 500 or is_scanned:
+    # ── METHOD 2: pypdf (fallback if pdfplumber got little text) ─────────────
+    if len(text.strip()) < 500:
         try:
             from pypdf import PdfReader
             
@@ -308,10 +302,7 @@ def extract_pdf(path: str) -> dict:
             for i, page in enumerate(reader.pages):
                 try:
                     t = page.extract_text()
-                    if t and len(t.strip()) > 50:
-                        extracted_pages.append(t)
-                        text_pages += 1
-                    elif t and len(t.strip()) > 10:
+                    if t and len(t.strip()) > 10:
                         extracted_pages.append(t)
                         text_pages += 1
                     else:
@@ -334,13 +325,11 @@ def extract_pdf(path: str) -> dict:
         except Exception as e:
             extraction_method = f"pypdf also failed: {e}"
     
-    # If we still have no text, try a raw text extraction (just in case)
+    # ── METHOD 3: Raw text (last resort) ──────────────────────────────────────
     if len(text.strip()) < 30:
         try:
-            # Try reading as plain text (only if pdfplumber produced nothing at all)
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 raw_text = f.read()
-                # Only use raw text if it looks like actual text (not binary PDF)
                 printable_ratio = sum(c.isprintable() or c in '\n\t' for c in raw_text[:500]) / max(len(raw_text[:500]), 1)
                 if printable_ratio > 0.85 and len(raw_text.strip()) > len(text.strip()):
                     text = raw_text
@@ -348,16 +337,13 @@ def extract_pdf(path: str) -> dict:
         except:
             pass
     
-    # ─────────────────────────────────────────────────────────────────────────
-    # CRITICAL FIX: Repair URLs BEFORE any further processing
-    # This fixes line breaks inside URLs that occur anywhere in the document
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── CRITICAL: Repair URLs BEFORE any further processing ──────────────────
     text = _repair_urls_in_text(text)
     
-    # Collapse multiple spaces (don't rejoin hyphens globally — URLs get corrupted)
+    # Collapse multiple spaces
     text = re.sub(r' +', ' ', text)
     
-    # Find bibliography FIRST so line-rejoining never corrupts bib entries
+    # ── Find bibliography ─────────────────────────────────────────────────────
     bib_pos = _find_bib_start(text)
     if bib_pos >= 0:
         body_raw = text[:bib_pos]
@@ -366,7 +352,7 @@ def extract_pdf(path: str) -> dict:
         body_raw = text
         bib_raw  = ""
 
-    # Rejoin soft-wrapped lines in BODY only (never touch bibliography lines)
+    # ── Rejoin soft-wrapped lines in BODY only ───────────────────────────────
     lines = body_raw.split('\n')
     rejoined = []
     current = ""
@@ -388,36 +374,36 @@ def extract_pdf(path: str) -> dict:
     if current:
         rejoined.append(current)
     body_raw = "\n".join(rejoined)
-    # Rejoin hard-hyphenated line-breaks in body only ("algo-\nrithm" → "algorithm")
     body_raw = re.sub(r'-(\n)(\S)', r'\2', body_raw)
 
+    # ── Clean up bibliography ─────────────────────────────────────────────────
     if bib_pos >= 0:
         body_part = body_raw
         bib_part = bib_raw
         
+        # Repair URLs in bibliography
         bib_part = re.sub(
-        r'(https?://[^\s\n]+?)[\s]*\n[\s]*([a-zA-Z0-9%_\-/\.?=&]+)',
-        r'\1\2',
-        bib_part,
-        flags=re.IGNORECASE
-    )
+            r'(https?://[^\s\n]+?)[\s]*\n[\s]*([a-zA-Z0-9%_\-/\.?=&]+)',
+            r'\1\2',
+            bib_part,
+            flags=re.IGNORECASE
+        )
         
         bib_part = re.sub(
-        r'(CM-REPORT)[\s]*\n[\s]*-?[\s]*([a-zA-Z0-9%-]+)',
-        r'\1-\2',
-        bib_part,
-        flags=re.IGNORECASE
-    )
-    
-        # Remove "Stand:" suffixes that got attached to URLs
+            r'(CM-REPORT)[\s]*\n[\s]*-?[\s]*([a-zA-Z0-9%-]+)',
+            r'\1-\2',
+            bib_part,
+            flags=re.IGNORECASE
+        )
+        
         bib_part = re.sub(r'(https?://[^\s]+?),?\s*Stand:?\s*[\d./-]+', r'\1', bib_part, flags=re.IGNORECASE)
         bib_part = re.sub(r'(https?://[^\s]+?),?\s*Stand\s+[\d./-]+', r'\1', bib_part, flags=re.IGNORECASE)
-    
-        # Fix URLs with spaces after colon
         bib_part = re.sub(r'(https?):\s+//', r'\1://', bib_part)
-    
-        # Collapse multiple newlines but preserve [Key] markers
         bib_part = re.sub(r'\n{3,}', '\n\n', bib_part)
+        
+        # ── CRITICAL FIX: Ensure all [Key] entries are on their own lines ────
+        # This fixes cases where entries are merged together
+        bib_part = re.sub(r'(\[[A-Za-z0-9]+\])(?!\s*\n)', r'\n\1', bib_part)
         
         result = {
             "full_text": body_part + "\n\n" + bib_part,
@@ -439,7 +425,6 @@ def extract_pdf(path: str) -> dict:
         result["warning"] = "PDF appears to be scanned or image-based. Text extraction may be incomplete. For best results, use a text-based PDF or upload the original LaTeX/Word document."
     
     return result
-
 
 def extract_pdf_simple(path: str) -> dict:
     """
