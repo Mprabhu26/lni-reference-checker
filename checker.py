@@ -30,6 +30,7 @@ import re
 import time
 import threading
 import requests
+from ai_checker import _ai_available
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
