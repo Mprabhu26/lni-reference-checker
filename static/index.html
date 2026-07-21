@@ -832,6 +832,41 @@ function verifyCard(v) {
   const conf = Math.round((v.confidence || 0) * 100);
   const badgeCls = verdict === 'REAL' ? 'badge-real' : verdict === 'FAKE' ? 'badge-fake' : 'badge-suspicious';
   const badgeLabel = verdict === 'REAL' ? '✓ REAL — Verified' : verdict === 'FAKE' ? '✕ FAKE — Likely Fabricated' : '? SUSPICIOUS — Manual Review Needed';
+    // ── DUPLICATE BADGE ──
+  let isDup = false;
+  let dupOf = null;
+
+  // Method 1: Check if this entry has duplicate info directly
+  if (v.is_duplicate === true && v.duplicate_of) {
+    isDup = true;
+    dupOf = v.duplicate_of;
+  }
+
+  // Method 2: Check the result.duplicates array
+  if (!isDup && result && result.duplicates) {
+    for (let d of result.duplicates) {
+      if (d.key_a === v.key || d.key_b === v.key) {
+        isDup = true;
+        dupOf = (d.key_a === v.key) ? d.key_b : d.key_a;
+        break;
+      }
+    }
+  }
+
+  // ── DEBUG: Log what's happening ──
+  if (v.key === 'Ar17' || v.key === 'He17') {
+    console.log('🔍 Duplicate check for', v.key);
+    console.log('  v.is_duplicate:', v.is_duplicate);
+    console.log('  v.duplicate_of:', v.duplicate_of);
+    console.log('  result.duplicates:', result?.duplicates);
+    console.log('  isDup:', isDup, 'dupOf:', dupOf);
+  }
+
+  let duplicateBadge = '';
+  if (isDup && dupOf) {
+    duplicateBadge = `<span class="badge" style="background:#fff7ed;color:#b45309;border:1px solid #fed7aa;display:inline-flex;align-items:center;gap:3px;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:600;white-space:nowrap;">🔄 Duplicate (same as [${dupOf}])</span>`;
+  }
+
   let confCls, confLabel, confTip;
   if (verdict === 'REAL') {
     confCls = conf >= 80 ? 'high' : conf >= 50 ? 'med' : 'low';
@@ -861,6 +896,7 @@ function verifyCard(v) {
         <div class="entry-badges">
           <span class="badge ${badgeCls}">${badgeLabel}</span>
           <span class="conf-pill ${confCls}" title="${escapeHtml(confTip)}">${confLabel}</span>
+          ${duplicateBadge}
           ${(()=>{
             if (!v.matched_title || v.matched_title === v.title) return '';
             const cN = (v.title||'').toLowerCase().trim();

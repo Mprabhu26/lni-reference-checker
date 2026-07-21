@@ -883,21 +883,70 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
     entries = list(bib_dict.values())
     duplicates = []
     seen_pairs = set()
+    
+    # ── STEP 1: Check for duplicate DOIs ──────────────────────────────────────
+    doi_map = {}
+    for entry in entries:
+        if entry.doi:
+            doi_map.setdefault(entry.doi, []).append(entry)
+    
+    for doi, matches in doi_map.items():
+        if len(matches) > 1:
+            for i in range(len(matches)):
+                for j in range(i + 1, len(matches)):
+                    a, b = matches[i], matches[j]
+                    pair = tuple(sorted([a.key, b.key]))
+                    if pair not in seen_pairs:
+                        seen_pairs.add(pair)
+                        duplicates.append({
+                            "key_a": a.key,
+                            "key_b": b.key,
+                            "similarity": 1.0,
+                            "title_a": a.title or "",
+                            "title_b": b.title or "",
+                            "reason": "Same DOI"
+                        })
+    
+    # ── STEP 2: Check for duplicate titles ────────────────────────────────────
     for i in range(len(entries)):
         for j in range(i + 1, len(entries)):
             a, b = entries[i], entries[j]
             if not a.title or not b.title:
                 continue
+            
+            # Skip if already detected via DOI
+            pair = tuple(sorted([a.key, b.key]))
+            if pair in seen_pairs:
+                continue
+            
+            # Check exact match first (after normalization)
+            norm_a = _normalize_title(a.title)
+            norm_b = _normalize_title(b.title)
+            if norm_a and norm_b and norm_a == norm_b:
+                # Exact match after normalization — always flag as duplicate
+                seen_pairs.add(pair)
+                duplicates.append({
+                    "key_a": a.key,
+                    "key_b": b.key,
+                    "similarity": 1.0,
+                    "title_a": a.title,
+                    "title_b": b.title,
+                    "reason": "Exact title (after normalization)"
+                })
+                continue
+            
             sim = _title_similarity(a.title, b.title)
-            if sim >= 0.92:
-                pair = tuple(sorted([a.key, b.key]))
-                if pair not in seen_pairs:
-                    seen_pairs.add(pair)
-                    duplicates.append({
-                        "key_a": a.key, "key_b": b.key,
-                        "similarity": round(sim, 3),
-                        "title_a": a.title, "title_b": b.title,
-                    })
+            if sim >= 0.90:  # Lowered from 0.92 to catch near-exact matches
+                seen_pairs.add(pair)
+                duplicates.append({
+                    "key_a": a.key,
+                    "key_b": b.key,
+                    "similarity": round(sim, 3),
+                    "title_a": a.title,
+                    "title_b": b.title,
+                    "reason": "Title similarity"
+                })
+    
     return duplicates
 
 
@@ -1096,11 +1145,13 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
                     year_ok = True
 
             author_ok = True
+            # Only check author overlap if BOTH entry AND api have authors
             if entry.authors and api_result.correct_authors:
                 overlap = author_overlap_score(entry.authors, api_result.correct_authors)
-                if overlap is not None:
-                    # Same author threshold for everyone
-                    author_ok = overlap >= 0.50
+                if overlap is not None and overlap < 0.45:
+                    # Reject only if there's explicit MISMATCH evidence
+                    author_ok = False
+            # If either missing, assume OK (no evidence of mismatch)
 
             if year_ok and author_ok:
         

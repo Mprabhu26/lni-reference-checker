@@ -405,6 +405,16 @@ def _assemble_result(
 
     verification_output = []
     for vr in api_results_raw:
+        # ── Check for duplicates for THIS entry ──────────────────────────────────
+        dup_info = None
+        for d in duplicates:
+            if d.get("key_a") == vr.key:
+                dup_info = {"duplicate_of": d.get("key_b"), "reason": d.get("reason", "")}
+                break
+            elif d.get("key_b") == vr.key:
+                dup_info = {"duplicate_of": d.get("key_a"), "reason": d.get("reason", "")}
+                break
+
         ai = ai_verdicts_by_key.get(vr.key, {})
         ai_verdict = ai.get("verdict", "SUSPICIOUS")
         # Map AI verdict to display status
@@ -451,6 +461,9 @@ def _assemble_result(
             # "Title match: 78% | Author match: 65%" instead of a bare confidence %.
             # confidence = match quality against DB records, NOT probability of existence.
             "match_breakdown": _build_match_breakdown(vr, ai),
+            "is_duplicate": dup_info is not None,
+            "duplicate_of": dup_info.get("duplicate_of") if dup_info else None,
+            "duplicate_reason": dup_info.get("reason") if dup_info else None,
         })
         # Compute metadata warnings for this entry
         _entry_obj = bib_dict.get(vr.key)
