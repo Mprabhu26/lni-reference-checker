@@ -1,0 +1,218 @@
+classDiagram
+    direction TB
+
+    %% Core Data Structures
+    class BibEntry {
+        +str key
+        +str raw_text
+        +str title
+        +list~str~ authors
+        +str year
+        +str entry_type
+        +str doi
+        +str url
+        +str urldate
+        +str pages
+        +str journal
+        +str publisher
+        +str booktitle
+        --
+        +validate_lni_key() bool
+        +get_completeness_score() float
+        +normalize_title() str
+    }
+
+    class CachedPaper {
+        +str title
+        +str authors
+        +str year
+        +str doi
+        +str url
+        +str source
+        +float confidence
+        +str last_seen
+        +bool from_local_db
+    }
+
+    class VerificationResult {
+        +str verdict: REAL|SUSPICIOUS|FAKE
+        +float confidence
+        +str source
+        +dict metadata
+        +list~str~ warnings
+    }
+
+    class CrossCheckResult {
+        +list~str~ missing_bib_entries
+        +list~str~ unused_entries
+        +list~tuple~ duplicates
+        +int self_citations
+        +dict issues_by_severity
+    }
+
+    %% Extractors
+    class Extractor {
+        +extract_pdf(file_path) tuple~str, str~
+        +extract_docx(file_path) tuple~str, str~
+        +extract_latex(file_path, bib_file) tuple~str, str~
+        #split_at_bibliography(text) tuple~str, str~
+    }
+
+    class PDFExtractor {
+        -pdfplumber.PDF pdf
+        +extract() tuple~str, str~
+        #detect_bibliography_heading() int
+    }
+
+    class DOCXExtractor {
+        -Document doc
+        +extract() tuple~str, str~
+    }
+
+    class LaTeXExtractor {
+        +extract_bibtex(bib_file) str
+        +parse_bib_entries(bibtex) list~BibEntry~
+    }
+
+    %% Parser
+    class BibParser {
+        +parse_bibliography(text) list~BibEntry~
+        +extract_citations_from_body(text) list~str~
+        +validate_lni_key(key) bool
+        +extract_metadata(entry_text) dict
+        --
+        -ENTRY_TYPE_PATTERNS: dict
+        -REQUIRED_FIELDS: dict
+    }
+
+    %% Verification Pipeline
+    class ReferenceChecker {
+        +check_document(entries, body_text) VerificationResult~
+        +cross_check(entries, citations) CrossCheckResult~
+        +verify_references(entries, online) list~VerificationResult~
+        -_verify_single(entry) VerificationResult
+        --
+        -threshold_real: float = 0.85
+        -threshold_suspicious: float = 0.70
+    }
+
+    class VerificationPipeline {
+        +verify(entry) VerificationResult
+        -_stage1_cache(entry) VerificationResult
+        -_stage2_apis(entry) VerificationResult
+        -_stage3_url(entry) VerificationResult
+        -_stage4_ai(entry) VerificationResult
+    }
+
+    %% Stage Implementations
+    class LocalDBVerifier {
+        +search_cache(title, authors) CachedPaper
+        +save_to_cache(entry, source) bool
+        +inject_confirmed_paper(title, authors) bool
+    }
+
+    class APIVerifier {
+        -executors: ThreadPoolExecutor
+        +verify_crossref(entry) VerificationResult
+        +verify_semantic_scholar(entry) VerificationResult
+        +verify_openalex(entry) VerificationResult
+        +verify_dblp(entry) VerificationResult
+        +verify_arxiv(entry) VerificationResult
+        -_score_result(api_result, entry) float
+    }
+
+    class URLVerifier {
+        +fetch_and_verify(url, title) bool
+        -_extract_title(html) str
+        -_bot_detection(status_code) bool
+        -_title_match(page_title, ref_title) float
+    }
+
+    class AIVerifier {
+        +verify_with_llm(entry, web_results) VerificationResult
+        -_groq_verify(entry, context) tuple~str, float~
+        -_gemini_verify(entry, context) tuple~str, float~
+        -_web_search(query) list~dict~
+    }
+
+    %% Web Interface
+    class Flask {
+        +POST /check
+        +POST /mark_fake
+        +POST /mark_real
+        +GET /database/papers
+        +GET /database/stats
+    }
+
+    class ReactUI {
+        +Bibliography Tab
+        +Cross-Check Tab
+        +Verification Tab
+        +Database Tab
+    }
+
+    %% Database
+    class LocalDB {
+        +init_cache_db()
+        +search_cache(title) CachedPaper
+        +save_to_cache(paper) bool
+        +get_all_papers(limit, offset) list~dict~
+        +delete_paper(title) bool
+        +get_cache_stats() dict
+        --
+        -verified_papers: SQLite Table
+    }
+
+    class ReviewQueue {
+        +mark_fake(entry) bool
+        +mark_real(entry) bool
+        +get_review_history() list~dict~
+    }
+
+    %% Relationships
+    BibParser --> BibEntry
+    ReferenceChecker --> BibEntry
+    ReferenceChecker --> CrossCheckResult
+    ReferenceChecker --> VerificationResult
+
+    VerificationPipeline --> LocalDBVerifier
+    VerificationPipeline --> APIVerifier
+    VerificationPipeline --> URLVerifier
+    VerificationPipeline --> AIVerifier
+    VerificationPipeline --> VerificationResult
+
+    LocalDBVerifier --> CachedPaper
+    LocalDBVerifier --> LocalDB
+
+    APIVerifier --> VerificationResult
+    URLVerifier --> VerificationResult
+    AIVerifier --> VerificationResult
+
+    Extractor --> PDFExtractor
+    Extractor --> DOCXExtractor
+    Extractor --> LaTeXExtractor
+
+    Flask --> ReferenceChecker
+    Flask --> BibParser
+    Flask --> VerificationPipeline
+    Flask --> ReviewQueue
+    ReactUI --> Flask
+
+    ReviewQueue --> LocalDB
+
+    %% Styling
+    style BibEntry fill:#E3F2FD
+    style CachedPaper fill:#E3F2FD
+    style VerificationResult fill:#E3F2FD
+    style CrossCheckResult fill:#E3F2FD
+
+    style ReferenceChecker fill:#FFF3E0
+    style VerificationPipeline fill:#FFF3E0
+
+    style LocalDBVerifier fill:#F3E5F5
+    style APIVerifier fill:#F3E5F5
+    style URLVerifier fill:#F3E5F5
+    style AIVerifier fill:#F3E5F5
+
+    style Flask fill:#C8E6C9
+    style ReactUI fill:#C8E6C9

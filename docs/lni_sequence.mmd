@@ -1,0 +1,115 @@
+sequenceDiagram
+    actor Prof as Professor
+    participant UI as Web UI<br/>(React)
+    participant Flask as Flask Server
+    participant Extractor as Extractor
+    participant Parser as BibParser
+    participant Checker as ReferenceChecker
+    participant VPipeline as VerificationPipeline
+    participant Cache as LocalDB<br/>(SQLite)
+    participant APIs as Academic APIs
+    participant URLFetch as URLVerifier
+    participant LLM as LLM<br/>(Groq/Gemini)
+
+    Prof->>UI: 1. Upload PDF/DOCX/LaTeX
+    UI->>Flask: POST /check (multipart file)
+    Flask->>Extractor: extract_pdf() / extract_docx() / extract_latex()
+    Extractor-->>Flask: (body_text, bibliography_text)
+    
+    Flask->>Parser: parse_bibliography(bibliography_text)
+    Parser-->>Flask: list<BibEntry>
+    
+    Flask->>Parser: extract_citations_from_body(body_text)
+    Parser-->>Flask: list<citation_keys>
+    
+    Flask->>Checker: cross_check(entries, citations)
+    Checker-->>Flask: CrossCheckResult<br/>(missing, unused, duplicates)
+    
+    Flask->>VPipeline: verify_references(entries, online=True)
+    
+    loop for each entry
+        VPipeline->>Cache: search_cache(title, authors)
+        alt Cache Hit (≥95% title match)
+            Cache-->>VPipeline: CachedPaper
+            VPipeline-->>VPipeline: verdict = REAL<br/>(from_local_db=True)
+        else Cache Miss
+            VPipeline->>APIs: verify_crossref(entry)<br/>verify_semantic_scholar(entry)<br/>verify_openalex(entry)<br/>verify_dblp(entry)<br/>verify_arxiv(entry)<br/>[parallel ThreadPoolExecutor]
+            APIs-->>VPipeline: API Results<br/>(match_score, metadata)
+            
+            VPipeline->>VPipeline: scoring_matrix()<br/>Title: 40%<br/>Authors: 35%<br/>Year: 25%<br/>Threshold: ≥85%
+            
+            alt Score ≥85%
+                VPipeline->>Cache: save_to_cache(entry, source)
+                Cache-->>VPipeline: ✓ Cached
+                VPipeline-->>VPipeline: verdict = REAL
+            else Score <85%
+                alt Has URL
+                    VPipeline->>URLFetch: fetch_and_verify(url, title)
+                    URLFetch->>URLFetch: detect_bot_blocking()<br/>extract_title()<br/>title_match(≥95%)
+                    URLFetch-->>VPipeline: bool
+                    
+                    alt URL Match
+                        VPipeline->>Cache: save_to_cache(entry, source='web_search')
+                        Cache-->>VPipeline: ✓ Cached
+                        VPipeline-->>VPipeline: verdict = REAL
+                    else URL No Match
+                        VPipeline->>LLM: AI Fallback (Stage 4)
+                    end
+                else No URL
+                    VPipeline->>LLM: AI Fallback (Stage 4)
+                end
+            end
+        end
+        
+        alt AI Fallback Triggered
+            LLM->>LLM: web_search(query)<br/>(DuckDuckGo)
+            LLM->>LLM: Groq LLaMA 3.3 70B<br/>Verify existence in<br/>web search results
+            LLM-->>VPipeline: (verdict, confidence)
+            
+            alt Confidence ≥70%
+                VPipeline->>Cache: save_to_cache(entry, source='ai', confidence)
+                Cache-->>VPipeline: ✓ Cached
+                VPipeline-->>VPipeline: verdict = REAL
+            else Confidence <70%
+                VPipeline-->>VPipeline: verdict = SUSPICIOUS<br/>(NOT cached)
+            end
+        end
+        
+        VPipeline->>VPipeline: compute_metadata_warnings()<br/>author/year/publisher mismatch<br/>incomplete fields
+        VPipeline-->>VPipeline: VerificationResult<br/>(verdict, confidence, warnings)
+    end
+    
+    VPipeline-->>Flask: list<VerificationResult>
+    
+    Flask->>Flask: build_json_response()<br/>bibentries[]<br/>cross_check{}<br/>stats{}
+    Flask-->>UI: JSON Response<br/>(200 OK)
+    
+    UI->>UI: render_tabs()<br/>Bibliography<br/>Cross-Check<br/>Verification<br/>Database
+    UI-->>Prof: Display Results
+    
+    Prof->>UI: 2. Review Verification Tab
+    
+    alt Professor Mark FAKE
+        Prof->>UI: Click "Mark FAKE" on entry
+        UI->>Flask: POST /mark_fake (entry_key)
+        Flask->>Checker: record_fake_override(entry)
+        Checker-->>Flask: ✓ Logged (NOT cached)
+        Flask-->>UI: ✓ Updated
+        UI-->>Prof: Entry marked FAKE (red)
+    else Professor Mark REAL
+        Prof->>UI: Click "Mark REAL" on entry
+        UI->>Flask: POST /mark_real (entry_key)
+        Flask->>Cache: inject_confirmed_paper(entry)<br/>source='manual'<br/>confidence=1.0
+        Cache-->>Flask: ✓ Persisted
+        Flask-->>UI: ✓ Updated
+        UI-->>Prof: Entry marked REAL (green)
+    else Professor No Action
+        Prof->>UI: Accept verdict
+    end
+    
+    Prof->>UI: 3. Download Report
+    UI->>Flask: GET /download_report
+    Flask->>Flask: generate_report()<br/>JSON export<br/>CSV (optional)
+    Flask-->>UI: Report File
+    UI-->>Prof: ✓ Report Downloaded
+
