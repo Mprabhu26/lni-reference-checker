@@ -476,20 +476,33 @@ def extract_pdf(path: str) -> dict:
                     elif recon_ratio > raw_ratio + 0.03:
                         use_recon = True
 
-                # ── Pick the candidate with the best spacing ratio overall ─────
-                # words_text (pdfplumber's built-in word clustering) tends to be
-                # the most reliable for tightly-kerned/bold titles and headings,
-                # so prefer it whenever it has the best ratio among the three.
-                candidates = [("words", words_text, words_ratio, words_chars)]
-                if use_recon:
-                    candidates.append(("recon", recon_text, recon_ratio, recon_chars))
+                # ── Pick the candidate with the best spacing ─────────────────
+                # words_text (pdfplumber's built-in word clustering) is the
+                # most reliable for tightly-kerned/bold titles and headings —
+                # it clusters by actual word boundaries rather than a single
+                # per-line gap threshold, so it can't accidentally split a
+                # bold word mid-way (e.g. "Pre-training" -> "Pre-tr aining"),
+                # a failure mode the adaptive char-gap reconstruction is
+                # prone to on mixed-weight lines. A spurious split like that
+                # *increases* recon's space ratio, so a plain "higher ratio
+                # wins" comparison would wrongly prefer the broken text.
+                # Only fall back to recon/raw if words_text is clearly bad.
+                if words_chars > 20 and words_ratio >= 0.02:
+                    best_name, best_text, best_ratio, best_chars = (
+                        "words", words_text, words_ratio, words_chars
+                    )
                 else:
-                    candidates.append(("raw", raw_text, raw_ratio, raw_chars))
-
-                best_name, best_text, best_ratio, best_chars = candidates[0]
-                for name, cand_text, cand_ratio, cand_chars in candidates[1:]:
-                    if cand_chars > 20 and cand_ratio > best_ratio + 0.02:
-                        best_name, best_text, best_ratio, best_chars = name, cand_text, cand_ratio, cand_chars
+                    # words_text unusable — fall back to whichever of
+                    # recon/raw looks more reasonable
+                    fallback_candidates = [("raw", raw_text, raw_ratio, raw_chars)]
+                    if use_recon:
+                        fallback_candidates.append(
+                            ("recon", recon_text, recon_ratio, recon_chars)
+                        )
+                    best_name, best_text, best_ratio, best_chars = fallback_candidates[0]
+                    for name, cand_text, cand_ratio, cand_chars in fallback_candidates[1:]:
+                        if cand_chars > 20 and cand_ratio > best_ratio + 0.02:
+                            best_name, best_text, best_ratio, best_chars = name, cand_text, cand_ratio, cand_chars
 
                 if best_text.strip():
                     extracted_pages.append(best_text)

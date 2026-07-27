@@ -814,19 +814,55 @@ def check_lni_macros(body: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 def extract_citations_from_body(body: str) -> set:
+    """
+    Extract citation keys from body text.
+    
+    Supports:
+    - LNI format: [KEY], [KEY1], [KEY1a], [KEY1a, KEY2b], etc.
+    - LaTeX: \cite{KEY}, \citet{KEY1, KEY2}
+    - Numeric: [1], [1-3], [2, 5]
+    
+    FIXED v8.2:
+    - Handles PDF extraction artifacts: spaces/newlines in citations like [RH15 a], [SHK1 4]
+    - Removes ALL whitespace within bracket citations before matching
+    - Works for [LBH 15], [RH15 a], [SHK1\n4], etc.
+    """
     keys = set()
     if not body:
         return keys
+    
+    # CRITICAL FIX v8.2: Remove ALL whitespace within brackets (spaces, newlines, tabs)
+    # PDF extraction produces [RH15 a], [RH15\na], [SHK1 4] instead of [RH15a], [SHK14]
+    # Use a lambda to normalize each bracketed section
+    def normalize_brackets(m):
+        content = m.group(1)
+        normalized = re.sub(r'\s+', '', content)
+        return '[' + normalized + ']'
+    
+    body_clean = re.sub(r'\[([A-Za-z0-9\s\n,]+)\]', normalize_brackets, body)
+    
+    # Match LNI-format citations with optional suffix for multiple works same year
+    # Pattern: [LETTERS][DIGITS][optional a-z]
+    # Examples: [AB20], [EZ10], [RH15a], [RH15b], [Multi,Keys15c]
     for m in re.finditer(
-        r'\[([A-Z][A-Za-z+]{0,5}\d{2}(?:,\s*[A-Z][A-Za-z+]{0,5}\d{2})*)\]', body
+        r'\[([A-Z][A-Za-z+]{0,5}\d{2}[a-z]?(?:,\s*[A-Z][A-Za-z+]{0,5}\d{2}[a-z]?)*)\]', body_clean
     ):
         for k in re.split(r',\s*', m.group(1)):
-            keys.add(k.strip())
-    for m in re.finditer(r'\\(?:cite|citet|citep|Cite)\{([^}]+)\}', body):
+            k = k.strip()
+            if k:
+                keys.add(k)
+    
+    # LaTeX citations
+    for m in re.finditer(r'\\(?:cite|citet|citep|Cite)\{([^}]+)\}', body_clean):
         for k in m.group(1).split(','):
-            keys.add(k.strip())
-    if re.search(r'\[\d[\d,\s\-]*\]', body):
+            k = k.strip()
+            if k:
+                keys.add(k)
+    
+    # Numeric citations (e.g., [1], [1-3], [2, 5])
+    if re.search(r'\[\d[\d,\s\-]*\]', body_clean):
         keys.add('__numeric_citations__')
+    
     return keys
 
 
@@ -834,9 +870,18 @@ def extract_citation_contexts(body: str) -> List[dict]:
     contexts = []
     if not body:
         return contexts
+    
+    # First normalize whitespace in brackets (same fix as extract_citations_from_body)
+    def normalize_brackets(m):
+        content = m.group(1)
+        normalized = re.sub(r'\s+', '', content)
+        return '[' + normalized + ']'
+    
+    body_clean = re.sub(r'\[([A-Za-z0-9\s\n,]+)\]', normalize_brackets, body)
+    
     for m in re.finditer(
         r'(.{0,80})(\[[A-Z][A-Za-z+]{0,5}\d{2}[^\]]*\]|\[\d[\d,\s\-]*\])(.{0,80})',
-        body,
+        body_clean,
     ):
         pre, cite, post = m.group(1), m.group(2), m.group(3)
         for k in re.split(r',\s*', cite[1:-1]):
