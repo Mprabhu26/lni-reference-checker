@@ -185,16 +185,41 @@ def _repair_urls_in_text(text: str) -> str:
     
     return text
 
+def _words_based_text(page) -> str:
+    """
+    Use pdfplumber's own extract_words() word-clustering (its default
+    x_tolerance-based whitespace detection) to rebuild text. This is often
+    more reliable than manual char-gap analysis for tightly-kerned/bold
+    heading and title fonts, where our custom threshold can under-detect
+    word gaps (e.g. "Nextgenerationcloudcomputing" instead of
+    "Next generation cloud computing").
+    """
+    try:
+        words = page.extract_words(x_tolerance=1.5, y_tolerance=3, keep_blank_chars=False)
+    except Exception:
+        return ""
+    if not words:
+        return ""
+
+    lines: dict = {}
+    for w in words:
+        key = round(w["top"] / 3) * 3
+        lines.setdefault(key, []).append(w)
+
+    result_lines = []
+    for y in sorted(lines):
+        row = sorted(lines[y], key=lambda w: w["x0"])
+        result_lines.append(" ".join(w["text"] for w in row))
+    return "\n".join(result_lines)
+
+
 def _reconstruct_page_text_from_chars(page) -> str:
     """
-    Rebuild page text from character-level position data.
-
-    Many PDFs (especially those exported from LaTeX/Word with certain fonts)
-    encode glyphs without space characters, causing pdfplumber's extract_text()
-    to produce merged runs like "Aviewofcloudcomputing".  By measuring the
-    horizontal gap between consecutive glyphs and inserting a space whenever
-    the gap exceeds ~18 % of the font size, we recover correct word boundaries.
-    Falls back to extract_text() when no char data is available.
+    Rebuild page text from character-level position data with adaptive gap detection.
+    
+    Instead of a hardcoded threshold (e.g., 18% of font size), this analyzes
+    the distribution of character gaps on each page and dynamically finds the
+    natural separation between within-word and between-word gaps.
     """
     try:
         chars = page.chars
@@ -202,6 +227,10 @@ def _reconstruct_page_text_from_chars(page) -> str:
         chars = []
 
     if not chars:
+        return page.extract_text() or ""
+
+    # ── EDGE CASE: Very few characters on page ─────────────────────────────
+    if len(chars) < 10:
         return page.extract_text() or ""
 
     # Bucket characters into lines using 3-point y-buckets
@@ -214,36 +243,178 @@ def _reconstruct_page_text_from_chars(page) -> str:
         lines.setdefault(key, []).append(c)
 
     result_lines = []
+    
     for y in sorted(lines):
         row = sorted(lines[y], key=lambda c: c["x0"])
         if not row:
             continue
+        
+        # ── STEP 1: Collect all gaps in this line ──────────────────────────
+        gaps = []
+        for i in range(1, len(row)):
+            prev, curr = row[i - 1], row[i]
+            gap = curr["x0"] - prev["x1"]
+            avg_size = (prev.get("size", 10) + curr.get("size", 10)) / 2
+            # Normalize gap by font size for comparison
+            gaps.append((gap / avg_size, i, gap, avg_size))
+        
+        if not gaps:
+            result_lines.append(row[0]["text"])
+            continue
+        
+        # ── STEP 2: Analyze gap distribution ──────────────────────────────
+        # Extract normalized gaps
+        norm_gaps = [g[0] for g in gaps]
+        
+        # Find the TWO clusters (within-word vs between-word)
+        # Use the gap between the 60th and 70th percentile as adaptive threshold
+        sorted_gaps = sorted(norm_gaps)
+        
+        # Method 1: Percentile-based threshold
+        # Look for a natural separation point in the gap distribution
+        pct_60 = sorted_gaps[int(len(sorted_gaps) * 0.60)] if len(sorted_gaps) >= 5 else None
+        pct_70 = sorted_gaps[int(len(sorted_gaps) * 0.70)] if len(sorted_gaps) >= 5 else None
+        pct_80 = sorted_gaps[int(len(sorted_gaps) * 0.80)] if len(sorted_gaps) >= 5 else None
+        
+        # Method 2: Look for the largest gap jump
+        jumps = []
+        for i in range(1, len(sorted_gaps)):
+            jumps.append((sorted_gaps[i] - sorted_gaps[i-1], sorted_gaps[i-1], sorted_gaps[i]))
+        
+        # Find the biggest jump in the distribution
+        if jumps:
+            largest_jump = max(jumps, key=lambda x: x[0])
+            jump_threshold = (largest_jump[1] + largest_jump[2]) / 2
+        else:
+            jump_threshold = None
+        
+        # Method 3: Use the gap between 65th and 75th percentile
+        if len(sorted_gaps) >= 5:
+            # Use the gap at 65th percentile as initial estimate
+            idx_65 = int(len(sorted_gaps) * 0.65)
+            threshold_estimate = sorted_gaps[idx_65]
+        else:
+            # Few gaps - use simple heuristic
+            threshold_estimate = sum(norm_gaps) / len(norm_gaps) * 1.2
+        
+        # Combine methods: prefer jump_threshold if it exists and is reasonable
+        if jump_threshold and 0.05 < jump_threshold < 1.0:
+            adaptive_threshold = jump_threshold
+        elif pct_60 and 0.05 < pct_60 < 1.0:
+            adaptive_threshold = pct_60
+        else:
+            # Fallback: use median + 30%
+            median_gap = sorted_gaps[len(sorted_gaps)//2] if sorted_gaps else 0.15
+            adaptive_threshold = median_gap * 1.3
+        
+        # Ensure threshold is within reasonable bounds
+        # (lower floor than before: 0.04 was swallowing real word-gaps on
+        # tightly-kerned/justified heading lines, causing titles like
+        # "Next generation cloud computing" to merge into one word)
+        adaptive_threshold = max(0.025, min(0.35, adaptive_threshold))
+        
+        # ── STEP 3: Build the line text with adaptive threshold ────────────
         line_text = row[0]["text"]
         for i in range(1, len(row)):
             prev, curr = row[i - 1], row[i]
             gap = curr["x0"] - prev["x1"]
             avg_size = (prev.get("size", 10) + curr.get("size", 10)) / 2
-            # Insert space when gap is > 18 % of the font size
-            if gap > avg_size * 0.18:
+            norm_gap = gap / avg_size if avg_size > 0 else 0
+            
+            # Also check if the current character is punctuation or alphanumeric
+            curr_text = curr.get("text", "").strip()
+            prev_text = prev.get("text", "").strip()
+            
+            # Heuristic: Insert space if:
+            # 1. The gap exceeds the adaptive threshold, OR
+            # 2. The current character is uppercase and previous was lowercase (camelCase detection)
+            insert_space = False
+            
+            # Primary: Adaptive threshold
+            if norm_gap > adaptive_threshold:
+                insert_space = True
+            
+            # Secondary: CamelCase detection (e.g., "Aviwofloud" → "A view of cloud")
+            # Check if current char is uppercase and previous was not
+            if (curr_text and curr_text[0].isupper() and 
+                prev_text and prev_text[-1].islower() and
+                norm_gap > 0.02):  # Very low threshold for camelCase
+                insert_space = True
+            
+            # Tertiary: Punctuation detection (e.g., "cloud:New" → "cloud: New")
+            if (prev_text and prev_text[-1] in ":;." and 
+                curr_text and curr_text[0].isupper() and
+                norm_gap > 0.02):
+                insert_space = True
+            
+            if insert_space:
                 line_text += " "
-            line_text += curr["text"]
+            line_text += curr_text if curr_text else curr.get("text", "")
+        
         result_lines.append(line_text)
-
+    
     reconstructed = "\n".join(result_lines)
-
-    # Sanity check: if char reconstruction produced substantially less text
-    # than extract_text(), prefer the latter (unusual PDFs with no char data).
+    
+    # ── STEP 4: Sanity check ──────────────────────────────────────────────
+    # If reconstruction failed (too short or no spaces), fallback to extract_text()
     fallback = page.extract_text() or ""
-    if len(reconstructed.strip()) < len(fallback.strip()) * 0.5:
-        return fallback
+    
+    # Check if reconstructed has reasonable spacing
+    if reconstructed.strip():
+        # Count spaces per character ratio
+        recon_spaces = reconstructed.count(' ')
+        recon_chars = len(reconstructed.strip())
+        recon_ratio = recon_spaces / recon_chars if recon_chars > 0 else 0
+        
+        # Good text should have ~10-20% spaces
+        if recon_ratio < 0.02 and fallback:
+            # Reconstructed has almost no spaces - fallback to extract_text()
+            # But also try to clean up the fallback
+            return _clean_fallback_text(fallback)
+    
     return reconstructed
 
+
+def _clean_fallback_text(text: str) -> str:
+    """
+    Clean up text from pdfplumber's extract_text() when character-gap
+    reconstruction fails. This fixes common issues like:
+    - Missing spaces between words
+    - Broken URLs
+    - Extra spaces around punctuation
+    """
+    if not text:
+        return ""
+    
+    # ── Fix missing spaces between lowercase and uppercase ─────────────────
+    # Include all German umlauts and ß
+    text = re.sub(r'([a-zäöüß])([A-ZÄÖÜ])', r'\1 \2', text)
+    
+    # ── Fix missing spaces after punctuation ──────────────────────────────
+    # Handle cases like "cloud:New" → "cloud: New"
+    # Also handle "S.1025" → "S. 1025" (common in LNI)
+    text = re.sub(r'([:;.!?])([A-ZÄÖÜ0-9])', r'\1 \2', text)
+    
+    # ── Fix missing spaces after "S." (LNI page marker) ──────────────────
+    # "S.1025" → "S. 1025"
+    text = re.sub(r'(S\.)(\d)', r'\1 \2', text)
+    
+    # ── Fix missing spaces after numbers followed by letters ──────────────
+    # e.g., "2025State" → "2025 State"
+    text = re.sub(r'(\d)([A-ZÄÖÜa-zäöüß])', r'\1 \2', text)
+    
+    # ── Fix "https://example.com" → "https://example.com" ────────────────
+    text = re.sub(r'(https?):\s+//', r'\1://', text)
+    
+    # ── Remove double spaces ──────────────────────────────────────────────
+    text = re.sub(r'\s{2,}', ' ', text)
+    
+    return text
 
 def extract_pdf(path: str) -> dict:
     """
     Extract text from PDF with multiple fallback methods.
     Returns structured text with body and bibliography sections.
-    Raises FileNotFoundError if the file does not exist.
     """
     from pathlib import Path as _Path
     if not _Path(path).exists():
@@ -255,7 +426,7 @@ def extract_pdf(path: str) -> dict:
     page_count = 0
     pages_with_text = 0
     
-    # ── METHOD 1: pdfplumber ──────────────────────────────────────────────────
+    # ── METHOD 1: pdfplumber with reconstruction ──────────────────────────────
     try:
         import pdfplumber
         
@@ -264,21 +435,80 @@ def extract_pdf(path: str) -> dict:
             extracted_pages = []
             
             for i, page in enumerate(pdf.pages):
-                # Try extract_text first
-                t = page.extract_text()
-                if t and len(t.strip()) > 10:
-                    extracted_pages.append(t)
+                # ── ALWAYS run both extractors and pick the best ──────────────
+                
+                # Get raw extract_text()
+                raw_text = page.extract_text() or ""
+                
+                # Get reconstructed text with adaptive spacing
+                recon_text = _reconstruct_page_text_from_chars(page) or ""
+
+                # Get pdfplumber's own word-clustering based text
+                words_text = _words_based_text(page) or ""
+                
+                # ── Compare and pick the better result ────────────────────────
+                # Calculate a "quality score" for each:
+                #   - Good text has spaces between words
+                #   - Good text has a reasonable length
+                
+                raw_spaces = raw_text.count(' ')
+                raw_chars = len(raw_text.strip())
+                raw_ratio = raw_spaces / raw_chars if raw_chars > 0 else 0
+                
+                recon_spaces = recon_text.count(' ')
+                recon_chars = len(recon_text.strip())
+                recon_ratio = recon_spaces / recon_chars if recon_chars > 0 else 0
+
+                words_spaces = words_text.count(' ')
+                words_chars = len(words_text.strip())
+                words_ratio = words_spaces / words_chars if words_chars > 0 else 0
+                
+                # Use the one with better spacing ratio (closer to 0.10-0.20)
+                # OR use reconstruction if it's significantly longer
+                use_recon = False
+                
+                # If reconstruction has more spaces and reasonable length
+                if recon_ratio > 0.05 and recon_chars > 20:
+                    # If raw has almost no spaces OR reconstruction is much longer
+                    if raw_ratio < 0.02 or recon_chars > raw_chars * 1.5:
+                        use_recon = True
+                    # If reconstruction has significantly better spacing
+                    elif recon_ratio > raw_ratio + 0.03:
+                        use_recon = True
+
+                # ── Pick the candidate with the best spacing ratio overall ─────
+                # words_text (pdfplumber's built-in word clustering) tends to be
+                # the most reliable for tightly-kerned/bold titles and headings,
+                # so prefer it whenever it has the best ratio among the three.
+                candidates = [("words", words_text, words_ratio, words_chars)]
+                if use_recon:
+                    candidates.append(("recon", recon_text, recon_ratio, recon_chars))
+                else:
+                    candidates.append(("raw", raw_text, raw_ratio, raw_chars))
+
+                best_name, best_text, best_ratio, best_chars = candidates[0]
+                for name, cand_text, cand_ratio, cand_chars in candidates[1:]:
+                    if cand_chars > 20 and cand_ratio > best_ratio + 0.02:
+                        best_name, best_text, best_ratio, best_chars = name, cand_text, cand_ratio, cand_chars
+
+                if best_text.strip():
+                    extracted_pages.append(best_text)
+                    pages_with_text += 1
+                elif raw_text.strip():
+                    extracted_pages.append(raw_text)
                     pages_with_text += 1
                 else:
-                    # Try char-gap reconstruction
-                    t = _reconstruct_page_text_from_chars(page)
-                    if t and len(t.strip()) > 10:
-                        extracted_pages.append(t)
-                        pages_with_text += 1
-                    else:
-                        extracted_pages.append("")
+                    extracted_pages.append("")
             
             text = "\n".join(extracted_pages)
+            
+            # ── Safety net: always run the space-repair cleanup, even on text
+            # that was judged "good enough" above. Some lines (esp. tightly
+            # kerned headings/titles) pass the ratio check per-page but still
+            # contain runs with zero spaces (e.g. "Nextgenerationcloudcomputing").
+            # _clean_fallback_text's regexes are idempotent, so re-running them
+            # here is safe and doesn't undo any prior reconstruction.
+            text = _clean_fallback_text(text)
             
             # Check if PDF might be scanned
             if pages_with_text == 0 or (page_count > 0 and pages_with_text / page_count < 0.3):
@@ -402,7 +632,6 @@ def extract_pdf(path: str) -> dict:
         bib_part = re.sub(r'\n{3,}', '\n\n', bib_part)
         
         # ── CRITICAL FIX: Ensure all [Key] entries are on their own lines ────
-        # This fixes cases where entries are merged together
         bib_part = re.sub(r'(\[[A-Za-z0-9]+\])(?!\s*\n)', r'\n\1', bib_part)
         
         result = {

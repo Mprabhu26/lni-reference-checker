@@ -543,7 +543,7 @@ def _assemble_result(
         {"key": e.key, "type": e.entry_type or "unknown",
          "authors": e.authors, "title": e.title, "year": e.year,
          "publisher": e.publisher, "journal": e.journal, "url": e.url,
-         "doi": e.doi, "isbn": e.isbn, "raw": e.raw_text[:250],
+         "doi": e.doi, "isbn": e.isbn, "pages": e.pages, "raw": e.raw_text[:250],
          "completeness_issues": e.completeness_issues,
          "key_consistent": e.key_consistent,
          "ai_reparsed": e.key in ai_parse_improvements}
