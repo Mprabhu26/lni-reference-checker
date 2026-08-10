@@ -111,16 +111,6 @@ def llm_verify_with_web_search(
 ) -> WebVerificationResult:
     """Use LLM to analyze web search results and determine if the paper is real."""
     
-    # ========================================================================
-    # STEP 1: Check if this is a German academic paper (for context only)
-    # ========================================================================
-    
-    is_german = _is_german_academic_venue_for_web(cited_title, cited_authors)
-    
-    # ========================================================================
-    # STEP 2: Handle no web results
-    # ========================================================================
-    
     if not web_results:
         return WebVerificationResult(
             found=False,
@@ -129,17 +119,9 @@ def llm_verify_with_web_search(
             explanation="No web search results found"
         )
     
-    # ========================================================================
-    # STEP 3: Prepare web results for LLM
-    # ========================================================================
-    
     web_summary = []
     for i, r in enumerate(web_results[:3]):
         web_summary.append(f"Result {i+1}:\n  URL: {r['url']}\n  Title: {r['title']}\n  Snippet: {r['body'][:200]}")
-    
-    # ========================================================================
-    # STEP 4: AI prompt with strict criteria - NO HARDCODING
-    # ========================================================================
     
     prompt = f"""You are an expert Academic Reference Verification Agent. Your job is to determine if a cited reference is REAL or FAKE.
 
@@ -150,16 +132,13 @@ A reference is FAKE if ANY of these apply:
 1. **The publisher does not exist** - Use your knowledge of real academic publishers (Springer, Elsevier, Wiley, IEEE, ACM, MIT Press, Cambridge, Oxford, Nature, Science, etc.). If the publisher name sounds made up, generic, or doesn't match any real publisher, it's FAKE.
 
 2. **The author names are suspicious** - Look for:
-   - Names that are common words in German/English (e.g., "Azubi" means trainee, "Gans" means goose, "Wasser" means water, "Feuer" means fire, "Erde" means earth, "Licht" means light)
+   - Names that are common words in German/English (e.g., "Azubi" means trainee, "Gans" means goose)
    - Names from pop culture (e.g., "Corleone" from The Godfather)
-   - Overly generic names that sound like placeholders (e.g., "Abel, K.", "Bibel, U.")
-   - Names that don't appear in any academic database when they should
+   - Overly generic names that sound like placeholders
 
-3. **The title sounds fictional or playful** - Titles containing "Magic", "Hypothetical", "Fake", "Imaginary", "Made Up", or titles that read like instructional examples rather than serious research.
+3. **The title sounds fictional or playful** - Titles containing "Magic", "Hypothetical", "Fake", "Imaginary", "Made Up".
 
-4. **The reference appears in an author guideline/style guide** - If the surrounding context suggests this is from a formatting guide or template, treat example references as FAKE.
-
-5. **No real-world evidence exists** - If web search returns no credible matches and the metadata looks suspicious.
+4. **No real-world evidence exists** - If web search returns no credible matches and the metadata looks suspicious.
 
 ### CRITERIA FOR REAL:
 
@@ -168,12 +147,6 @@ A reference is REAL if:
 - The publisher is a recognized academic publisher
 - A valid DOI or ISBN is present
 - Web search confirms the paper exists on real academic sites (arXiv, IEEE, ACM, Springer, etc.)
-
-### IMPORTANT RULES:
-
-- German academic venues (GI, LNI, Informatik Spektrum) are REAL **ONLY IF** the publisher and authors are real. "Format-Verlag" and "Noah & Sons" are NOT real publishers.
-- Do NOT assume a reference is REAL just because it looks well-formatted.
-- Be skeptical of references that seem too perfect or read like textbook examples.
 
 ### REFERENCE TO ANALYZE:
 
@@ -185,27 +158,13 @@ Year: {cited_year}
 
 {chr(10).join(web_summary) if web_summary else "No web search results found."}
 
-### YOUR TASK:
+Return ONLY valid JSON:
+{{"verdict": "REAL or FAKE or UNCERTAIN", "confidence": 0.0-1.0, "reasoning": "specific explanation", "found_url": null or "url", "found_title": null or "title"}}"""
 
-Analyze the reference using the criteria above. Be strict. Return ONLY valid JSON.
-
-### OUTPUT FORMAT:
-
-{{"verdict": "REAL or FAKE or UNCERTAIN", "confidence": 0.0-1.0, "reasoning": "specific explanation of why this is REAL or FAKE", "found_url": null or "url of best match", "found_title": null or "matched title"}}"""
-
-    # ========================================================================
-    # STEP 5: Call LLM and process response
-    # ========================================================================
-    
     try:
         result = _call_llm_for_verification(prompt)
-        
         verdict = result.get("verdict", "UNCERTAIN")
         confidence = result.get("confidence", 0.5)
-        
-        # Apply confidence boost for German venues that the AI confirms as REAL
-        #if is_german and verdict == "REAL":
-         #   confidence = max(confidence, 0.70)
         
         return WebVerificationResult(
             found=verdict == "REAL",
@@ -213,13 +172,9 @@ Analyze the reference using the criteria above. Be strict. Return ONLY valid JSO
             confidence=confidence,
             found_url=result.get("found_url"),
             found_title=result.get("found_title"),
-            found_authors=result.get("found_authors"),
-            found_year=result.get("found_year"),
-            explanation=result.get("reasoning", result.get("explanation", ""))
+            explanation=result.get("reasoning", "")
         )
-        
     except Exception as e:
-        # On AI failure, return UNCERTAIN (never default to REAL)
         return WebVerificationResult(
             found=False,
             verdict="UNCERTAIN",
@@ -227,41 +182,54 @@ Analyze the reference using the criteria above. Be strict. Return ONLY valid JSO
             explanation=f"LLM analysis failed: {str(e)[:100]}"
         )
 
+
 def verify_grey_literature_by_url_direct(url: str, title: str = "") -> dict:
-    """Direct URL verification for grey literature."""
+    """
+    Direct URL verification - ONLY trusts the URL if the page title matches
+    the cited title with at least 25% similarity.
+    """
     if not url:
         return {
             "status": "not_found",
             "confidence": 0.0,
-            "note": "No URL provided for grey literature reference",
+            "note": "No URL provided",
             "sources_checked": []
         }
+    
+    # CRITICAL FIX v8.5: Blacklist fake/example/test URLs that will mislead LLM
+    # These are placeholders or non-existent sites commonly used in test docs.
+    # When a URL is unreachable AND on this list, mark as FAKE immediately
+    # rather than falling back to LLM verification (which may hallucinate matches).
+    _FAKE_URL_PATTERNS = {
+        'example.com', 'test.com', 'sample.com', 'dummy.com', 'placeholder.com',
+        'docs.example.com', 'api.example.com', 'www.example.com',
+        'example.org', 'example.net',
+        'techblog', 'medium.com/@',  # fake Medium handles
+    }
+    url_lower = url.lower()
+    for pattern in _FAKE_URL_PATTERNS:
+        if pattern in url_lower:
+            return {
+                "status": "fake",
+                "confidence": 0.95,
+                "note": f"URL uses placeholder domain: {pattern}",
+                "sources_checked": ["url_pattern_check"],
+            }
+    
 
     url = re.sub(r'\s+', '', url)
-
-    _CHALLENGE_TITLES = {"just a moment", "access denied", "attention required",
-                         "403 forbidden", "404 not found", "please wait"}
 
     browser_profiles = [
         {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
             "Referer": "https://www.google.com/",
         },
         {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "de-DE,de;q=0.9,en-GB;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
             "Referer": "https://www.google.com/",
         },
     ]
@@ -277,71 +245,53 @@ def verify_grey_literature_by_url_direct(url: str, title: str = "") -> dict:
             return 0.0
         return len(a_set & b_set) / len(a_set | b_set)
 
-    last_status = None
     for profile in browser_profiles:
         session = requests.Session()
         session.headers.update(profile)
         try:
-            try:
-                session.head(url, timeout=8, allow_redirects=True)
-            except Exception:
-                pass
-
             resp = session.get(url, timeout=15, allow_redirects=True)
-            last_status = resp.status_code
 
             if resp.status_code == 200:
                 page_title = _extract_title(resp.text)
-
-                if page_title.lower() in _CHALLENGE_TITLES or "cloudflare" in resp.text[:500].lower():
-                    return {
-                        "status": "partial_match",
-                        "confidence": 0.65,
-                        "note": f"URL reachable (HTTP 200) but gated by bot-protection. Manual verification recommended.",
-                        "open_access_url": url,
-                        "sources_checked": ["url_fetch"]
-                    }
-
+                
+                # CRITICAL FIX: Only trust URL if title matches
                 if title and page_title:
                     similarity = _sim(title, page_title)
-                    if similarity >= 0.25:  # Lowered from 0.30 to 0.25
+                    if similarity >= 0.25:
                         return {
                             "status": "verified",
                             "confidence": 0.85,
                             "matched_title": page_title,
                             "open_access_url": url,
-                            "note": f"URL verified: page title '{page_title[:80]}' (similarity {int(similarity*100)}%)",
-                            "sources_checked": ["url_fetch"]
+                            "note": f"URL verified: title match ({int(similarity*100)}%)",
+                            "sources_checked": ["url_verify"]
                         }
-
-                return {
-                    "status": "partial_match",
-                    "confidence": 0.60,
-                    "matched_title": page_title or None,
-                    "open_access_url": url,
-                    "note": f"URL reachable (HTTP 200). Page title: '{page_title[:60]}'",
-                    "sources_checked": ["url_fetch"]
-                }
-
-            elif resp.status_code in (403, 429):
-                return {
-                    "status": "partial_match",
-                    "confidence": 0.60,
-                    "note": f"URL reachable but server blocked automated access (HTTP {resp.status_code}). Manual verification recommended.",
-                    "open_access_url": url,
-                    "sources_checked": ["url_fetch"]
-                }
-
-        except requests.exceptions.Timeout:
-            continue
+                    else:
+                        # URL exists but title doesn't match - don't trust it
+                        return {
+                            "status": "partial_match",
+                            "confidence": 0.35,
+                            "matched_title": page_title,
+                            "open_access_url": url,
+                            "note": f"URL reachable but title mismatch (similarity {int(similarity*100)}%)",
+                            "sources_checked": ["url_verify"]
+                        }
+                else:
+                    # No title to compare - don't trust the URL
+                    return {
+                        "status": "partial_match",
+                        "confidence": 0.30,
+                        "open_access_url": url,
+                        "note": "URL reachable but no title to verify against",
+                        "sources_checked": ["url_verify"]
+                    }
         except Exception:
             continue
 
-    status_str = f"HTTP {last_status}" if last_status else "connection failed"
     return {
         "status": "not_found",
         "confidence": 0.0,
-        "note": f"URL not reachable after multiple attempts ({status_str}). Manual verification required.",
+        "note": "URL not reachable",
         "sources_checked": []
     }
 
@@ -355,9 +305,6 @@ def llm_verify_grey_literature_by_knowledge(
     url_note: str,
 ) -> dict:
     """AI knowledge verification for grey literature."""
-    
-    # Check if German academic (more lenient)
-    is_german = _is_german_academic_venue_for_web(title, authors, "")
     
     prompt = f"""You are verifying an academic or grey literature reference.
 
@@ -374,34 +321,16 @@ CITED REFERENCE:
 FULL REFERENCE TEXT:
 {raw_text[:500]}
 
-RULES:
-1. Use your knowledge of well-known publications:
-   - Well-known academic papers (NLP, ML, AI, CS) cited correctly — REAL
-   - German CS venues (GI, LNI, Informatik Spektrum, BTW, Wirtschaftsinformatik) — REAL
-   - Bitkom, Flexera, Gartner, Forrester, McKinsey, Fraunhofer, German government reports — REAL
-   - Any industry or academic publication that is plausible given the authors and year — lean REAL
-   - Papers with implausible page ranges (e.g. S. 1--999), non-existent journal names — UNCERTAIN or FAKE
-2. If the document series exists but the specific year is slightly off, still lean REAL.
-3. When in doubt about a German academic paper, prefer REAL over UNCERTAIN.
-
 Return ONLY valid JSON:
-{{
-  "verdict": "REAL or FAKE or UNCERTAIN",
-  "confidence": 0.0-1.0,
-  "explanation": "one-sentence reasoning based on your knowledge of the publication. Do not comment on the URL check result."
-}}
+{{"verdict": "REAL or FAKE or UNCERTAIN", "confidence": 0.0-1.0, "explanation": "one-sentence reasoning"}}
 """
     try:
         result = _call_llm_for_verification(prompt)
         verdict = result.get("verdict", "UNCERTAIN").upper()
         confidence = float(result.get("confidence", 0.5))
         
-        # Boost for German venues
-        #if is_german and verdict == "REAL":
-         #   confidence = max(confidence, 0.70)
-        
-        # Lowered threshold from 0.60 to 0.55
-        if verdict == "REAL" and confidence >= 0.55:
+        # STRICT: Only mark as REAL if AI is confident enough
+        if verdict == "REAL" and confidence >= 0.60:
             return {
                 "status": "verified",
                 "web_verified": True,
@@ -416,20 +345,11 @@ Return ONLY valid JSON:
             "status": "suspicious",
             "web_verified": False,
             "confidence": 0.3,
-            "note":  "AI could not verify this reference with sufficient confidence",
+            "note": "AI could not verify this reference with sufficient confidence",
             "sources_checked": ["ai_knowledge"],
         }
         
     except Exception as e:
-        
-        if is_german:
-            return {
-        "status": "suspicious",
-        "web_verified": False,
-        "confidence": 0.3,
-        "note": f"AI verification failed: {str(e)[:100]}",
-        "sources_checked": [],
-            }
         return {
             "status": "suspicious",
             "web_verified": False,
@@ -455,35 +375,40 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
         return {"status": api_status, "web_verified": False, "note": "No title to search for"}
 
     is_grey, grey_reason = _is_grey_literature(entry)
-    is_german = _is_german_academic_venue_for_web(title, authors, 
-                                                   entry.get("journal", "") + " " + entry.get("booktitle", ""))
 
-    # STEP 1: URL check
-    url_note = "No URL provided"
+    # ── TRY URL VERIFICATION FIRST ──
+    # CRITICAL: This will ONLY return "verified" if the page title matches
+    url_result = None
     if original_url and original_url.startswith("http"):
-        try:
-            resp = requests.head(original_url, timeout=10, allow_redirects=True)
-            if resp.status_code == 200:
-                return {
-                    "status": "verified",
-                    "web_verified": True,
-                    "confidence": 0.95,
-                    "matched_title": title,
-                    "open_access_url": original_url,
-                    "note": "URL verified (HTTP 200)",
-                    "sources_checked": ["url_verify"],
-                }
-            else:
-                url_note = f"URL returned HTTP {resp.status_code}"
-        except requests.exceptions.Timeout:
-            url_note = "URL timeout"
-        except requests.exceptions.ConnectionError:
-            url_note = "URL connection failed"
-        except Exception as e:
-            url_note = f"URL error: {str(e)[:50]}"
+        url_result = verify_grey_literature_by_url_direct(original_url, title)
+        if url_result and url_result.get("status") == "verified":
+            return {
+                "status": "verified",
+                "web_verified": True,
+                "confidence": url_result.get("confidence", 0.7),
+                "matched_title": url_result.get("matched_title", title),
+                "open_access_url": original_url,
+                "note": url_result.get("note", "URL verified with title match"),
+                "sources_checked": ["url_verify"],
+            }
+        # NEW FIX v8.5: If URL check detected it's FAKE, return immediately
+        if url_result and url_result.get("status") == "fake":
+            return {
+                "status": "fake",
+                "web_verified": False,
+                "confidence": 0.95,
+                "note": url_result.get("note", "URL is a placeholder/fake domain"),
+                "sources_checked": ["url_pattern_check"],
+            }
 
-    # STEP 2a: Grey literature → AI knowledge check
+    # ── GREY LITERATURE → AI knowledge check ──
     if is_grey:
+        url_note = "No URL provided"
+        if url_result:
+            url_note = url_result.get("note", "URL fetch attempted")
+        elif original_url:
+            url_note = "URL provided but fetch failed"
+        
         return llm_verify_grey_literature_by_knowledge(
             raw_text=raw_text,
             title=title,
@@ -493,7 +418,7 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
             url_note=url_note,
         )
 
-    # STEP 2b: Academic paper → DuckDuckGo web search + LLM analysis
+    # ── ACADEMIC PAPER → Web search + LLM ──
     web_results = []
     try:
         web_results = search_web_for_paper(title, authors)
@@ -502,28 +427,32 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
 
     if web_results:
         result = llm_verify_with_web_search(title, authors, year, web_results)
-        # Lowered threshold from 0.70 to 0.60, and 0.55 for German
-        #real_threshold = 0.55 if is_german else 0.60
         if result.verdict == "REAL" and result.confidence >= 0.60:
-            return {
-                "status": "verified",
-                "web_verified": True,
-                "confidence": result.confidence,
-                "matched_title": result.found_title or title,
-                "open_access_url": result.found_url or original_url or None,
-                "note": f"Web search confirmed: {result.explanation}",
-                "sources_checked": ["web_search", "llm_analysis"],
-            }
-        elif result.verdict == "FAKE" and result.confidence >= 0.75:
-            return {
-                "status": "suspicious",
-                "web_verified": False,
-                "confidence": result.confidence,
-                "note": f"Web search found no evidence: {result.explanation}",
-                "sources_checked": ["web_search", "llm_analysis"],
-            }
+            # NEW: Check if the matched title is actually similar to what was cited
+            match_sim = _title_similarity_simple(title, result.found_title or title)
+            if match_sim < 0.90:
+                # Title doesn't match — don't trust this result
+                print(f"[verify_with_web_search] Web search title mismatch: "
+                      f"cited='{title}' vs found='{result.found_title}' ({match_sim*100:.0f}%)")
+                # Don't return verified; continue to fallback
+            else:
+                return {
+                    "status": "verified",
+                    "web_verified": True,
+                    "confidence": result.confidence * match_sim,  # Reduce confidence by title match quality
+                    "matched_title": result.found_title or title,
+                    "open_access_url": result.found_url or original_url or None,
+                    "note": f"Web search confirmed: {result.explanation}",
+                    "sources_checked": ["web_search", "llm_analysis"],
+                }
 
-    # STEP 2c: Academic fallback → AI knowledge check
+    # ── FALLBACK → AI knowledge check ──
+    url_note = "No URL provided"
+    if url_result:
+        url_note = url_result.get("note", "URL fetch attempted")
+    elif original_url:
+        url_note = "URL provided but fetch failed"
+    
     return llm_verify_grey_literature_by_knowledge(
         raw_text=raw_text,
         title=title,

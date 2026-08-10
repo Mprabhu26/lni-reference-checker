@@ -106,12 +106,98 @@ def parse_bibliography(bib_text: str) -> list:
         return []
 
     ANY_KEY = re.compile(r'(?:^|\n)\s*\[([^\]\n]{1,30})\]', re.MULTILINE)
-    positions = [(m.start(), m.group(1), m.end()) for m in ANY_KEY.finditer(bib_text)]
+    bracket_positions = [(m.start(), m.group(1), m.end(), True)
+                          for m in ANY_KEY.finditer(bib_text)]
+
+    # FIX v8.3: Malformed entries (missing LNI brackets entirely) were being
+    # silently dropped or merged into the previous/next bracketed entry,
+    # which caused real references to disappear from the bibliography and
+    # falsely show up as "cited but missing". Detect unbracketed entry
+    # starts too: a line/segment beginning with a bare key-like token
+    # followed by " - ", ":", or "(" and author-like text (a capitalized
+    # surname), e.g. "LBH15 - LeCun, Yann and ...", "adam_optimizer_2014:
+    # Kingma, D.P...", or a line starting directly with "Surname, Initial."
+    _LNI_MARKER_WORDS = {
+        'in', 'vol', 'volume', 'no', 's', 'pp', 'p', 'hrsg', 'eds', 'ed',
+        'jg', 'nr', 'band', 'heft', 'issue', 'stand', 'doi', 'isbn', 'and',
+    }
+    UNBRACKETED_KEY = re.compile(
+        r'(?:^|\n|;\s|\.\s)\s*'
+        r'([A-Za-z][A-Za-z0-9_]{2,30})\s*[-:]\s*'
+        r'(?=[A-Z][a-zA-Z]*(?:\s[A-Z][a-zA-Z]*)?,\s)',
+        re.MULTILINE,
+    )
+    # FIX v8.4: Catch line-start keys followed by ( or [ without : or -
+    # Examples: "APA20 (Author...", "IEEE21 [...". These are valid but not
+    # caught by the original UNBRACKETED_KEY pattern which requires : or -.
+    LINESTART_KEY = re.compile(
+        r'(?:^|\n)\s*([A-Z][A-Z0-9]+)\s+(?=[\(\[])',
+        re.MULTILINE,
+    )
+    UNBRACKETED_AUTHOR_START = re.compile(
+        r'(?:^|\n)\s*([A-Z][a-zA-Z]+,\s*[A-Z]\.(?:\s*[A-Z]\.)?,?\s*(?:&|and|,)\s)',
+        re.MULTILINE,
+    )
+
+    unbracketed_positions = []
+
+    raw_unbracketed_key = [(m.start(1), m.group(1), m.end(), False)
+                            for m in UNBRACKETED_KEY.finditer(bib_text)
+                            if m.group(1).lower() not in _LNI_MARKER_WORDS]
+    # Add line-start keys
+    raw_linestart_key = [(m.start(1), m.group(1), m.end(), False)
+                          for m in LINESTART_KEY.finditer(bib_text)]
+    
+    raw_unbracketed_author = []
+    for m in UNBRACKETED_AUTHOR_START.finditer(bib_text):
+        start = m.start(1)
+        if any(abs(c[0] - start) < 5 for c in raw_unbracketed_key):
+            continue
+        window = bib_text[start:start + 200]
+        surname_m = re.match(r'([A-Z][a-zA-Z]+)', window)
+        year_m = re.search(r'\((\d{4})\)|\b(\d{4})\b', window)
+        surname = surname_m.group(1) if surname_m else "Unknown"
+        year = (year_m.group(1) or year_m.group(2))[-2:] if year_m else "??"
+        raw_unbracketed_author.append((start, f"{surname[:2]}{year}", start, False))
+
+    all_candidates = sorted(raw_unbracketed_key + raw_linestart_key + raw_unbracketed_author, key=lambda p: p[0])
+
+    # A bracketed entry's own text ends at the next paragraph break (blank
+    # line) after its key, or at the next bracket, whichever comes first.
+    # Candidates found before that boundary are genuinely part of the
+    # bracketed entry's running prose (e.g. "...Nature, Vol. 521...") and
+    # must be excluded; candidates after it are separate, unrelated
+    # (malformed) entries and must be kept.
+    PARA_BREAK = re.compile(r'(?:\n\s*\n)|(?:[.\)]\s*\n(?=[A-Za-z]))')
+
+    def _entry_own_text_end(bracket_key_end, next_bracket_start):
+        m = PARA_BREAK.search(bib_text, bracket_key_end, next_bracket_start)
+        return m.start() if m else next_bracket_start
+
+    bracket_own_spans = []
+    for i, bp in enumerate(bracket_positions):
+        next_bracket_start = bracket_positions[i + 1][0] if i + 1 < len(bracket_positions) else len(bib_text)
+        # An unbracketed candidate belongs to THIS bracketed entry's own
+        # text only if there's no newline between the bracket's key and
+        # the candidate (still mid-sentence / same wrapped line). Once a
+        # newline is crossed, treat any candidate as a new, separate
+        # (possibly malformed) entry rather than assuming it's still part
+        # of this entry's prose.
+        newline_m = re.search(r'\n', bib_text[bp[2]:next_bracket_start])
+        own_end = bp[2] + newline_m.start() if newline_m else next_bracket_start
+        bracket_own_spans.append((bp[0], own_end))
+
+    for start, key, end, was_bracketed in all_candidates:
+        if any(s <= start < e for s, e in bracket_own_spans):
+            continue
+        unbracketed_positions.append((start, key, end, was_bracketed))
+
+    positions = sorted(bracket_positions + unbracketed_positions, key=lambda p: p[0])
     if not positions:
         return []
 
     entries = []
-    for i, (chunk_start, key, body_start) in enumerate(positions):
+    for i, (chunk_start, key, body_start, was_bracketed) in enumerate(positions):
         body_end = positions[i + 1][0] if i + 1 < len(positions) else len(bib_text)
         raw_body = bib_text[body_start:body_end]
         raw = re.sub(r'\s+', ' ', raw_body).strip()
@@ -129,6 +215,12 @@ def parse_bibliography(bib_text: str) -> list:
             _classify_and_parse(entry, raw)
             _check_completeness(entry)
             _validate_key_vs_metadata(entry)
+            if not was_bracketed:
+                entry.needs_ai_parsing = True
+                entry.completeness_issues.append(
+                    "Entry is missing LNI-required [Key] brackets — "
+                    "key was inferred, not stated in the source."
+                )
             entries.append(entry)
 
     return entries
@@ -582,6 +674,19 @@ def _check_completeness(entry: BibEntry) -> None:
     entry_type = entry.entry_type or "unknown"
     lookup_type = "proceedings" if entry_type == "inproceedings" else entry_type
     required = REQUIRED_FIELDS.get(lookup_type, REQUIRED_FIELDS["unknown"])
+
+    # FIX: an entry whose type could not be classified (article/book/
+    # proceedings/etc.) is itself an LNI violation — LNI requires the
+    # venue field (journal/booktitle/publisher) needed to determine type.
+    # Previously "unknown" silently fell back to the loosest required-field
+    # list (authors/title/year only), letting malformed entries pass as
+    # "Correct Format" whenever those three happened to be present.
+    if entry_type == "unknown":
+        entry.completeness_issues.append(
+            "Entry type could not be determined (no journal, booktitle, "
+            "or publisher field found) — LNI requires a classifiable "
+            "venue for every entry."
+        )
 
     for field_name in required:
         if not getattr(entry, field_name, None):

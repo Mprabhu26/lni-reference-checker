@@ -1,8 +1,13 @@
 """
-Local Academic Cache — v2
+Local Academic Cache — v2.2
 Stores ONLY confirmed-real papers. Grows automatically as references are verified.
 Uses zlib compression on title/abstract blobs to stay lightweight over time.
 SQLite WAL mode for safe concurrent access.
+
+FIXES v2.2:
+  - REMOVED artificial 0.95 confidence floor — let caller decide when to write
+  - Verify URLs are reachable before caching (no dead links)
+  - Only confirmed-real papers stored (no SUSPICIOUS/FAKE)
 """
 
 import sqlite3
@@ -113,8 +118,9 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
                   only_if_real: bool = True):
     """
     Persist a paper to the local DB.
-    By default (only_if_real=True) only confirmed-real papers are written —
-    suspicious / FAKE results are never stored.
+    - Caller controls confidence threshold (API/checker.py handles that logic)
+    - URLs are validated (must be reachable before caching)
+    - only_if_real=True: Only confirmed-real papers stored
     """
     if not title or not title.strip():
         return
@@ -129,6 +135,19 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
         m = re.search(r'\d{4}', str(year))
         if m:
             year_int = int(m.group())
+
+    # Validate URLs before caching (no dead links)
+    url_to_cache = url
+    if url and url.strip().startswith("http"):
+        import requests
+        try:
+            resp = requests.head(url, timeout=5, allow_redirects=True)
+            if resp.status_code not in (200, 301, 302, 303, 307, 308):
+                print(f"[local_db] Rejecting URL cache: HTTP {resp.status_code} for {url[:50]}")
+                url_to_cache = ""
+        except Exception as e:
+            print(f"[local_db] URL validation failed: {e}, skipping cache URL")
+            url_to_cache = ""
 
     conn = sqlite3.connect(str(CACHE_DB))
     conn.execute("PRAGMA journal_mode=WAL")
@@ -149,7 +168,7 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
             norm,
             _compress(title[:500]),
             _compress(authors[:500]) if authors else None,
-            year_int, doi, url, source,
+            year_int, doi, url_to_cache, source,
             round(confidence, 4), now, now,
         ))
         conn.commit()

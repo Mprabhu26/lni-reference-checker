@@ -607,7 +607,7 @@ function renderResults(data) {
   const orphan = (data.cross_check?.in_bib_not_cited || []).length;
   const fake = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length;
   const susp = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS').length;
-  const bib_issues = (data.bibliography || []).filter(e => e.completeness_issues?.length).length;
+  const bib_issues = (data.bibliography || []).filter(e => e.completeness_issues?.length || e.key_consistent === false).length;
   setBadge('tabBibBadge', bib_issues, bib_issues ? 'orange' : '');
   setBadge('tabXBadge', missing + orphan, (missing + orphan) ? 'red' : '');
   setBadge('tabVerBadge', fake + susp, fake ? 'red' : susp ? 'orange' : '');
@@ -634,15 +634,19 @@ function setBadge(id, n, cls) {
 function renderBibTab(data) {
   const bib = data.bibliography || [];
   const issues = bib.filter(e => e.completeness_issues?.length);
-  const clean = bib.filter(e => !e.completeness_issues?.length);
-  let html = `<div class="tab-description">Each bibliography entry is checked against LNI formatting rules — required fields (author, title, year, pages, etc.) are validated per entry type. Entries with missing or malformed fields are flagged. <strong>Note:</strong> "Correct format" means the entry is structurally complete — it does not indicate whether the referenced paper actually exists.</div>
+  const rest = bib.filter(e => !e.completeness_issues?.length);
+  const flagged = rest.filter(e => e.key_consistent === false);
+  const clean = rest.filter(e => e.key_consistent !== false);
+  let html = `<div class="tab-description">Each bibliography entry is checked against LNI formatting rules — required fields (author, title, year, pages, etc.) are validated per entry type. Entries with missing or malformed fields are flagged. <strong>Note:</strong> "Correct format" means the entry is structurally complete — it does not indicate whether the referenced paper actually exists. Entries whose citation key doesn't match the author/year (e.g. [AB20] but authors/year suggest otherwise) are format-compliant per LNI rules but are called out separately for review, since key mnemonics have no single fixed convention.</div>
   <div class="stat-bar">
     <div class="stat-box"><div class="value">${bib.length}</div><div class="label">Total Entries</div></div>
     <div class="stat-box ${issues.length ? 'orange' : 'green'}"><div class="value">${issues.length}</div><div class="label">With Issues</div></div>
+    <div class="stat-box ${flagged.length ? 'orange' : 'green'}"><div class="value">${flagged.length}</div><div class="label">Key Mismatch (Review)</div></div>
     <div class="stat-box green"><div class="value">${clean.length}</div><div class="label">Correct Format</div></div>
   </div>
   <div class="search-bar"><input type="text" placeholder="Filter entries…" oninput="filterBib(this.value)"></div>`;
   if (issues.length) html += `<div class="section-heading">⚠ Entries with issues (${issues.length})</div>` + issues.map(e => bibCard(e)).join('');
+  if (flagged.length) html += `<div class="section-heading">🔑 Key mismatch — review recommended (${flagged.length})</div>` + flagged.map(e => bibCard(e)).join('');
   if (clean.length) html += `<div class="section-heading">✓ Correct format (${clean.length})</div>` + clean.map(e => bibCard(e)).join('');
   document.getElementById('bibContent').innerHTML = html;
 }

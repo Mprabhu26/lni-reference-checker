@@ -30,6 +30,8 @@ import re
 import time
 import threading
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from ai_checker import _ai_available
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -569,6 +571,38 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
     return None
 
 
+_OPENALEX_SESSION: Optional[requests.Session] = None
+_OPENALEX_SESSION_LOCK = threading.Lock()
+
+
+def _get_openalex_session() -> requests.Session:
+    """
+    Shared, connection-pooled session for OpenAlex with retry-on-failure
+    baked in at the transport layer. Fixes SSLEOFError / connection-reset
+    storms that happen when many worker threads each open a brand-new
+    HTTPS connection to the same host at once (no pooling, no retries).
+    """
+    global _OPENALEX_SESSION
+    if _OPENALEX_SESSION is not None:
+        return _OPENALEX_SESSION
+    with _OPENALEX_SESSION_LOCK:
+        if _OPENALEX_SESSION is None:
+            s = requests.Session()
+            retry = Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=[429, 500, 502, 503, 504],
+                connect=3,
+                read=3,
+                allowed_methods=frozenset(["GET"]),
+            )
+            adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4)
+            s.mount("https://", adapter)
+            s.mount("http://", adapter)
+            _OPENALEX_SESSION = s
+    return _OPENALEX_SESSION
+
+
 def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
     """OpenAlex — free, no API key required, 100k req/day, very reliable."""
     if not entry.title:
@@ -579,9 +613,10 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
     if mailto:
         params["mailto"] = mailto
     try:
-        resp = requests.get(
+        session = _get_openalex_session()
+        resp = session.get(
             "https://api.openalex.org/works",
-            params=params, timeout=10,
+            params=params, timeout=15,
             headers={"User-Agent": "LNI-Checker/8.1"})
         if resp.status_code != 200:
             print(f"OpenAlex {resp.status_code} for {entry.key}")
@@ -617,6 +652,11 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
                 )
     except requests.exceptions.Timeout:
         print(f"OpenAlex timeout for {entry.key}")
+    except requests.exceptions.SSLError as e:
+        print(f"OpenAlex SSL error for {entry.key} (network/proxy likely dropped the "
+              f"connection under concurrent load — retries exhausted): {e}")
+    except requests.exceptions.ConnectionError as e:
+        print(f"OpenAlex connection error for {entry.key}: {e}")
     except Exception as e:
         print(f"OpenAlex error for {entry.key}: {e}")
     return None
@@ -851,6 +891,22 @@ def extract_citations_from_body(body: str) -> set:
             k = k.strip()
             if k:
                 keys.add(k)
+
+    # FIX: the strict pattern above requires a 2-digit year suffix, so keys
+    # like [LeCun2015] or [Vaswani2017] (4-digit year — itself an LNI format
+    # violation, but a violation that belongs in the format checker, not
+    # here) were never matched. That silently made real in-text citations
+    # invisible to cross-checking, wrongly reporting the matching
+    # bibliography entry as "never cited" even though it plainly is. Catch
+    # any generic bracketed alphanumeric key (letters + digits, optional
+    # trailing letter/digits) so cross-referencing works regardless of
+    # whether the key itself follows strict LNI convention.
+    for m in re.finditer(
+        r'\[([A-Za-z][A-Za-z0-9+]{0,40})\]', body_clean
+    ):
+        k = m.group(1).strip()
+        if k and not k.isdigit():
+            keys.add(k)
     
     # LaTeX citations
     for m in re.finditer(r'\\(?:cite|citet|citep|Cite)\{([^}]+)\}', body_clean):
@@ -880,7 +936,7 @@ def extract_citation_contexts(body: str) -> List[dict]:
     body_clean = re.sub(r'\[([A-Za-z0-9\s\n,]+)\]', normalize_brackets, body)
     
     for m in re.finditer(
-        r'(.{0,80})(\[[A-Z][A-Za-z+]{0,5}\d{2}[^\]]*\]|\[\d[\d,\s\-]*\])(.{0,80})',
+        r'(.{0,80})(\[[A-Za-z][A-Za-z0-9+]{0,40}\]|\[\d[\d,\s\-]*\])(.{0,80})',
         body_clean,
     ):
         pre, cite, post = m.group(1), m.group(2), m.group(3)
@@ -1178,25 +1234,38 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
     # Strict match with lower thresholds for German venues
         # Strict match - same thresholds for everyone
     if api_result and api_result.status == "verified":
-        # Same confidence threshold for everyone
-        if api_result.confidence >= 0.80:
-            year_ok = True
-            if entry.year and api_result.corrected_year:
-                try:
-                    # Allow 1-year difference for everyone
-                    year_diff = abs(int(entry.year) - int(api_result.corrected_year))
-                    year_ok = year_diff <= 1
-                except (ValueError, TypeError):
-                    year_ok = True
+    # ── CRITICAL: Check title similarity is >95% (not just a fuzzy match) ──
+        title_sim = _title_similarity(entry.title or "", api_result.matched_title or "")
+    if title_sim < 0.95:
+        # Title doesn't match closely enough — don't verify this as REAL
+        print(f"[verify_reference] Title mismatch for {entry.key}: "
+              f"cited='{entry.title}' vs found='{api_result.matched_title}' ({title_sim*100:.1f}%)")
+        api_result = None  # Reset to continue to web search fallback
+    
+    # Same confidence threshold for everyone (only if title matches)
+    elif api_result.confidence >= 0.80:
+        year_ok = True
+        if entry.year and api_result.corrected_year:
+            try:
+                # Allow 1-year difference for everyone
+                year_diff = abs(int(entry.year) - int(api_result.corrected_year))
+                year_ok = year_diff <= 1
+            except (ValueError, TypeError):
+                year_ok = True
+        # ... rest of the function continues ...
 
             author_ok = True
-            # Only check author overlap if BOTH entry AND api have authors
             if entry.authors and api_result.correct_authors:
                 overlap = author_overlap_score(entry.authors, api_result.correct_authors)
-                if overlap is not None and overlap < 0.45:
-                    # Reject only if there's explicit MISMATCH evidence
+                if overlap is not None and overlap < 0.55:
                     author_ok = False
-            # If either missing, assume OK (no evidence of mismatch)
+            elif entry.authors and not api_result.correct_authors:
+                # API confirmed the title/DOI but returned no author data at all —
+                # cannot rule out a mismatched/fabricated author list attached to
+                # a real identifier (e.g. a scavenged/reused DOI). Require a
+                # near-certain title match instead of silently accepting.
+                if api_result.confidence < 0.95:
+                    author_ok = False
 
             if year_ok and author_ok:
         
