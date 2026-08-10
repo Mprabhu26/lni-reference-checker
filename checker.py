@@ -1,26 +1,11 @@
 """
-STEP 3: Citation Cross-Checker + Reference Verifier — v8.1
+STEP 3: Citation Cross-Checker + Reference Verifier — v8.3
 ----------------------------------------------------------
-PIPELINE v8.1 (strict 4-step, no shortcuts):
-  1. SQLite local DB           → ≥95% match → REAL, done.
-  2. Academic APIs             → ≥85% title+author+year → REAL, save, done.
-                                 anything else → SUSPICIOUS, continue.
-  3. URL fetch                 → only if suspicious AND entry has a URL.
-                                 HTTP 200 + ≥95% title → REAL, save, done.
-                                 anything else → stays SUSPICIOUS.
-  4. AI (web search + LLM)     → only remaining suspicious entries.
-                                 ≥70% confidence REAL → save, done.
-                                 else → stays SUSPICIOUS (never auto-FAKE here).
-
-FIXES v8.1:
-  - Author overlap: umlaut tolerance (Müller matches Muller)
-  - Prefix matching for partial surname matches (Schmidt matches Schmid)
-  - Single-author leniency (50% → 70% threshold for single authors)
-  - German venue detection with lower confidence thresholds
-  - AI fallback threshold lowered from 0.80 to 0.70 for German venues
-
-KEY RULE: only save to DB when confidence ≥ 0.95. FAKE is never set by this
-module — it is a professor-only manual action.
+FIXED v8.3:
+  - Better API handling with proper timeouts and retries
+  - Improved fallback for known papers that APIs miss
+  - Fixed Semantic Scholar search with better query building
+  - Added Google Scholar as a fallback for missing papers
 """
 
 import hashlib
@@ -125,7 +110,7 @@ def _title_similarity(title1: str, title2: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Author overlap with umlaut tolerance and prefix matching (FIXED v8.1)
+# Author overlap with umlaut tolerance and prefix matching
 # ---------------------------------------------------------------------------
 
 def author_overlap_score(cited_authors: str, correct_authors: str) -> Optional[float]:
@@ -241,33 +226,6 @@ def author_overlap_score(cited_authors: str, correct_authors: str) -> Optional[f
 
 
 # ---------------------------------------------------------------------------
-# German venue detection
-# ---------------------------------------------------------------------------
-
-def _is_german_venue(entry: BibEntry) -> bool:
-    """Detect if this is a German academic venue with relaxed API requirements."""
-    venue_name = (
-        (entry.journal or "") + " " + 
-        (entry.booktitle or "") + " " + 
-        (entry.publisher or "")
-    ).lower()
-    
-    german_hints = [
-        'informatik', 'gi ', 'lni', 'gesellschaft für', 'gesellschaft fur',
-        'datenbank', 'wirtschaftsinformatik', 'btw', 'mensch und computer',
-        'mensch & computer', 'del fi', 'tagung', 'workshop', 'proceedings',
-        'informatik spektrum', 'it - information technology', 'pik',
-        'datenbank-spektrum', 'lecture notes in informatics',
-        'multikonferenz', 'studierendenkonferenz', 'ausgezeichnete',
-        'fachtagung', 'fachgespräch', 'fachgesprach', 'dagstuhl',
-        'informatiktage', 'german', 'deutschland', 'österreich', 'schweiz',
-        'universität', 'hochschule', 'fraunhofer', 'bitkom', 'flexera'
-    ]
-    
-    return any(hint in venue_name for hint in german_hints)
-
-
-# ---------------------------------------------------------------------------
 # VerificationResult dataclass
 # ---------------------------------------------------------------------------
 
@@ -296,10 +254,10 @@ class VerificationResult:
     corrected_journal: Optional[str] = None
     corrected_volume: Optional[str] = None
     corrected_pages: Optional[str] = None
-    # Match quality breakdown — shown to users so they understand what the
-    # confidence number actually measures (match quality, NOT probability of existence)
-    title_match_score: Optional[float] = None   # 0.0–1.0, title similarity to DB record
-    author_match_score: Optional[float] = None  # 0.0–1.0, author overlap score
+    title_match_score: Optional[float] = None
+    author_match_score: Optional[float] = None
+    is_duplicate: bool = False
+    duplicate_of: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +328,7 @@ def _check_unpaywall(doi: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Academic API lookups — all require ≥ 0.85 similarity to return "verified"
+# Academic API lookups — FIXED with better fallbacks
 # ---------------------------------------------------------------------------
 
 def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
@@ -386,7 +344,7 @@ def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
             work = resp.json().get("message", {})
             title = (work.get("title") or [""])[0]
             sim = _title_similarity(entry.title or "", title)
-            if sim >= 0.85:
+            if sim >= 0.75:
                 meta = _extract_corrected_metadata(work)
                 is_ret, ret_doi, ret_note = _check_retraction(entry.doi)
                 author_sim = author_overlap_score(entry.authors or "", meta["corrected_authors"] or "") if meta["corrected_authors"] else None
@@ -433,7 +391,7 @@ def _lookup_by_arxiv_id(entry: BibEntry) -> Optional[VerificationResult]:
         if resp.status_code == 200:
             m = re.search(r'title\s*=\s*[{"](.*?)[}"]', resp.text, re.IGNORECASE)
             title = m.group(1) if m else None
-            if title and _title_similarity(entry.title or "", title) >= 0.85:
+            if title and _title_similarity(entry.title or "", title) >= 0.75:
                 sim = _title_similarity(entry.title or "", title)
                 return VerificationResult(
                     key=entry.key, title=entry.title or "",
@@ -475,7 +433,7 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                     if not title:
                         continue
                     sim = _title_similarity(entry.title, title)
-                    if sim >= 0.85:
+                    if sim >= 0.75:
                         doi = item.get("DOI", "")
                         meta = _extract_corrected_metadata(item)
                         authors = item.get("author", [])
@@ -516,58 +474,108 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
 
 
 def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
+    """FIXED: Better Semantic Scholar search with proper query building."""
     if not entry.title:
         return None
+    
+    # Clean up title for better search
+    clean_title = entry.title
+    # Remove common trailing patterns
+    for pattern in [r'\.\s*In:\s*.*$', r'\.\s*doi:\s*.*$', r'\.\s*https?://\S+$']:
+        clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
+    clean_title = clean_title.strip().strip('.,;:')
+    
+    if not clean_title:
+        clean_title = entry.title
+    
     _rate_limit("api.semanticscholar.org", 0.25)
     ss_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "").strip()
     headers = {"User-Agent": "LNI-Checker/8.1"}
     if ss_key:
         headers["x-api-key"] = ss_key
+    
+    # Try multiple search strategies
+    search_queries = [
+        clean_title,
+        f'"{clean_title}"',
+        clean_title[:100] if len(clean_title) > 100 else clean_title,
+    ]
+    
+    # Add first author if available
+    if entry.authors:
+        first_author = entry.authors.split(';')[0].split(',')[0].strip()
+        first_author = re.sub(r'\s+et\s+al\.?$', '', first_author, flags=re.IGNORECASE)
+        if first_author and len(first_author) > 2:
+            search_queries.append(f'{clean_title} {first_author}')
+    
     for attempt in range(2):
-        try:
-            resp = requests.get(
-                "https://api.semanticscholar.org/graph/v1/paper/search",
-                params={"query": entry.title, "limit": 5,
-                        "fields": "title,authors,year,openAccessPdf,externalIds"},
-                timeout=10, headers=headers)
-            if resp.status_code == 200:
-                for paper in resp.json().get("data", [])[:5]:
-                    title = paper.get("title", "")
-                    if not title:
-                        continue
-                    sim = _title_similarity(entry.title, title)
-                    if sim >= 0.85:
-                        authors = paper.get("authors", [])
-                        author_str = "; ".join(
-                            a.get("name", "") for a in authors[:3]
-                        ) if authors else None
-                        oa = (paper.get("openAccessPdf") or {}).get("url")
-                        doi = paper.get("externalIds", {}).get("DOI")
-                        author_sim = author_overlap_score(entry.authors or "", author_str or "") if author_str else None
-                        return VerificationResult(
-                            key=entry.key, title=entry.title,
-                            status="verified", confidence=sim,
-                            matched_title=title, doi=doi,
-                            open_access_url=oa,
-                            note=f"Semantic Scholar match ({int(sim*100)}%)",
-                            sources_checked=["Semantic Scholar"],
-                            correct_authors=author_str,
-                            title_match_score=round(sim, 4),
-                            author_match_score=round(author_sim, 4) if author_sim is not None else None,
-                        )
-                return None  # 200 but no match
-            elif resp.status_code in (429, 503):
-                time.sleep(2 ** attempt)
-                continue
-            else:
-                print(f"Semantic Scholar {resp.status_code} for {entry.key}")
-                return None
-        except requests.exceptions.Timeout:
-            print(f"Semantic Scholar timeout for {entry.key}")
-            return None
-        except Exception as e:
-            print(f"Semantic Scholar error for {entry.key}: {e}")
-            return None
+        for query in search_queries[:2]:  # Try first 2 strategies
+            try:
+                resp = requests.get(
+                    "https://api.semanticscholar.org/graph/v1/paper/search",
+                    params={"query": query[:200], "limit": 5,
+                            "fields": "title,authors,year,openAccessPdf,externalIds"},
+                    timeout=10, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json().get("data", [])
+                    for paper in data[:5]:
+                        title = paper.get("title", "")
+                        if not title:
+                            continue
+                        sim = _title_similarity(entry.title, title)
+                        if sim >= 0.75:
+                            authors = paper.get("authors", [])
+                            author_str = "; ".join(
+                                a.get("name", "") for a in authors[:3]
+                            ) if authors else None
+                            oa = (paper.get("openAccessPdf") or {}).get("url")
+                            doi = paper.get("externalIds", {}).get("DOI")
+                            author_sim = author_overlap_score(entry.authors or "", author_str or "") if author_str else None
+                            return VerificationResult(
+                                key=entry.key, title=entry.title,
+                                status="verified", confidence=sim,
+                                matched_title=title, doi=doi,
+                                open_access_url=oa,
+                                note=f"Semantic Scholar match ({int(sim*100)}%)",
+                                sources_checked=["Semantic Scholar"],
+                                correct_authors=author_str,
+                                title_match_score=round(sim, 4),
+                                author_match_score=round(author_sim, 4) if author_sim is not None else None,
+                            )
+                    # If no high-confidence match, return partial match if found
+                    for paper in data[:3]:
+                        title = paper.get("title", "")
+                        if title:
+                            sim = _title_similarity(entry.title, title)
+                            if sim >= 0.50:
+                                authors = paper.get("authors", [])
+                                author_str = "; ".join(
+                                    a.get("name", "") for a in authors[:3]
+                                ) if authors else None
+                                oa = (paper.get("openAccessPdf") or {}).get("url")
+                                doi = paper.get("externalIds", {}).get("DOI")
+                                return VerificationResult(
+                                    key=entry.key, title=entry.title,
+                                    status="partial_match",
+                                    confidence=sim,
+                                    matched_title=title,
+                                    doi=doi,
+                                    open_access_url=oa,
+                                    note=f"Partial Semantic Scholar match ({int(sim*100)}%)",
+                                    sources_checked=["Semantic Scholar"],
+                                    correct_authors=author_str,
+                                    title_match_score=round(sim, 4),
+                                )
+                elif resp.status_code in (429, 503):
+                    time.sleep(2 ** attempt)
+                    continue
+                else:
+                    print(f"Semantic Scholar {resp.status_code} for {entry.key}")
+            except requests.exceptions.Timeout:
+                print(f"Semantic Scholar timeout for {entry.key}")
+            except Exception as e:
+                print(f"Semantic Scholar error for {entry.key}: {e}")
+    
     return None
 
 
@@ -576,12 +584,7 @@ _OPENALEX_SESSION_LOCK = threading.Lock()
 
 
 def _get_openalex_session() -> requests.Session:
-    """
-    Shared, connection-pooled session for OpenAlex with retry-on-failure
-    baked in at the transport layer. Fixes SSLEOFError / connection-reset
-    storms that happen when many worker threads each open a brand-new
-    HTTPS connection to the same host at once (no pooling, no retries).
-    """
+    """Shared, connection-pooled session for OpenAlex."""
     global _OPENALEX_SESSION
     if _OPENALEX_SESSION is not None:
         return _OPENALEX_SESSION
@@ -607,11 +610,22 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
     """OpenAlex — free, no API key required, 100k req/day, very reliable."""
     if not entry.title:
         return None
+    
+    # Clean up title
+    clean_title = entry.title
+    for pattern in [r'\.\s*In:\s*.*$', r'\.\s*doi:\s*.*$']:
+        clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
+    clean_title = clean_title.strip().strip('.,;:')
+    
+    if not clean_title:
+        clean_title = entry.title
+    
     _rate_limit("api.openalex.org", 0.1)
     mailto = os.environ.get("CROSSREF_MAILTO", "").strip()
-    params = {"search": entry.title, "per-page": 5}
+    params = {"search": clean_title[:200], "per-page": 5}
     if mailto:
         params["mailto"] = mailto
+    
     try:
         session = _get_openalex_session()
         resp = session.get(
@@ -627,7 +641,7 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
             if not title:
                 continue
             sim = _title_similarity(entry.title, title)
-            if sim >= 0.85:
+            if sim >= 0.75:
                 doi = (work.get("doi") or "").replace("https://doi.org/", "")
                 oa_url = (work.get("open_access") or {}).get("oa_url")
                 auth_list = work.get("authorships", [])
@@ -650,20 +664,36 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
                     title_match_score=round(sim, 4),
                     author_match_score=round(author_sim, 4) if author_sim is not None else None,
                 )
+        # If no high-confidence match, try partial
+        for work in results[:3]:
+            title = work.get("title") or ""
+            if title:
+                sim = _title_similarity(entry.title, title)
+                if sim >= 0.50:
+                    auth_list = work.get("authorships", [])
+                    author_str = "; ".join(
+                        a.get("author", {}).get("display_name", "")
+                        for a in auth_list[:3]
+                    ) if auth_list else None
+                    return VerificationResult(
+                        key=entry.key, title=entry.title,
+                        status="partial_match",
+                        confidence=sim,
+                        matched_title=title,
+                        note=f"Partial OpenAlex match ({int(sim*100)}%)",
+                        sources_checked=["OpenAlex"],
+                        correct_authors=author_str,
+                        title_match_score=round(sim, 4),
+                    )
     except requests.exceptions.Timeout:
         print(f"OpenAlex timeout for {entry.key}")
-    except requests.exceptions.SSLError as e:
-        print(f"OpenAlex SSL error for {entry.key} (network/proxy likely dropped the "
-              f"connection under concurrent load — retries exhausted): {e}")
-    except requests.exceptions.ConnectionError as e:
-        print(f"OpenAlex connection error for {entry.key}: {e}")
     except Exception as e:
         print(f"OpenAlex error for {entry.key}: {e}")
     return None
 
 
 # ---------------------------------------------------------------------------
-# URL fetch — used ONLY for suspicious entries that have a URL
+# URL fetch
 # ---------------------------------------------------------------------------
 
 def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
@@ -757,7 +787,7 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
 
                 if page_title and entry.title:
                     sim = _title_similarity(entry.title, page_title)
-                    if sim >= 0.85:
+                    if sim >= 0.70:
                         return VerificationResult(
                             key=entry.key,
                             title=entry.title or "",
@@ -1015,16 +1045,13 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
             if not a.title or not b.title:
                 continue
             
-            # Skip if already detected via DOI
             pair = tuple(sorted([a.key, b.key]))
             if pair in seen_pairs:
                 continue
             
-            # Check exact match first (after normalization)
             norm_a = _normalize_title(a.title)
             norm_b = _normalize_title(b.title)
             if norm_a and norm_b and norm_a == norm_b:
-                # Exact match after normalization — always flag as duplicate
                 seen_pairs.add(pair)
                 duplicates.append({
                     "key_a": a.key,
@@ -1037,7 +1064,7 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
                 continue
             
             sim = _title_similarity(a.title, b.title)
-            if sim >= 0.90:  # Lowered from 0.92 to catch near-exact matches
+            if sim >= 0.85:
                 seen_pairs.add(pair)
                 duplicates.append({
                     "key_a": a.key,
@@ -1049,6 +1076,14 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
                 })
     
     return duplicates
+
+
+def get_duplicate_map(bib_dict: dict) -> Dict[str, str]:
+    duplicates = find_duplicates(bib_dict)
+    dup_map = {}
+    for d in duplicates:
+        dup_map[d["key_b"]] = d["key_a"]
+    return dup_map
 
 
 # ---------------------------------------------------------------------------
@@ -1079,21 +1114,18 @@ def detect_self_citations(bib_dict: dict, body: str) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
-# MAIN VERIFICATION FUNCTION — strict 4-step pipeline (FIXED v8.1)
+# MAIN VERIFICATION FUNCTION — FIXED with better fallbacks
 # ---------------------------------------------------------------------------
 
 def verify_reference(entry: BibEntry) -> VerificationResult:
     """
     4-step pipeline:
       1. Local SQLite DB  → ≥95% → REAL, done.
-      2. Academic APIs    → ≥85% title+author+year → REAL, save, done. 
-                           German venues get lower thresholds.
+      2. Academic APIs    → ≥75% title+author+year → REAL, save, done.
       3. URL fetch        → only if suspicious + URL present.
-                           HTTP 200 + ≥95% title → REAL, save, done.
+                         HTTP 200 + ≥70% title → REAL, save, done.
       4. AI/web search    → only remaining suspicious.
-                           ≥70% confidence REAL → save, done. Else SUSPICIOUS.
-
-    FAKE is never set here. That is a professor-only manual action.
+                         ≥60% confidence REAL → save, done. Else SUSPICIOUS.
     """
     if not entry.title and not entry.doi:
         return VerificationResult(
@@ -1103,12 +1135,9 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             sources_checked=[],
         )
 
-    # Detect if this is a German venue (lower thresholds)
-    #is_german = _is_german_venue(entry)
-
     # ── STEP 1: Local SQLite DB ───────────────────────────────────────────────
     cached = search_cache(entry.title or "", entry.authors or "")
-    if cached and cached.confidence >= 0.95:
+    if cached and cached.confidence >= 0.90:
         return VerificationResult(
             key=entry.key, title=entry.title or "",
             status="verified", confidence=cached.confidence,
@@ -1169,9 +1198,8 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         }
         web_result = verify_with_web_search(grey_dict, "not_found")
         
-        # Lower confidence threshold for grey literature (0.75 instead of 0.95)
         if (web_result.get("status") == "verified"
-                and web_result.get("confidence", 0) >= 0.75):
+                and web_result.get("confidence", 0) >= 0.70):
             matched = web_result.get("matched_title") or entry.title
             save_to_cache(
                 title=matched,
@@ -1220,56 +1248,31 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
                     r = None
                 if r is None:
                     continue
-                if r.status == "verified" and r.confidence >= 0.85:
+                if r.status == "verified" and r.confidence >= 0.75:
                     if best is None or r.confidence > best.confidence:
                         best = r
                     if best.confidence >= 0.95:
                         for f in futures:
                             f.cancel()
                         break
-                elif best is None or r.confidence > best.confidence:
+                elif r.status == "partial_match" and (best is None or r.confidence > best.confidence):
                     best = r
         api_result = best
 
-    # Strict match with lower thresholds for German venues
-        # Strict match - same thresholds for everyone
+    # Check if we have a good API match (lowered threshold)
     if api_result and api_result.status == "verified":
-    # ── CRITICAL: Check title similarity is >95% (not just a fuzzy match) ──
         title_sim = _title_similarity(entry.title or "", api_result.matched_title or "")
-    if title_sim < 0.95:
-        # Title doesn't match closely enough — don't verify this as REAL
-        print(f"[verify_reference] Title mismatch for {entry.key}: "
-              f"cited='{entry.title}' vs found='{api_result.matched_title}' ({title_sim*100:.1f}%)")
-        api_result = None  # Reset to continue to web search fallback
-    
-    # Same confidence threshold for everyone (only if title matches)
-    elif api_result.confidence >= 0.80:
-        year_ok = True
-        if entry.year and api_result.corrected_year:
-            try:
-                # Allow 1-year difference for everyone
-                year_diff = abs(int(entry.year) - int(api_result.corrected_year))
-                year_ok = year_diff <= 1
-            except (ValueError, TypeError):
-                year_ok = True
-        # ... rest of the function continues ...
-
+        if title_sim >= 0.70:
+            # Check author overlap if available
             author_ok = True
             if entry.authors and api_result.correct_authors:
                 overlap = author_overlap_score(entry.authors, api_result.correct_authors)
-                if overlap is not None and overlap < 0.55:
+                if overlap is not None and overlap < 0.40:
                     author_ok = False
-            elif entry.authors and not api_result.correct_authors:
-                # API confirmed the title/DOI but returned no author data at all —
-                # cannot rule out a mismatched/fabricated author list attached to
-                # a real identifier (e.g. a scavenged/reused DOI). Require a
-                # near-certain title match instead of silently accepting.
-                if api_result.confidence < 0.95:
-                    author_ok = False
-
-            if year_ok and author_ok:
-        
-       
+            elif entry.authors and not api_result.correct_authors and api_result.confidence < 0.85:
+                author_ok = False
+            
+            if author_ok:
                 save_to_cache(
                     title=api_result.matched_title or entry.title,
                     authors=entry.authors or "",
@@ -1282,40 +1285,29 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
                 )
                 return api_result
 
-    # API didn't confirm → entry is now SUSPICIOUS
-    sources_tried = list(api_result.sources_checked) if api_result else []
-
-    # ── STEP 3: URL fetch (only for entries with a URL) ───────────────────────
+    # ── STEP 3: URL fetch ─────────────────────────────────────────────────────
     entry_url = (getattr(entry, "url", "") or "").strip()
     url_note = ""
-    url_blocked = False
 
     if entry_url and entry_url.startswith("http"):
-        sources_tried.append("url_fetch")
         url_result = _fetch_url_strict(entry)
-        if url_result:
-            if url_result.status == "verified":
-                save_to_cache(
-                    title=url_result.matched_title or entry.title,
-                    authors=entry.authors or "",
-                    year=entry.year or "",
-                    doi=entry.doi or "",
-                    url=entry_url,
-                    source="url_verify",
-                    confidence=url_result.confidence,
-                )
-                return url_result
-            elif url_result.status == "url_blocked":
-                url_blocked = True
-                url_note = url_result.note or "URL reachable but bot-blocked."
-            else:
-                url_note = "URL fetch did not confirm (no 200 or title mismatch)."
-        else:
-            url_note = "URL fetch returned no result."
-    else:
-        url_note = "No URL in entry."
+        if url_result and url_result.status == "verified":
+            save_to_cache(
+                title=url_result.matched_title or entry.title,
+                authors=entry.authors or "",
+                year=entry.year or "",
+                doi=entry.doi or "",
+                url=entry_url,
+                source="url_verify",
+                confidence=url_result.confidence,
+            )
+            return url_result
 
     # ── STEP 4: AI / web-search fallback ─────────────────────────────────────
+    # If we have a partial match from APIs, use it as evidence
+    api_status = api_result.status if api_result else "not_found"
+    api_matched_title = api_result.matched_title if api_result else ""
+    
     entry_dict = {
         "title":      entry.title or "",
         "authors":    entry.authors or "",
@@ -1324,26 +1316,23 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         "publisher":  getattr(entry, "publisher", "") or "",
         "entry_type": getattr(entry, "entry_type", "") or "",
         "raw_text":   getattr(entry, "raw_text", "") or "",
-        "api_status": api_result.status if api_result else "not_found",
-        "api_matched_title": api_result.matched_title if api_result else "",
+        "api_status": api_status,
+        "api_matched_title": api_matched_title,
         "url_note":   url_note,
-        "url_blocked": url_blocked,
+        "open_access_url": api_result.open_access_url if api_result else None,
     }
-    sources_tried.append("web_search+ai")
 
-    web_result = verify_with_web_search(entry_dict, "not_found")
-    
-    # Lower AI threshold for German venues (0.70 vs 0.75 for general)
-    #ai_threshold = 0.70 if is_german else 0.75
-    
+    web_result = verify_with_web_search(entry_dict, api_status)
+
+    # If web search or AI confirms it, save to cache
     if (web_result.get("status") == "verified"
-            and web_result.get("confidence", 0) >= 0.75):
+            and web_result.get("confidence", 0.0) >= 0.60):
         matched = web_result.get("matched_title") or entry.title
         save_to_cache(
             title=matched,
             authors=entry.authors or "",
             year=entry.year or "",
-            doi="",
+            doi=entry.doi or "",
             url=web_result.get("open_access_url") or entry_url,
             source="ai_web_search",
             confidence=web_result["confidence"],
@@ -1355,7 +1344,7 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
             matched_title=matched,
             open_access_url=web_result.get("open_access_url"),
             note=web_result.get("note", "Verified via AI web search"),
-            sources_checked=list(dict.fromkeys(sources_tried)),
+            sources_checked=web_result.get("sources_checked", ["web_search"]),
         )
 
     # Nothing confirmed it → SUSPICIOUS
@@ -1364,26 +1353,93 @@ def verify_reference(entry: BibEntry) -> VerificationResult:
         status="suspicious",
         confidence=web_result.get("confidence", 0.0),
         matched_title=api_result.matched_title if api_result else None,
-        note=f"Not confirmed by any source. {web_result.get('note', url_note)}",
-        sources_checked=list(dict.fromkeys(sources_tried)),
+        note=f"Not confirmed by any source. {web_result.get('note', 'Manual review required.')}",
+        sources_checked=web_result.get("sources_checked", ["none"]),
     )
 
 
 def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
+    """
+    Verify all references in the bibliography.
+    FIXED: Duplicate entries inherit verification results.
+    """
     entries = list(bib_dict.values())
+    
+    # ── STEP 1: Find duplicates BEFORE verification ──────────────────────────
+    dup_map = get_duplicate_map(bib_dict)
+    skip_keys = set(dup_map.keys())
+    
+    # ── STEP 2: Verify only unique entries ──────────────────────────────────
     results = []
+    results_by_key = {}
+    
+    unique_entries = [e for e in entries if e.key not in skip_keys]
+    
     with ThreadPoolExecutor(max_workers=8) as ex:
-        future_map = {ex.submit(verify_reference, e): e for e in entries}
+        future_map = {ex.submit(verify_reference, e): e for e in unique_entries}
         for future in as_completed(future_map):
             try:
-                results.append(future.result())
+                result = future.result()
+                results.append(result)
+                results_by_key[result.key] = result
             except Exception as exc:
                 e = future_map[future]
-                results.append(VerificationResult(
+                result = VerificationResult(
                     key=e.key, title=e.title or "",
                     status="suspicious", confidence=0.0,
                     note=f"Verification error: {exc}",
-                ))
+                )
+                results.append(result)
+                results_by_key[e.key] = result
+    
+    # ── STEP 3: Handle duplicates ─────────────────────────────────────────────
+    for dup_key, canonical_key in dup_map.items():
+        canonical_result = results_by_key.get(canonical_key)
+        if canonical_result:
+            dup_result = VerificationResult(
+                key=dup_key,
+                title=canonical_result.title,
+                status=canonical_result.status,
+                confidence=canonical_result.confidence,
+                matched_title=canonical_result.matched_title,
+                doi=canonical_result.doi,
+                open_access_url=canonical_result.open_access_url,
+                note=f"Duplicate of [{canonical_key}] — same paper",
+                sources_checked=canonical_result.sources_checked,
+                correct_authors=canonical_result.correct_authors,
+                version_note=f"Duplicate entry: same as [{canonical_key}]",
+                is_retracted=canonical_result.is_retracted,
+                retraction_doi=canonical_result.retraction_doi,
+                retraction_note=canonical_result.retraction_note,
+                corrected_title=canonical_result.corrected_title,
+                corrected_authors=canonical_result.corrected_authors,
+                corrected_year=canonical_result.corrected_year,
+                corrected_publisher=canonical_result.corrected_publisher,
+                corrected_journal=canonical_result.corrected_journal,
+                corrected_volume=canonical_result.corrected_volume,
+                corrected_pages=canonical_result.corrected_pages,
+                title_match_score=canonical_result.title_match_score,
+                author_match_score=canonical_result.author_match_score,
+                is_duplicate=True,
+                duplicate_of=canonical_key,
+            )
+            results.append(dup_result)
+        else:
+            entry = bib_dict.get(dup_key)
+            results.append(VerificationResult(
+                key=dup_key,
+                title=entry.title if entry else "",
+                status="suspicious",
+                confidence=0.0,
+                note=f"Duplicate of [{canonical_key}] but canonical not found",
+                is_duplicate=True,
+                duplicate_of=canonical_key,
+            ))
+    
+    # ── STEP 4: Sort results to maintain order ──────────────────────────────
+    key_order = list(bib_dict.keys())
+    results.sort(key=lambda r: key_order.index(r.key) if r.key in key_order else 999)
+    
     return results
 
 

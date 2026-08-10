@@ -8,6 +8,7 @@ CHANGES v7.0:
       1. Local DB  2. Academic APIs  3. URL fetch (suspicious only)  4. AI
   - AI final verdict never outputs FAKE — only REAL or SUSPICIOUS.
     FAKE is only set by professor manual action.
+  - FIXED v8.2: Duplicate entries are now handled properly via verify_all_references()
 """
 
 import os
@@ -37,7 +38,6 @@ from checker import (
     extract_citation_contexts,
     detect_self_citations,
     cross_check,
-    verify_reference,
     verify_all_references,
     check_lni_macros,
     find_duplicates,
@@ -163,6 +163,8 @@ def _vr_to_dicts(api_results_raw: list) -> list:
          "corrected_pages": getattr(vr, "corrected_pages", None),
          "title_match_score": getattr(vr, "title_match_score", None),
          "author_match_score": getattr(vr, "author_match_score", None),
+         "is_duplicate": getattr(vr, "is_duplicate", False),
+         "duplicate_of": getattr(vr, "duplicate_of", None),
          }
         for vr in api_results_raw
     ]
@@ -407,13 +409,16 @@ def _assemble_result(
     for vr in api_results_raw:
         # ── Check for duplicates for THIS entry ──────────────────────────────────
         dup_info = None
-        for d in duplicates:
-            if d.get("key_a") == vr.key:
-                dup_info = {"duplicate_of": d.get("key_b"), "reason": d.get("reason", "")}
-                break
-            elif d.get("key_b") == vr.key:
-                dup_info = {"duplicate_of": d.get("key_a"), "reason": d.get("reason", "")}
-                break
+        if getattr(vr, "is_duplicate", False) and getattr(vr, "duplicate_of", None):
+            dup_info = {"duplicate_of": vr.duplicate_of, "reason": "Same paper (deduplicated)"}
+        else:
+            for d in duplicates:
+                if d.get("key_a") == vr.key:
+                    dup_info = {"duplicate_of": d.get("key_b"), "reason": d.get("reason", "")}
+                    break
+                elif d.get("key_b") == vr.key:
+                    dup_info = {"duplicate_of": d.get("key_a"), "reason": d.get("reason", "")}
+                    break
 
         ai = ai_verdicts_by_key.get(vr.key, {})
         ai_verdict = ai.get("verdict", "SUSPICIOUS")
@@ -487,12 +492,10 @@ def _assemble_result(
 
     # Entries that never went through API verification (e.g. no title/DOI)
     api_keys = {vr.key for vr in api_results_raw}
-    # In app.py, inside _assemble_result() function, update this:
     for entry in _bib_to_dicts(bib_list):
         if entry["key"] not in api_keys:
             ai = ai_verdicts_by_key.get(entry["key"], {})
-            # FIXED: Never default to REAL without evidence. Use SUSPICIOUS as safe default.
-            ai_verdict = ai.get("verdict") or "SUSPICIOUS"  # Changed from "REAL" to "SUSPICIOUS"
+            ai_verdict = ai.get("verdict") or "SUSPICIOUS"
             verification_output.append({
                 "key": entry["key"],
                 "title": entry.get("title") or "",
@@ -609,21 +612,8 @@ def _assemble_result(
 
 
 # ---------------------------------------------------------------------------
-# Core pipeline — shared by streaming and non-streaming paths
+# Core pipeline — streaming check (FIXED: no duplicate verification loop)
 # ---------------------------------------------------------------------------
-
-def _run_pipeline(main_path: str, bib_path: str = None,
-                  verify: bool = True, filename: str = ""):
-    """
-    Runs the full check pipeline and returns (result_dict, generator_of_progress_events).
-    For streaming: iterate the generator, then await the final dict.
-    For non-streaming: just call and ignore the generator.
-
-    Returns a generator that yields SSE strings AND finally yields the result dict
-    as the last item via a special 'done' event string.
-    """
-    raise NotImplementedError("Use _run_streaming_check or _run_full_check directly.")
-
 
 def _run_streaming_check(main_path: str, bib_path: str = None,
                           verify: bool = True, filename: str = ""):
@@ -705,73 +695,38 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             yield _sse("progress", {"step": "check_result",
                 "message": f"⚠️ {len(xcheck.in_bib_not_cited)} bibliography entry(s) never cited"})
 
-        # ── Verification: 4-step pipeline per reference ───────────────────────
+        # ── Verification: SINGLE call to verify_all_references ────────────────
+        # FIXED: Removed the duplicate manual verification loop that was
+        # causing entries to be verified twice and overwriting results.
         api_results_raw = []
         if verify and bib_dict:
             total = len(bib_dict)
             yield _sse("progress", {"step": "verify_start",
                 "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
-            from checker import VerificationResult
+            # verify_all_references now handles duplicates internally
+            api_results_raw = verify_all_references(bib_dict)
 
-            future_to_key = {}
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                for key, entry in bib_dict.items():
-                    future_to_key[executor.submit(verify_reference, entry)] = key
-
-                done_count = verified_count = suspicious_count = 0
-                try:
-                    for future in as_completed(future_to_key, timeout=120):
-                        key = future_to_key[future]
-                        try:
-                            vr = future.result()
-                        except Exception as e:
-                            vr = VerificationResult(
-                                key=key, title=bib_dict[key].title or "",
-                                status="suspicious", confidence=0.0,
-                                note=f"Verification error: {e}", sources_checked=[])
-                        api_results_raw.append(vr)
-                        done_count += 1
-                        if vr.status == "verified":
-                            verified_count += 1
-                        elif vr.status == "suspicious":
-                            suspicious_count += 1
-
-                        progress_data = {
-                            "step": "verify",
-                            "message": f"Verifying: {done_count}/{total}",
-                            "key": vr.key,
-                            "status": vr.status,
-                            "confidence": round(vr.confidence, 2),
-                            "done": done_count,
-                            "total": total,
-                            "verified_count": verified_count,
-                            "suspicious_count": suspicious_count,
-                        }
-                        if vr.version_note:
-                            progress_data["version_note"] = vr.version_note
-                        yield _sse("progress", progress_data)
-
-                except FuturesTimeout:
-                    # Some futures timed out — add remaining entries as suspicious
-                    completed_keys = {vr.key for vr in api_results_raw}
-                    for key in bib_dict:
-                        if key not in completed_keys:
-                            vr = VerificationResult(
-                                key=key, title=bib_dict[key].title or "",
-                                status="suspicious", confidence=0.0,
-                                note="Verification timed out — manual review recommended.",
-                                sources_checked=[])
-                            api_results_raw.append(vr)
-                            suspicious_count += 1
-                    yield _sse("progress", {"step": "warning",
-                        "message": f"⚠️ Some references timed out and were marked suspicious for manual review."})
-
-            # Restore original order
-            key_order = list(bib_dict.keys())
-            api_results_raw.sort(
-                key=lambda r: key_order.index(r.key) if r.key in key_order else 999)
+            verified_count = sum(1 for r in api_results_raw if r.status == "verified")
+            suspicious_count = sum(1 for r in api_results_raw if r.status == "suspicious")
+            
+            # Send progress updates for each result
+            for i, vr in enumerate(api_results_raw):
+                progress_data = {
+                    "step": "verify",
+                    "message": f"Verifying: {i+1}/{total}",
+                    "key": vr.key,
+                    "status": vr.status,
+                    "confidence": round(vr.confidence, 2),
+                    "done": i+1,
+                    "total": total,
+                    "verified_count": verified_count,
+                    "suspicious_count": suspicious_count,
+                }
+                if vr.version_note:
+                    progress_data["version_note"] = vr.version_note
+                yield _sse("progress", progress_data)
+                time.sleep(0.05)  # Small delay for UI responsiveness
 
             yield _sse("progress", {"step": "verify_done",
                 "message": f"✓ Verification done: {verified_count} verified, "

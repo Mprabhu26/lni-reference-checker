@@ -6,16 +6,15 @@ Extracts citation keys like [AB00], [Ez10], [GI19] and their metadata.
 
 LNI key format:
   - 1 author:       First 2 letters of surname + 2-digit year  → [Ez10]
-  - 2–3 authors:    First letter of each surname + year         → [ABC01]
-  - 3+ authors:     First 2 letters of first author + year      → [Az09]
-  - No author:      First 2 letters of title + year             → [Di02]
-  - Multiple works same year: append a, b, c...                 → [Wa14a]
+  - 2 authors:      First letter of each author + year         → [KB14]
+  - 3+ authors:     First 2 letters of first author + year     → [De18]
+  - No author:      First 2 letters of title + year            → [Di02]
+  - Multiple works same year: append a, b, c...                → [Wa14a]
 
-FIXES v7.0:
-  - Entry type classification: better detection of books, articles, proceedings
-  - Key mismatch detection: fixed surname extraction (handles "Kingma, Diederik")
-  - No longer flags correctly formatted entries as "issues"
-  - Better handling of "et al." in author lists
+FIXED v7.1:
+  - Key validation now correctly handles 2-author keys (e.g., KB14 = Kingma + Ba)
+  - Better support for all valid LNI key formats
+  - No false "Key mismatch" warnings for correctly formatted keys
 """
 
 import re
@@ -82,7 +81,6 @@ _JOURNAL_WORDS = re.compile(
     re.IGNORECASE,
 )
 
-# Conference/venue names that should be classified as proceedings
 _CONFERENCE_NAMES = re.compile(
     r'\b(?:NeurIPS|CVPR|ICCV|ECCV|ICML|ICLR|ACL|EMNLP|NAACL|AAAI|IJCAI|'
     r'NIPS|COLT|UAI|AISTATS|ICRA|IROS|CHI|UIST|SIGGRAPH|SIGIR|SIGMOD|'
@@ -90,7 +88,6 @@ _CONFERENCE_NAMES = re.compile(
     re.IGNORECASE,
 )
 
-# Journal name hints
 _JOURNAL_NAME_HINTS = re.compile(
     r'\b(?:Journal|Zeitschrift|Magazin|Review|Transactions|Letters|'
     r'Bulletin|Annals|Communications|Informatik|Computing|'
@@ -127,9 +124,6 @@ def parse_bibliography(bib_text: str) -> list:
         r'(?=[A-Z][a-zA-Z]*(?:\s[A-Z][a-zA-Z]*)?,\s)',
         re.MULTILINE,
     )
-    # FIX v8.4: Catch line-start keys followed by ( or [ without : or -
-    # Examples: "APA20 (Author...", "IEEE21 [...". These are valid but not
-    # caught by the original UNBRACKETED_KEY pattern which requires : or -.
     LINESTART_KEY = re.compile(
         r'(?:^|\n)\s*([A-Z][A-Z0-9]+)\s+(?=[\(\[])',
         re.MULTILINE,
@@ -144,7 +138,6 @@ def parse_bibliography(bib_text: str) -> list:
     raw_unbracketed_key = [(m.start(1), m.group(1), m.end(), False)
                             for m in UNBRACKETED_KEY.finditer(bib_text)
                             if m.group(1).lower() not in _LNI_MARKER_WORDS]
-    # Add line-start keys
     raw_linestart_key = [(m.start(1), m.group(1), m.end(), False)
                           for m in LINESTART_KEY.finditer(bib_text)]
     
@@ -162,12 +155,6 @@ def parse_bibliography(bib_text: str) -> list:
 
     all_candidates = sorted(raw_unbracketed_key + raw_linestart_key + raw_unbracketed_author, key=lambda p: p[0])
 
-    # A bracketed entry's own text ends at the next paragraph break (blank
-    # line) after its key, or at the next bracket, whichever comes first.
-    # Candidates found before that boundary are genuinely part of the
-    # bracketed entry's running prose (e.g. "...Nature, Vol. 521...") and
-    # must be excluded; candidates after it are separate, unrelated
-    # (malformed) entries and must be kept.
     PARA_BREAK = re.compile(r'(?:\n\s*\n)|(?:[.\)]\s*\n(?=[A-Za-z]))')
 
     def _entry_own_text_end(bracket_key_end, next_bracket_start):
@@ -177,12 +164,6 @@ def parse_bibliography(bib_text: str) -> list:
     bracket_own_spans = []
     for i, bp in enumerate(bracket_positions):
         next_bracket_start = bracket_positions[i + 1][0] if i + 1 < len(bracket_positions) else len(bib_text)
-        # An unbracketed candidate belongs to THIS bracketed entry's own
-        # text only if there's no newline between the bracket's key and
-        # the candidate (still mid-sentence / same wrapped line). Once a
-        # newline is crossed, treat any candidate as a new, separate
-        # (possibly malformed) entry rather than assuming it's still part
-        # of this entry's prose.
         newline_m = re.search(r'\n', bib_text[bp[2]:next_bracket_start])
         own_end = bp[2] + newline_m.start() if newline_m else next_bracket_start
         bracket_own_spans.append((bp[0], own_end))
@@ -204,9 +185,6 @@ def parse_bibliography(bib_text: str) -> list:
         if not raw:
             continue
 
-        # FIXED v8.2: Normalize keys by removing ALL internal spaces
-        # PDF extraction produces keys like "RH15 a" instead of "RH15a"
-        # This ensures they match citations extracted from body text
         sub_keys = [re.sub(r'\s+', '', k.strip()) for k in key.split(',') if k.strip()] \
             if ',' in key else [re.sub(r'\s+', '', key.strip())]
 
@@ -305,14 +283,13 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
                 entry.needs_ai_parsing = True
             return
 
-    # ── Entry type classification ───────────────────────────────────────────
+    # ── Entry type classification ────────────────────────────────────────────
     _has_volume = bool(re.search(r'(?:Jg\.|Vol\.|Nr\.|Band)\s*\d', raw, re.IGNORECASE))
     _has_explicit_conf = bool(re.search(
         r'\bProc\.|\bProceedings\b|\bConference\b|\bWorkshop\b|\bSymposium\b'
         r'|\bTagung\b|\bKonferenz\b|\bHrsg\b|\bEds?\.\B',
         raw, re.IGNORECASE))
 
-    # Check for conference names first (strongest signal)
     if _CONFERENCE_NAMES.search(raw):
         entry.entry_type = "proceedings"
     elif _PROCEEDINGS_WORDS.search(raw) and (_has_explicit_conf or not _has_volume):
@@ -322,21 +299,17 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     elif _PUBLISHER_WORDS.search(raw):
         entry.entry_type = "book"
     else:
-        # ── FIX: Better default detection ──────────────────────────────────
-        # Check for book publisher keywords
         if re.search(r'MIT Press|Springer|Elsevier|Wiley|O\'Reilly|Pearson|Cambridge|Oxford|McGraw|Macmillan', raw, re.IGNORECASE):
             entry.entry_type = "book"
-        # Check for journal/conference keywords
         elif re.search(r'Journal|Transactions|Letters|Magazine|Review|IEEE|ACM', raw, re.IGNORECASE):
             entry.entry_type = "article"
-        # Check for "In: ConferenceName"
         elif re.search(r'In:\s*[A-Z][a-zA-Z0-9\s]+', raw, re.IGNORECASE):
             entry.entry_type = "proceedings"
         else:
             entry.entry_type = "unknown"
             entry.needs_ai_parsing = True
 
-    # ── Author extraction ──────────────────────────────────────────────────
+    # ── Author extraction ────────────────────────────────────────────────────
     author_pattern = re.match(
         r'^((?:[A-ZÄÖÜ][a-zäöüß\-]+(?:,\s*[A-Za-zÄÖÜäöüß\.\s\-]+)?'
         r'(?:;\s*)?)+):\s*(.*)',
@@ -360,25 +333,20 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         else:
             entry.needs_ai_parsing = True
 
-    # ── Year ─────────────────────────────────────────────────────────────────
-    # FIXED v8.2: Handle PDF extraction artifacts where years are broken
-    # Example: "2016" → "2 016" (space after first digit)
-    # Example: "2016" → "20 16" (space after century)
+    # ── Year ──────────────────────────────────────────────────────────────────
     year_match = re.search(r'\b(19|20)\d{2}\b', rest)
     if year_match:
         entry.year = year_match.group(0)
     else:
-        # Fallback 1: "20 16" or "19 95" (space between century and year)
         broken1 = re.search(r'\b(19|20)\s+(\d{2})\b', rest)
         if broken1:
             entry.year = broken1.group(1) + broken1.group(2)
         else:
-            # Fallback 2: "2 016" (space after first digit - PDF extraction artifact)
             broken2 = re.search(r'\b(\d)\s+(\d{3})\b', rest)
             if broken2 and broken2.group(1) in '12':
                 entry.year = broken2.group(1) + broken2.group(2)
 
-    # ── Pages ────────────────────────────────────────────────────────────────
+    # ── Pages ─────────────────────────────────────────────────────────────────
     _roman = r'[ivxlcdmIVXLCDM]+'
     pages_match = re.search(
         r'(?:S\.|pp?\.)\s*'
@@ -392,7 +360,7 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     if pages_match:
         entry.pages = pages_match.group(1).replace(' ', '')
 
-    # ── Publisher ────────────────────────────────────────────────────────────
+    # ── Publisher ─────────────────────────────────────────────────────────────
     pub_match = _PUBLISHER_WORDS.search(rest)
     if pub_match:
         start = max(0, pub_match.start() - 30)
@@ -414,7 +382,6 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
 
     # ── Title extraction ─────────────────────────────────────────────────────
     if rest:
-        # Clean up rest: remove URLs and years from the end
         rest_clean = re.sub(r',?\s*https?://\S+', '', rest)
         rest_clean = re.sub(r',?\s*(19|20)\d{2}\s*$', '', rest_clean)
 
@@ -460,7 +427,7 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         if not entry.title:
             entry.needs_ai_parsing = True
 
-    # ── Booktitle for proceedings ──────────────────────────────────────────
+    # ── Booktitle for proceedings ────────────────────────────────────────────
     if entry.entry_type == "proceedings":
         bt_match = re.search(
             r'In\s*[\(\[]([^\)\]]+)[\)\]]'
@@ -472,7 +439,7 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
                 bt_match.group(1) or bt_match.group(2) or ''
             ).strip()
 
-    # ── Journal name for articles ──────────────────────────────────────────
+    # ── Journal name for articles ────────────────────────────────────────────
     if entry.entry_type == "article":
         j_match = re.search(
             r'(?:\.\s+In:\s+|\.\s+)([A-Za-zäöüÄÖÜ][^,\.]{2,60}?),\s*(?:Jg\.|Vol\.|Nr\.|Band|No\.)',
@@ -545,11 +512,9 @@ def _extract_surnames(authors_str: str) -> list:
         if re.search(r'et\s+al\.?', author, re.IGNORECASE):
             continue
 
-        # Extract surname (part before comma)
         if ',' in author:
             surname = author.split(',')[0].strip()
         else:
-            # No comma - take last word as surname
             parts = author.split()
             if parts:
                 surname = parts[-1].strip()
@@ -566,6 +531,11 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     """
     Verify that the initials and year encoded in the LNI citation key are
     consistent with the parsed author(s) and year.
+    
+    FIXED v7.1: Now correctly handles all LNI key formats:
+    - 1 author:  First 2 letters of surname (e.g., Ez10 for Ezhov)
+    - 2 authors: First letter of each author (e.g., KB14 for Kingma + Ba)
+    - 3+ authors: First 2 letters of first author (e.g., De18 for Devlin)
     """
     if entry.key.isdigit():
         entry.key_consistent = True
@@ -579,13 +549,13 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     key_initials = match.group(1).lower()
     key_year_2d = match.group(2)
 
-    # ── Year check ────────────────────────────────────────────────────────────
+    # ── Year check ──────────────────────────────────────────────────────────
     year_ok: Optional[bool] = None
     if entry.year:
         expected_2d = entry.year[-2:]
         year_ok = (expected_2d == key_year_2d)
 
-    # ── Author initials check (FIXED) ───────────────────────────────────────
+    # ── Author initials check (FIXED) ──────────────────────────────────────
     initials_ok: Optional[bool] = None
     if entry.authors:
         surnames = _extract_surnames(entry.authors)
@@ -599,42 +569,61 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
                                    ('é', 'e'), ('è', 'e'), ('ê', 'e'), ('à', 'a'),
                                    ('â', 'a'), ('î', 'i'), ('ô', 'o'), ('û', 'u')]:
                     s = s.replace(bad, good)
+                # Remove non-alphanumeric
+                s = re.sub(r'[^a-z]', '', s)
                 return s
 
             normed = [_norm_surname(s) for s in surnames]
 
+            # ── Build ALL valid LNI key forms ──────────────────────────────
             valid_forms = set()
-            # Always accept first-2-letters of first surname (LNI "3+ authors" rule)
+
+            # Form 1: First 2 letters of first author's surname
+            # Used for: 1 author (Ez10) OR 3+ authors (De18)
             valid_forms.add(normed[0][:2])
-            valid_forms.add(normed[0][:1])
 
+            # Form 2: First letter of each author (for 2 authors: KB14)
             if n >= 2:
-                # Per-surname initials for however many authors there are
-                # (covers 2, 3, 4+ author joint-initial keys)
-                valid_forms.add(''.join(s[0] for s in normed))
-                # Common real-world variant: first letter of first author +
-                # first letter of LAST author (e.g. He + Sun -> "HS"),
-                # regardless of how many authors are in between.
-                valid_forms.add(normed[0][0] + normed[-1][0])
                 valid_forms.add(''.join(s[0] for s in normed[:min(n, 3)]))
-            if n >= 4:
-                valid_forms.add(''.join(s[0] for s in normed[:4]))
+                # Also first + last for 3+ authors (common variant)
+                if n >= 3:
+                    valid_forms.add(normed[0][0] + normed[-1][0])
 
+            # Form 3: First letter of first author only (for 1 author)
+            if n == 1:
+                valid_forms.add(normed[0][0])
+
+            # Form 4: For 2 authors, first letter of each (this is the correct LNI form!)
+            if n == 2:
+                # e.g., Kingma + Ba = KB
+                valid_forms.add(normed[0][0] + normed[1][0])
+                # Also try first two letters of first author + first letter of last
+                if len(normed[0]) >= 2:
+                    valid_forms.add(normed[0][:2] + normed[1][0])
+
+            # Form 5: For 3 authors, first letter of each (e.g., ABC)
+            if n == 3:
+                valid_forms.add(normed[0][0] + normed[1][0] + normed[2][0])
+
+            # Form 6: For 4+ authors, first 2 of first author (LNI standard)
+            if n >= 4:
+                valid_forms.add(normed[0][:2])
+
+            # ── Check if key_initials matches any valid form ──────────────
             initials_ok = any(
-                key_initials.startswith(form) or form.startswith(key_initials)
+                key_initials == form or key_initials.startswith(form) or form.startswith(key_initials)
                 for form in valid_forms
+                if form and len(form) >= 2
             )
 
             # If nothing matched but the key's initials are a plausible
-            # subsequence of the paper's author initials (common with 4+
-            # authors where conventions vary widely), don't hard-fail —
-            # treat as unknown rather than a false "mismatch".
+            # subsequence of the paper's author initials, treat as unknown
             if initials_ok is False and n >= 2:
                 author_initials = {s[0] for s in normed}
                 if set(key_initials) <= author_initials:
                     initials_ok = None
 
-    # ── Combine ───────────────────────────────────────────────────────────────
+    # ── Combine ──────────────────────────────────────────────────────────────
     checks = [c for c in [year_ok, initials_ok] if c is not None]
     if not checks:
         entry.key_consistent = None
@@ -645,22 +634,26 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     if not entry.key_consistent:
         details = []
         if year_ok is False:
-            details.append(
-                f"key year '{key_year_2d}' ≠ parsed year '{entry.year}'"
-            )
+            details.append(f"key year '{key_year_2d}' ≠ parsed year '{entry.year}'")
         if initials_ok is False:
+            # For 2-author papers with correct key like KB14, don't flag as mismatch
+            if len(surnames) == 2 and key_initials == (normed[0][0] + normed[1][0]):
+                entry.key_consistent = True
+                entry.key_mismatch_detail = None
+                return
+            
+            # For 1-author papers with correct key like Ez10
+            if len(surnames) == 1 and key_initials == normed[0][:2]:
+                entry.key_consistent = True
+                entry.key_mismatch_detail = None
+                return
+            
             details.append(
                 f"key initials '{key_initials}' don't match authors '{entry.authors[:40]}'"
             )
-        # NOTE: a key/year or key/initials mismatch is NOT an LNI formatting
-        # violation — the key mnemonic has no fixed rule for which year to
-        # use (arXiv preprint year vs. official venue year vs. proceedings
-        # print year routinely differ by +/-1). Keep it informational via
-        # key_consistent/key_mismatch_detail only; do NOT push it into
-        # completeness_issues, since that list drives the pass/fail
-        # LNI-compliance verdict and a mismatch here is not evidence of a
-        # format violation or a fake reference.
-        entry.key_mismatch_detail = "; ".join(details)
+        
+        if details:
+            entry.key_mismatch_detail = "; ".join(details)
 
 
 # ---------------------------------------------------------------------------
@@ -675,12 +668,6 @@ def _check_completeness(entry: BibEntry) -> None:
     lookup_type = "proceedings" if entry_type == "inproceedings" else entry_type
     required = REQUIRED_FIELDS.get(lookup_type, REQUIRED_FIELDS["unknown"])
 
-    # FIX: an entry whose type could not be classified (article/book/
-    # proceedings/etc.) is itself an LNI violation — LNI requires the
-    # venue field (journal/booktitle/publisher) needed to determine type.
-    # Previously "unknown" silently fell back to the loosest required-field
-    # list (authors/title/year only), letting malformed entries pass as
-    # "Correct Format" whenever those three happened to be present.
     if entry_type == "unknown":
         entry.completeness_issues.append(
             "Entry type could not be determined (no journal, booktitle, "
