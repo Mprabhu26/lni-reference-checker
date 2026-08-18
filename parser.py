@@ -716,11 +716,21 @@ def _check_completeness(entry: BibEntry) -> None:
         if m:
             lo, hi = int(m.group(1)), int(m.group(2))
             span = hi - lo
-            if span > 200:
+            if span > 100:
                 entry.completeness_issues.append(
                     f"Page range {lo}–{hi} spans {span} pages — "
                     "unusually large for a single article."
                 )
+    
+    # Check for suspicious volume numbers (e.g., 666, 777, 888, 999, 111, 222, 333, 444, 555)
+    if entry.volume:
+        vol_str = str(entry.volume).strip()
+        suspicious_volumes = {'666', '777', '888', '999', '111', '222', '333', '444', '555'}
+        if vol_str in suspicious_volumes:
+            entry.completeness_issues.append(
+                f"Volume number '{vol_str}' is suspiciously repetitive — "
+                "likely fabricated or non-standard."
+            )
 
 
 # ---------------------------------------------------------------------------
