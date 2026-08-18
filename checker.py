@@ -1074,15 +1074,91 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
                     "title_b": b.title,
                     "reason": "Title similarity"
                 })
+                continue
+            
+            # Author-year match for flexible keys (LBH15, LB15, Deep15, LeCun2015)
+            if a.authors and b.authors and a.year and b.year and a.year == b.year:
+                def get_surnames(authors_str):
+                    surnames = set()
+                    for part in re.split(r';|\band\b|\bund\b', authors_str, flags=re.IGNORECASE):
+                        part = part.strip()
+                        if not part or re.match(r'^et\s+al\.?$', part.lower()):
+                            continue
+                        if ',' in part:
+                            surname = part.split(',')[0].strip()
+                        else:
+                            tokens = part.lower().split()
+                            particles = {'von', 'van', 'de', 'del', 'della', 'der', 'la', 'le', 'du', 'des', 'di'}
+                            non_particle = [t for t in tokens if t not in particles]
+                            surname = non_particle[-1] if non_particle else (tokens[-1] if tokens else '')
+                        if len(surname) > 2:
+                            surnames.add(surname[:3].lower())
+                    return surnames
+                
+                surnames_a = get_surnames(a.authors)
+                surnames_b = get_surnames(b.authors)
+                
+                if surnames_a and surnames_b:
+                    overlap = len(surnames_a & surnames_b) / min(len(surnames_a), len(surnames_b))
+                    if overlap >= 0.5:
+                        seen_pairs.add(pair)
+                        duplicates.append({
+                            "key_a": a.key,
+                            "key_b": b.key,
+                            "similarity": round(overlap, 3),
+                            "title_a": a.title,
+                            "title_b": b.title,
+                            "reason": f"Same year ({a.year}) + author overlap ({int(overlap*100)}%)"
+                        })
     
     return duplicates
 
 
 def get_duplicate_map(bib_dict: dict) -> Dict[str, str]:
+    """
+    Create a duplicate map that properly handles transitive relationships.
+    Uses union-find to group all equivalent entries, then maps each to its 
+    canonical representative (first key in document order from each group).
+    
+    FIXED v8.4: Handles multiple duplicates correctly.
+    Before: LB15→LBH15, Deep15→LB15, LeCun2015→Deep15 (chains/ambiguous)
+    After:  LB15→LBH15, Deep15→LBH15, LeCun2015→LBH15 (all→first canonical)
+    """
     duplicates = find_duplicates(bib_dict)
-    dup_map = {}
+    
+    # Union-find structure for grouping equivalent entries
+    parent = {key: key for key in bib_dict.keys()}
+    
+    def find(x):
+        """Find the canonical representative (root) of x."""
+        if parent[x] != x:
+            parent[x] = find(parent[x])  # Path compression for efficiency
+        return parent[x]
+    
+    def union(x, y):
+        """Union two groups by their representatives."""
+        px, py = find(x), find(y)
+        if px != py:
+            # Canonicalize: use the key that appears first in document order (bib_dict)
+            # This requires checking the order in bib_dict
+            x_idx = list(bib_dict.keys()).index(px) if px in bib_dict else 999
+            y_idx = list(bib_dict.keys()).index(py) if py in bib_dict else 999
+            if x_idx < y_idx:
+                parent[py] = px
+            else:
+                parent[px] = py
+    
+    # Union all duplicate pairs to build equivalence groups
     for d in duplicates:
-        dup_map[d["key_b"]] = d["key_a"]
+        union(d["key_a"], d["key_b"])
+    
+    # Create map from each non-canonical key to its canonical representative
+    dup_map = {}
+    for key in bib_dict.keys():
+        canonical = find(key)
+        if key != canonical:
+            dup_map[key] = canonical
+    
     return dup_map
 
 
@@ -1117,16 +1193,23 @@ def detect_self_citations(bib_dict: dict, body: str) -> List[dict]:
 # MAIN VERIFICATION FUNCTION — FIXED with better fallbacks
 # ---------------------------------------------------------------------------
 
-def verify_reference(entry: BibEntry) -> VerificationResult:
+def verify_reference(entry: BibEntry, dup_map: dict = None) -> VerificationResult:
     """
-    4-step pipeline:
-      1. Local SQLite DB  → ≥95% → REAL, done.
-      2. Academic APIs    → ≥75% title+author+year → REAL, save, done.
-      3. URL fetch        → only if suspicious + URL present.
-                         HTTP 200 + ≥70% title → REAL, save, done.
-      4. AI/web search    → only remaining suspicious.
-                         ≥60% confidence REAL → save, done. Else SUSPICIOUS.
+    4-step pipeline with duplicate check FIRST.
     """
+    # Check if this is a duplicate FIRST
+    if dup_map and entry.key in dup_map:
+        canonical_key = dup_map[entry.key]
+        return VerificationResult(
+            key=entry.key, title=entry.title or "",
+            status="verified",
+            confidence=0.95,
+            note=f"Duplicate of [{canonical_key}] — same paper",
+            sources_checked=["duplicate_detection"],
+            is_duplicate=True,
+            duplicate_of=canonical_key,
+        )
+    
     if not entry.title and not entry.doi:
         return VerificationResult(
             key=entry.key, title="",
@@ -1376,7 +1459,7 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
     unique_entries = [e for e in entries if e.key not in skip_keys]
     
     with ThreadPoolExecutor(max_workers=8) as ex:
-        future_map = {ex.submit(verify_reference, e): e for e in unique_entries}
+        future_map = {ex.submit(verify_reference, e, dup_map): e for e in unique_entries}
         for future in as_completed(future_map):
             try:
                 result = future.result()
