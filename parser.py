@@ -4,17 +4,19 @@ STEP 2: Bibliography Parser
 Parses the bibliography section of an LNI-formatted document.
 Extracts citation keys like [AB00], [Ez10], [GI19] and their metadata.
 
-LNI key format:
+LNI key format (STRICT v8.4):
   - 1 author:       First 2 letters of surname + 2-digit year  → [Ez10]
   - 2 authors:      First letter of each author + year         → [KB14]
-  - 3+ authors:     First 2 letters of first author + year     → [De18]
+  - 3 authors:      First letter of ALL THREE authors + year   → [LBH15] (NOT [LB15])
+  - 4+ authors:     First 2 letters of first author + year     → [De18]
   - No author:      First 2 letters of title + year            → [Di02]
   - Multiple works same year: append a, b, c...                → [Wa14a]
 
-FIXED v7.1:
-  - Key validation now correctly handles 2-author keys (e.g., KB14 = Kingma + Ba)
-  - Better support for all valid LNI key formats
-  - No false "Key mismatch" warnings for correctly formatted keys
+FIXED v8.4:
+  - 3-author keys MUST include all three initials per LNI standard
+  - LB15 for 3-author paper (LeCun+Bengio+Hinton) is INVALID — must be LBH15
+  - Strict key validation now properly enforces LNI format
+  - Clear mismatch detection for improper author initial encoding
 """
 
 import re
@@ -532,10 +534,14 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     Verify that the initials and year encoded in the LNI citation key are
     consistent with the parsed author(s) and year.
     
-    FIXED v7.1: Now correctly handles all LNI key formats:
-    - 1 author:  First 2 letters of surname (e.g., Ez10 for Ezhov)
-    - 2 authors: First letter of each author (e.g., KB14 for Kingma + Ba)
-    - 3+ authors: First 2 letters of first author (e.g., De18 for Devlin)
+    FIXED v8.4: Strict LNI key format enforcement:
+    - 1 author:       First 2 letters of surname (e.g., Ez10 for Ezhov)
+    - 2 authors:      First letter of each author (e.g., KB14 for Kingma + Ba)
+    - 3 authors:      First letter of ALL THREE authors (e.g., LBH15 for LeCun+Bengio+Hinton)
+    - 4+ authors:     First 2 letters of first author (e.g., De18 for Devlin et al.)
+    
+    Note: For 3-author papers, the key MUST include all 3 initials per LNI standard.
+    Keys like LB15 (skipping middle author) are invalid and will be flagged.
     """
     if entry.key.isdigit():
         entry.key_consistent = True
@@ -555,7 +561,7 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
         expected_2d = entry.year[-2:]
         year_ok = (expected_2d == key_year_2d)
 
-    # ── Author initials check (FIXED) ──────────────────────────────────────
+    # ── Author initials check (STRICT LNI v8.4) ─────────────────────────────
     initials_ok: Optional[bool] = None
     if entry.authors:
         surnames = _extract_surnames(entry.authors)
@@ -575,53 +581,28 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
 
             normed = [_norm_surname(s) for s in surnames]
 
-            # ── Build ALL valid LNI key forms ──────────────────────────────
+            # ── Build valid LNI key forms (strict per LNI standard) ─────────
             valid_forms = set()
 
-            # Form 1: First 2 letters of first author's surname
-            # Used for: 1 author (Ez10) OR 3+ authors (De18)
-            valid_forms.add(normed[0][:2])
-
-            # Form 2: First letter of each author (for 2 authors: KB14)
-            if n >= 2:
-                valid_forms.add(''.join(s[0] for s in normed[:min(n, 3)]))
-                # Also first + last for 3+ authors (common variant)
-                if n >= 3:
-                    valid_forms.add(normed[0][0] + normed[-1][0])
-
-            # Form 3: First letter of first author only (for 1 author)
             if n == 1:
-                valid_forms.add(normed[0][0])
-
-            # Form 4: For 2 authors, first letter of each (this is the correct LNI form!)
-            if n == 2:
-                # e.g., Kingma + Ba = KB
-                valid_forms.add(normed[0][0] + normed[1][0])
-                # Also try first two letters of first author + first letter of last
-                if len(normed[0]) >= 2:
-                    valid_forms.add(normed[0][:2] + normed[1][0])
-
-            # Form 5: For 3 authors, first letter of each (e.g., ABC)
-            if n == 3:
-                valid_forms.add(normed[0][0] + normed[1][0] + normed[2][0])
-
-            # Form 6: For 4+ authors, first 2 of first author (LNI standard)
-            if n >= 4:
+                # 1 author: first 2 letters of surname (e.g., Ez10)
                 valid_forms.add(normed[0][:2])
 
-            # ── Check if key_initials matches any valid form ──────────────
-            initials_ok = any(
-                key_initials == form or key_initials.startswith(form) or form.startswith(key_initials)
-                for form in valid_forms
-                if form and len(form) >= 2
-            )
+            elif n == 2:
+                # 2 authors: first letter of each (e.g., KB14 for Kingma + Ba)
+                valid_forms.add(normed[0][0] + normed[1][0])
 
-            # If nothing matched but the key's initials are a plausible
-            # subsequence of the paper's author initials, treat as unknown
-            if initials_ok is False and n >= 2:
-                author_initials = {s[0] for s in normed}
-                if set(key_initials) <= author_initials:
-                    initials_ok = None
+            elif n == 3:
+                # 3 authors: first letter of ALL THREE (e.g., LBH15)
+                # This is the strict LNI standard — NO exceptions like LB15
+                valid_forms.add(normed[0][0] + normed[1][0] + normed[2][0])
+
+            elif n >= 4:
+                # 4+ authors: first 2 letters of first author (e.g., De18)
+                valid_forms.add(normed[0][:2])
+
+            # ── Check if key_initials matches required form ──────────────────
+            initials_ok = key_initials in valid_forms
 
     # ── Combine ──────────────────────────────────────────────────────────────
     checks = [c for c in [year_ok, initials_ok] if c is not None]
@@ -636,20 +617,8 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
         if year_ok is False:
             details.append(f"key year '{key_year_2d}' ≠ parsed year '{entry.year}'")
         if initials_ok is False:
-            # For 2-author papers with correct key like KB14, don't flag as mismatch
-            if len(surnames) == 2 and key_initials == (normed[0][0] + normed[1][0]):
-                entry.key_consistent = True
-                entry.key_mismatch_detail = None
-                return
-            
-            # For 1-author papers with correct key like Ez10
-            if len(surnames) == 1 and key_initials == normed[0][:2]:
-                entry.key_consistent = True
-                entry.key_mismatch_detail = None
-                return
-            
             details.append(
-                f"key initials '{key_initials}' don't match authors '{entry.authors[:40]}'"
+                f"key initials '{key_initials}' don't match LNI standard for authors '{entry.authors[:60]}'"
             )
         
         if details:
