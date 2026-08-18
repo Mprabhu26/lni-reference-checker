@@ -427,15 +427,12 @@ function switchTab(tab, btn) {
 }
 
 function openDbTab() {
-  document.querySelectorAll('.tab-btn').forEach(b => {
-    const isDb = b.id === 'tabDbBtn' || b.getAttribute('onclick') === "switchTab('db',this)";
-    b.style.display = isDb ? '' : 'none';
-  });
+  // Show all tabs - don't hide them
+  document.querySelectorAll('.tab-btn').forEach(b => b.style.display = '');
   document.getElementById('tabsWrap').classList.add('show');
   document.getElementById('welcomeScreen').style.display = 'none';
   switchTab('db', document.getElementById('tabDbBtn'));
   document.getElementById('tabsWrap').scrollIntoView({behavior:'smooth'});
-  window._dbOnlyMode = true;
 }
 
 async function dbDeleteAll() {
@@ -462,7 +459,6 @@ function startOver() {
   mainFile = null;
   bibFile = null;
   markedFakeKeys = new Set();
-  window._dbOnlyMode = false;
   document.getElementById('mainFile').value = '';
   const bibInput = document.getElementById('bibFile');
   if (bibInput) bibInput.value = '';
