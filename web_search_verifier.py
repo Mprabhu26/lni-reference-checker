@@ -173,8 +173,8 @@ def llm_verify_with_web_search(
         (r'delving deep into rectifiers', r'he.*kaiming', 2015, "Delving Deep into Rectifiers"),
         (r'very deep convolutional networks', r'simonyan', 2015, "VGG"),
         (r'attention is all you need', r'vaswani', 2017, "Attention"),
-        (r'bert.*pre training.*deep bidirectional', r'devlin', 2019, "BERT"),
-        (r'semi-supervised.*graph convolutional', r'kipf', 2017, "GCN"),
+        (r'bert.*pre[\s\-]*tr\s*aining.*deep.*bidirectional', r'devlin', 2019, "BERT"),
+        (r'semi[\s\-]*supervised.*graph.*c\s*o\s*n\s*v\s*o\s*l\s*u\s*t\s*i\s*o\s*n\s*a\s*l', r'kipf', 2017, "GCN"),
         (r'deep learning.*lecun.*bengio.*hinton', r'lecun', 2015, "Deep Learning (Nature)"),
     ]
     
@@ -281,9 +281,9 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
         # Paper: Attention
         (r'attention is all you need', r'vaswani', 2017, "Attention"),
         # Paper: BERT
-        (r'bert.*pre training.*deep bidirectional', r'devlin', 2019, "BERT"),
+        (r'bert.*pre[\s\-]*tr\s*aining.*deep.*bidirectional', r'devlin', 2019, "BERT"),
         # Paper: GCN
-        (r'semi-supervised.*graph convolutional', r'kipf', 2017, "GCN"),
+        (r'semi[\s\-]*supervised.*graph.*c\s*o\s*n\s*v\s*o\s*l\s*u\s*t\s*i\s*o\s*n\s*a\s*l', r'kipf', 2017, "GCN"),
         # Paper: Deep Learning (Nature)
         (r'deep learning.*lecun.*bengio.*hinton', r'lecun', 2015, "Deep Learning"),
     ]
