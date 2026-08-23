@@ -170,6 +170,30 @@ def _vr_to_dicts(api_results_raw: list) -> list:
     ]
 
 
+def _verified_result_without_ai(bib_dicts: list, api_results_raw: list) -> dict:
+    """Build the final verdict when every reference already passed verification."""
+    by_key = {vr.key: vr for vr in api_results_raw}
+    verdicts = []
+    for entry in bib_dicts:
+        vr = by_key.get(entry["key"])
+        if vr is None:
+            continue
+        verdicts.append({
+            "key": entry["key"],
+            "verdict": "REAL",
+            "confidence": vr.confidence,
+            "reasoning": "Confirmed by the reference verification stage.",
+            "risk_factors": [],
+        })
+    return {
+        "verdicts": verdicts,
+        "fake_count": 0,
+        "suspicious_count": 0,
+        "real_count": len(verdicts),
+        "summary": f"Analysis: {len(verdicts)} REAL, 0 SUSPICIOUS, 0 FAKE",
+    }
+
+
 def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) -> list:
     """
     Compare cited metadata against what the database found.
@@ -788,7 +812,11 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
         yield _sse("progress", {"step": "ai_verify",
             "message": "🤖 AI review of suspicious entries..."})
         api_results_dicts = _vr_to_dicts(api_results_raw)
-        verification_result = ai_verify_references(bib_dicts, api_results_dicts)
+        if (api_results_raw and len(api_results_raw) == len(bib_dicts)
+                and all(vr.status == "verified" for vr in api_results_raw)):
+            verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
+        else:
+            verification_result = ai_verify_references(bib_dicts, api_results_dicts)
 
         suspicious_ai = verification_result.get("suspicious_count", 0)
         if suspicious_ai > 0:

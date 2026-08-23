@@ -912,6 +912,31 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 "fake_count": 0, "suspicious_count": 0, "real_count": 0}
     
     vr_by_key = {vr["key"]: vr for vr in api_results}
+
+    # Do not make an unnecessary LLM call when the verification stage already
+    # confirmed every bibliography entry. This also prevents provider retries
+    # from blocking rendering of a fully verified document.
+    if (len(api_results) == len(bib_entries)
+            and all(vr.get("status") == "verified" for vr in api_results)):
+        verdicts = [
+            {
+                "key": entry["key"],
+                "verdict": "REAL",
+                "confidence": vr_by_key[entry["key"]].get("confidence", 0.95),
+                "reasoning": "Confirmed by the reference verification stage.",
+                "risk_factors": [],
+            }
+            for entry in bib_entries
+            if entry["key"] in vr_by_key
+        ]
+        return {
+            "verdicts": verdicts,
+            "fake_count": 0,
+            "suspicious_count": 0,
+            "real_count": len(verdicts),
+            "summary": f"Analysis: {len(verdicts)} REAL, 0 SUSPICIOUS, 0 FAKE",
+        }
+
     all_verdicts: List[dict] = []
     needs_ai: List[tuple] = []
     pre_screen_cache: Dict[str, dict] = {}
