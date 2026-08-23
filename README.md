@@ -1,4 +1,4 @@
-# LNI Reference Checker v8.3
+# LNI Reference Checker
 
 ## Automated Academic Reference Verification & Validation
 
@@ -11,14 +11,14 @@ A production-grade Python/Flask application for validating bibliographic referen
 ## 🎯 Key Features
 
 ### Multi-Format Document Processing
-- **PDF** (text-based, image PDFs not supported)
+- **PDF** (text-based; image/scanned PDFs not supported)
 - **Microsoft Word** (.docx)
 - **LaTeX** (.tex + .bib files)
 - **Auto-detection** of format and encoding issues
-- **Robust text extraction** handling ligatures, special characters, footnotes
+- **Robust text extraction** handling ligatures, special characters, and footnotes
 
 ### Bibliography Parsing & Validation
-- **LNI key validation** — verifies [Author Initial][Year] pattern consistency
+- **LNI key validation** — verifies [AuthorInitial][Year] pattern consistency
 - **Metadata extraction** — intelligently parses author, title, year, venue, DOI, URLs
 - **Completeness auditing** — flags missing required fields per entry type (journal vs. conference vs. book)
 - **Format detection** — distinguishes between BibTeX, IEEE, APA, and Chicago styles
@@ -32,24 +32,25 @@ A production-grade Python/Flask application for validating bibliographic referen
 - **Pattern detection** — finds citation chains suggesting hallucinated references
 
 ### Intelligent Reference Verification
+
 Four-stage pipeline with automatic caching:
 
 ```
 1. LOCAL CACHE (SQLite)      → Title ≥95% match → REAL ✓ (instant)
-   ├─ Cached verified papers with compression
+   ├─ Cached verified papers with zlib compression
    └─ Results persist across sessions
-   
+
 2. ACADEMIC APIS (parallel)  → Title ≥85% match → REAL ✓
    ├─ CrossRef (journal DOIs)
    ├─ Semantic Scholar (CS papers + preprints)
    ├─ OpenAlex (multidisciplinary coverage)
    ├─ DBLP (CS conferences)
    └─ arXiv (physics/CS preprints)
-   
+
 3. URL VALIDATION (suspicious only) → HTTP 200 + title match → REAL ✓
    ├─ Smart bot-blocking detection
    └─ Safe page content verification
-   
+
 4. AI + WEB SEARCH (final fallback) → Confidence ≥70% → REAL ✓
    ├─ Groq LLaMA 3.3 70B or Google Gemini
    ├─ DuckDuckGo web search with fallback
@@ -57,30 +58,30 @@ Four-stage pipeline with automatic caching:
 ```
 
 **Verdicts**: `REAL`, `SUSPICIOUS`, or `FAKE`
-- ✅ **REAL** — passed any verification stage (SUSPICIOUS → REAL via manual override)
+- ✅ **REAL** — passed any verification stage (SUSPICIOUS → REAL via professor override)
 - ⚠️ **SUSPICIOUS** — low confidence; requires manual review
-- ❌ **FAKE** — professor-only action (AI never produces FAKE)
+- ❌ **FAKE** — professor-only action; AI never produces FAKE verdicts
 
 ### Web Interface
-Single-page React application with real-time feedback:
+
+Single-page application with real-time feedback:
 
 | Tab | Purpose |
 |-----|---------|
 | **Bibliography** | Parsed entries, metadata warnings, completeness checks |
 | **Cross-Check** | Citation gaps, missing/orphaned entries, duplicates |
 | **Verification** | Detailed results: verdict, confidence, source attribution |
-| **Database** | Browse 500K+ cached verified papers, search, manage |
+| **Database** | Browse cached verified papers, search, inject, manage |
 
-- **Auto-rendering** after professor actions (mark FAKE/REAL)
-- **Real-time progress** with detailed API logs
-- **Download reports** in Excel (.xlsx) format
+- **Auto-rendering** after professor actions (mark FAKE/REAL via the review API)
+- **Real-time progress** with detailed API logs (streaming mode)
+- **Download reports** in Excel (.xlsx) or BibTeX format
 
 ### Professor Workflow
 - ✓ Review all SUSPICIOUS entries (requires human judgment)
-- ✓ Click **"Mark FAKE"** to confirm obvious hallucinations
-- ✓ Click **"Mark REAL"** to override false positives and persist to cache
-- ✓ **Manually inject** verified papers into persistent database
-- ✓ **Search & browse** verified papers across sessions
+- ✓ Submit decisions via **`/api/review`** (REAL/FAKE/SUSPICIOUS + optional note)
+- ✓ **Manually inject** verified papers into the persistent database via **`/api/inject_paper`**
+- ✓ **Search & browse** cached papers via **`/api/db_contents`**
 - ✓ Download comprehensive reports (bibliography + verification scores)
 
 ---
@@ -88,26 +89,29 @@ Single-page React application with real-time feedback:
 ## 📊 Architecture
 
 ### Module Overview
+
 ```
 lni_tool/
-├── app.py                   Flask server, HTTP endpoints, session handling (1294 L)
-├── extractor.py             PDF/DOCX/LaTeX text extraction (1268 L)
-├── parser.py                LNI parsing, BibEntry dataclass, completeness checks (1332 L)
-├── checker.py               API verification pipeline, cross-checking (1594 L)
-├── ai_checker.py            LLM integration, semantic analysis, thresholds (1092 L)
-├── web_search_verifier.py   URL validation, web search, bot detection (496 L)
-├── local_db.py              SQLite caching with zlib compression (528 L)
-├── review_queue.py          Venue whitelist, professor actions, override persistence (472 L)
-├── make_fixtures.py         Test PDF generator for coverage (620 L)
-├── static/
-│   └── index.html           Complete single-page UI, no CDN dependencies (1300 L)
+├── app.py                   Flask server, HTTP endpoints, session handling (1342 L)
+├── extractor.py             PDF/DOCX/LaTeX text extraction (1021 L)
+├── parser.py                LNI parsing, BibEntry dataclass, completeness checks (849 L)
+├── checker.py               API verification pipeline, cross-checking (1788 L)
+├── ai_checker.py            LLM integration, semantic analysis, thresholds (1110 L)
+├── web_search_verifier.py   URL validation, web search, bot detection (414 L)
+├── local_db.py              SQLite caching with zlib compression (521 L)
+├── review_queue.py          Professor decisions, override persistence (391 L)
+├── make_fixtures.py         Test PDF generator for coverage (336 L)
+├── fix_db.py                One-time DB schema migration helper
+├── download_db.py           Optional: full Semantic Scholar snapshot instructions
+├── index.html               Complete single-page UI (1356 L)
 ├── requirements.txt         All free/open-source dependencies
-├── conftest.py              pytest fixtures for testing
-├── pytest.ini               Test configuration
-└── Procfile                 Docker/Heroku deployment config
+└── conftest.py              pytest fixtures
 ```
 
+> **Note**: `pytest.ini` and `Procfile` are not included in the repository by default. Add them as needed (see Testing and Deployment sections below).
+
 ### Verification Pipeline Flow
+
 ```
 ┌─────────────┐
 │ Input File  │
@@ -150,7 +154,7 @@ lni_tool/
 │   → ≥95% match? → REAL ✓                            │
 │                                                      │
 │ Stage 4: AI + Web Search (fallback)                 │
-│   → DuckDuckGo + LLaMA/Gemini                       │
+│   → DuckDuckGo + LLaMA 3.3/Gemini                  │
 │   → Confidence ≥70%? → REAL ✓                       │
 │   → Else → SUSPICIOUS                               │
 └──────┬───────────────────────────────────────────────┘
@@ -172,46 +176,51 @@ lni_tool/
 ### 1. Installation
 
 ```bash
-# Clone repository
 git clone <repo_url>
 cd lni-reference-checker
 
-# Install dependencies (Python 3.9+)
+# Python 3.9+ required
 pip install -r requirements.txt
 ```
 
 ### 2. Configuration (Optional but Recommended)
 
-Create `.env` file in project root with free API keys:
+Create a `.env` file in the project root:
 
 ```bash
-# AI backends (pick at least one for full verification)
-AI_API_KEY=your_groq_api_key                      # https://console.groq.com (free, llama-3.3-70b)
-AI_API_KEY_GEMINI=your_gemini_api_key             # https://aistudio.google.com (free, Gemini 1.5 Flash)
+# AI backends — pick at least one for full AI-fallback verification
+AI_API_KEY=your_groq_api_key              # https://console.groq.com (free, llama-3.3-70b)
+AI_API_KEY_GEMINI=your_gemini_api_key     # https://aistudio.google.com (free, Gemini 1.5 Flash)
 
-# Optional: higher rate limits
-SEMANTIC_SCHOLAR_API_KEY=your_s2_api_key          # https://semanticscholar.org/product/api
-GITHUB_TOKEN=your_github_token                    # https://github.com/settings/tokens
+# Optional: higher rate limits for academic APIs
+SEMANTIC_SCHOLAR_API_KEY=your_s2_key     # https://semanticscholar.org/product/api
+GITHUB_TOKEN=your_github_token           # https://github.com/settings/tokens
 
 # Cache/database directories (defaults: .lni_cache, .lni_db)
 LNI_CACHE_DIR=/path/to/cache
 LNI_DB_DIR=/path/to/db
 
-# Open-access link discovery (Unpaywall)
+# Open-access link discovery via Unpaywall (optional)
 UNPAYWALL_EMAIL=your_email@university.edu
 ```
 
-**Why free?** All listed APIs offer free tiers sufficient for academic use:
+**All APIs listed have free tiers adequate for academic use:**
 - **Groq**: 14,400 req/day free
-- **Google Gemini**: 1,500 req/day free  
-- **Semantic Scholar**: No auth required for standard queries
-- **CrossRef**: Rate-limited but free for everyone
+- **Google Gemini**: 1,500 req/day free
+- **Semantic Scholar / CrossRef**: Free, no payment required
 
 ### 3. Initialize Databases
 
+Databases are auto-initialized on first run. To initialize manually:
+
 ```bash
-# Create SQLite caches (one-time setup)
 python -c "from local_db import init_cache_db; from review_queue import init_review_db; init_cache_db(); init_review_db()"
+```
+
+If you see an `author_norm` column error on an existing DB, run the migration helper:
+
+```bash
+python fix_db.py
 ```
 
 ### 4. Run Server
@@ -220,12 +229,6 @@ python -c "from local_db import init_cache_db; from review_queue import init_rev
 python app.py
 # Navigate to http://localhost:5000
 ```
-
-The application will:
-- ✓ Extract and parse your document
-- ✓ Verify each reference through 4-stage pipeline
-- ✓ Cache results for future use
-- ✓ Display interactive results in web UI
 
 ---
 
@@ -236,24 +239,25 @@ The application will:
 ```
 1. UPLOAD document (PDF, DOCX, or TEX)
    └─ Optionally attach .bib sidecar for LaTeX
-   
-2. RUN CHECK (automatic or with online verification enabled)
+
+2. RUN CHECK (deep_check=true for full online verification)
    └─ Progress panel shows API calls, cache hits, AI reasoning
-   
+
 3. REVIEW RESULTS across tabs
    ├─ Bibliography tab: Check metadata warnings & completeness flags
    ├─ Cross-Check tab: Identify missing/orphaned entries
    ├─ Verification tab: Review AI verdicts (REAL/SUSPICIOUS)
    └─ Database tab: Search verified papers for context
-   
+
 4. MANUAL ACTIONS (for SUSPICIOUS entries)
    ├─ Read AI reasoning + source attributions
    ├─ Search your institution's database
-   ├─ Click "Mark REAL" if legitimate → persists to cache
-   └─ Click "Mark FAKE" if obvious hallucination → score updated
-   
+   ├─ POST /api/review with decision="REAL" if legitimate → cached
+   └─ POST /api/review with decision="FAKE" → score updated
+
 5. DOWNLOAD REPORT
    └─ Excel file with bibliography + verification scores + cross-check results
+   └─ BibTeX export of verified entries via /api/export-bibtex
 ```
 
 ### Example Scenarios
@@ -261,37 +265,44 @@ The application will:
 #### Scenario A: Legitimate but Rare Citation
 - Entry marked SUSPICIOUS (low API match)
 - You confirm it's real via institutional database
-- **Action**: Click "Mark REAL" → cached for future submissions
-- **Result**: Next identical citation marked REAL instantly
+- **Action**: Submit `decision: REAL` to `/api/review` → cached for future submissions
 
 #### Scenario B: Fabricated Reference
 - Entry marked SUSPICIOUS (conflicting author/year)
-- You search and find no evidence of paper
-- **Action**: Click "Mark FAKE" → score penalty applied
-- **Result**: Report shows -15 points; student can see and fix
+- You search and find no evidence of the paper
+- **Action**: Submit `decision: FAKE` → score penalty applied
 
 #### Scenario C: Author Name Variation
 - Paper by "R. Sutton" (real: "Richard S. Sutton")
 - APIs return SUSPICIOUS due to name mismatch
-- You confirm it's the reinforcement learning pioneer
-- **Action**: Click "Mark REAL" → entry re-cached with correct variant
-- **Result**: Future submissions with variant names already verified
+- **Action**: Submit `decision: REAL` + inject via `/api/inject_paper` → future variant names pre-verified
 
 ---
 
 ## 🔌 REST API Endpoints
 
 ### POST `/check`
-Analyze a single document.
+Analyze a document. Chooses between streaming and synchronous mode automatically.
 
-**Request**: Multipart form
 ```bash
 curl -F "file=@my_paper.pdf" \
      -F "deep_check=true" \
      http://localhost:5000/check
 ```
 
-**Response**: JSON
+### POST `/check-stream`
+Streaming SSE variant — returns newline-delimited JSON events during analysis, then a final `data: DONE` event.
+
+### POST `/check-sync`
+Synchronous fallback — blocks until analysis completes, then returns full JSON.
+
+### POST `/batch`
+Analyze multiple documents in one request (multipart, multiple `file` fields).
+
+### POST `/ai-review`
+Run the AI reviewer pass on already-parsed entries (POST JSON with `entries` array).
+
+**Sample `/check` response**:
 ```json
 {
   "status": "success",
@@ -312,11 +323,7 @@ curl -F "file=@my_paper.pdf" \
     "verdict": "PASS",
     "verdict_reason": "3 suspicious entries require review",
     "penalties": [
-      {
-        "category": "Incomplete LNI entries",
-        "count": 1,
-        "deduction": 5
-      }
+      { "category": "Incomplete LNI entries", "count": 1, "deduction": 5 }
     ]
   },
   "bibliography": [
@@ -355,37 +362,60 @@ curl -F "file=@my_paper.pdf" \
 }
 ```
 
-### POST `/mark_fake` & `/mark_real`
-Professor manual override (persists to SQLite).
+---
+
+### POST `/api/review`
+Professor manual decision — persists to `review_queue.db`.
 
 ```bash
 curl -X POST -H "Content-Type: application/json" \
-     -d '{"key":"Smith2021","filename":"my_paper.pdf"}' \
-     http://localhost:5000/mark_fake
+     -d '{"title":"Deep Learning","authors":"LeCun et al.","decision":"REAL","note":"Confirmed via library","ai_verdict":"SUSPICIOUS"}' \
+     http://localhost:5000/api/review
 ```
 
-### GET `/database/papers`
-Browse cached verified papers.
+**Body fields**: `title`, `authors`, `decision` (REAL/FAKE/SUSPICIOUS), `note` (optional), `url` (optional), `ai_verdict` (optional)
+
+**Response**: `{"success": true}`
+
+---
+
+### GET `/api/review/stats`
+Returns professor review statistics and the 10 most recent pending decisions.
+
+---
+
+### POST `/api/inject_paper`
+Manually add a verified paper to the local SQLite cache.
 
 ```bash
-curl "http://localhost:5000/database/papers?search=deep+learning&limit=20&offset=0"
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"title":"Deep Learning","authors":"LeCun; Bengio; Hinton","year":"2015","doi":"10.1038/nature14539","url":""}' \
+     http://localhost:5000/api/inject_paper
 ```
 
 **Response**:
 ```json
 {
-  "papers": [
-    {
-      "title": "Deep Learning",
-      "authors": "Yann LeCun; Yoshua Bengio; Geoffrey Hinton",
-      "year": 2015,
-      "doi": "10.1038/nature14539",
-      "source": "crossref",
-      "confidence": 0.98,
-      "added": "2025-01-15T10:30:00"
-    }
-  ],
-  "total": 523642,
+  "success": true,
+  "message": "'Deep Learning' saved to local DB.",
+  "db_total": 523643,
+  "db_size_kb": 12451
+}
+```
+
+---
+
+### GET `/api/db_stats`
+Database summary statistics.
+
+```bash
+curl http://localhost:5000/api/db_stats
+```
+
+**Response**:
+```json
+{
+  "total_papers": 523642,
   "by_source": {
     "crossref": 250000,
     "semantic_scholar": 150000,
@@ -397,11 +427,54 @@ curl "http://localhost:5000/database/papers?search=deep+learning&limit=20&offset
 }
 ```
 
-### GET `/database/stats`
-Database summary statistics.
+---
+
+### GET `/api/db_contents`
+Browse cached verified papers.
 
 ```bash
-curl http://localhost:5000/database/stats
+curl "http://localhost:5000/api/db_contents?search=deep+learning&limit=20&offset=0"
+```
+
+**Query Parameters**: `search`, `limit` (max 500, default 100), `offset`
+
+**Response**: `{ "papers": [...], "total": 523642, "by_source": {...}, "db_size_kb": 12450 }`
+
+---
+
+### POST `/api/db_delete`
+Delete a specific paper from the cache (by title).
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"title":"Deep Learning"}' \
+     http://localhost:5000/api/db_delete
+```
+
+---
+
+### POST `/api/db_delete_all`
+Wipe the entire verified papers cache (destructive — use with caution).
+
+---
+
+### POST `/api/export-bibtex`
+Export verification results as a BibTeX file.
+
+**Body**: `{ "verification": [...], "bibliography": [...] }`
+
+---
+
+### POST `/export`
+Export results as an Excel (.xlsx) report.
+
+---
+
+### GET `/status`
+Health check and server status.
+
+```bash
+curl http://localhost:5000/status
 ```
 
 ---
@@ -420,54 +493,51 @@ Each verification source is independently scored:
 
 **Composite score** = (title_score × 0.4) + (author_score × 0.35) + (year_score × 0.25)
 
-**REAL threshold**: ≥85% on any single academic API  
+**REAL threshold**: ≥85% on any single academic API
 **Grey literature**: ≥75% threshold (industry reports, white papers)
 
 ### URL Validation
 
 Only attempted for SUSPICIOUS entries with available URLs:
-
-1. ✓ Check HTTP status (allow 200 only)
-2. ✓ Detect bot-blocking (403, 429) and skip
-3. ✓ Extract page title + content
-4. ✓ Match against original title (≥95%)
-5. ✓ Auto-REAL only if ALL conditions met
+1. Check HTTP status (200 only)
+2. Detect bot-blocking (403, 429) and skip
+3. Extract page title + content
+4. Match against original title (≥95%)
+5. Auto-REAL only if all conditions met
 
 ### Academic APIs Used (Parallel Querying)
 
-| API | Coverage | Speed | Key Field |
-|-----|----------|-------|-----------|
-| **CrossRef** | Journal articles, books | Fast | DOI-indexed works |
-| **Semantic Scholar** | CS papers, preprints | Fast | Computer science (primary) |
-| **OpenAlex** | Multidisciplinary | Medium | Open-access coverage |
-| **DBLP** | CS conferences | Fast | Computer science (secondary) |
-| **arXiv** | Physics, CS preprints | Fast | Native BibTeX export |
+| API | Coverage | Key Field |
+|-----|----------|-----------|
+| **CrossRef** | Journal articles, books | DOI-indexed works |
+| **Semantic Scholar** | CS papers, preprints | Computer science (primary) |
+| **OpenAlex** | Multidisciplinary | Open-access coverage |
+| **DBLP** | CS conferences | Computer science (secondary) |
+| **arXiv** | Physics, CS preprints | Native BibTeX export |
 
 All queries run in parallel (5 concurrent workers) with per-host rate limiting.
 
 ### AI Fallback Logic
 
-For remaining SUSPICIOUS entries:
-
+For remaining SUSPICIOUS entries after API stage:
 1. **Web search**: DuckDuckGo + BeautifulSoup extraction
-2. **LLM analysis**: Groq LLaMA 3.3 or Google Gemini
+2. **LLM analysis**: Groq LLaMA 3.3 70B (primary) → Google Gemini (fallback)
 3. **Semantic understanding**: Author, year, topic consistency
-4. **Confidence calculation**: Composite score from search results + LLM reasoning
-5. **Threshold**: ≥70% confidence → REAL & cached; <70% → SUSPICIOUS
+4. **Threshold**: ≥70% confidence → REAL & cached; <70% → SUSPICIOUS
 
-**Important**: AI verdict **never outputs FAKE** (professor-only action).
+**AI verdict never outputs FAKE** — that is a professor-only action.
 
 ### Grey Literature Handling
 
 Automatically detects and adapts for:
-- Industry reports (Bitkom, Flexera, Gartner)
+- Industry reports (Bitkom, Flexera, Gartner, etc.)
 - White papers and technical reports
-- Conference workshops and non-peer-reviewed venues
+- Non-peer-reviewed conference workshops
 
 **Adaptations**:
-- ✓ Lower API thresholds (≥75% instead of ≥85%)
-- ✓ Prioritize URL validation over API scoring
-- ✓ Never cache SUSPICIOUS grey literature entries
+- Lower API thresholds (≥75% instead of ≥85%)
+- Prioritize URL validation over API scoring
+- Never cache SUSPICIOUS grey literature entries
 
 ---
 
@@ -475,23 +545,19 @@ Automatically detects and adapts for:
 
 ### SQLite Local Cache (`verified_papers.db`)
 
-**Stores**: Title, authors, year, DOI, venue, URL, open-access status, confidence score
-
-**Size**: ~12 GB for 500K papers (zlib compression: ~60% smaller uncompressed)
-
-**Query speed**: O(1) title hash lookups + full-text search
-
-**Persistence**: Survives application restarts and professor actions
-
-**Thread-safe**: WAL mode + connection pooling for concurrent reads/writes
+| Property | Detail |
+|----------|--------|
+| **Stores** | Title, authors, year, DOI, venue, URL, open-access status, confidence |
+| **Compression** | zlib (~60% space savings) |
+| **Query speed** | O(1) title hash lookups + full-text search |
+| **Thread safety** | WAL mode + connection pooling |
+| **Persistence** | Survives application restarts |
 
 ### In-Memory Session Cache
 
-**Per-request**: API results (cleared after response)
-
-**LLM cache**: Request deduplication via SHA256 hash of (model, system, prompt)
-
-**Purpose**: Avoid redundant API calls within single submission analysis
+- **Per-request**: API results cleared after response
+- **LLM cache**: Request deduplication via SHA256 hash of (model, system, prompt)
+- **Purpose**: Avoid redundant API calls within a single analysis run
 
 ---
 
@@ -516,37 +582,23 @@ pytest tests/test_parser.py -v
 pytest --cov=. --cov-report=html
 ```
 
-### Key Test Modules
-
-| Module | Coverage | Tests |
-|--------|----------|-------|
-| `test_parser.py` | LNI key validation, metadata extraction, edge cases | 45+ |
-| `test_checker.py` | Verification pipeline, scoring, API mocking | 38+ |
-| `test_ai_checker.py` | Semantic analysis, false positive detection | 22+ |
-| `test_extractor.py` | PDF/DOCX/LaTeX text extraction | 31+ |
-
 ### Generate Test Fixtures
 
 ```bash
-# Creates 20 structured test PDFs covering verification scenarios
+# Creates structured test PDFs covering verification scenarios
 python make_fixtures.py
 ```
 
-Generates:
-- ✓ Perfect bibliography (all entries verified)
-- ✓ Hallucinated references (obvious fakes)
-- ✓ Incomplete entries (missing DOI/venue)
-- ✓ Near-duplicates (testing merge logic)
-- ✓ Grey literature (industry reports)
-- ✓ Non-Latin scripts (accent handling)
-- ✓ Author name variations (surname/initial confusion)
+Generates PDFs covering: perfect bibliography, hallucinated references, incomplete entries, near-duplicates, grey literature, non-Latin scripts, and author name variations.
 
-### Test Fixtures Provided
+### Shared Fixtures (`conftest.py`)
 
-Via `conftest.py`:
-- `make_bib_entry()` — Factory for BibEntry objects
-- `perfect_bib_text()` — Golden reference bibliography
-- `perfect_body_text()` — Golden text with citations
+| Fixture | Purpose |
+|---------|---------|
+| `make_bib_entry()` | Factory for `BibEntry` objects |
+| `perfect_bib_text()` | Golden reference bibliography string |
+| `perfect_body_text()` | Golden body text with citation keys |
+| `redirect_disk_cache` | Auto-redirects disk cache to temp dir for all tests |
 
 ---
 
@@ -556,53 +608,51 @@ Via `conftest.py`:
 
 | Aspect | Strategy | Benefit |
 |--------|----------|---------|
-| **API calls** | Parallel ThreadPoolExecutor (5 workers) | 5× faster verification |
+| **API calls** | Parallel `ThreadPoolExecutor` (5 workers) | 5× faster verification |
 | **Disk cache** | zlib compression + indexed SQLite | 60% space savings |
 | **Duplicate queries** | LLM cache via SHA256 hash | Skip redundant API calls |
-| **URL fetching** | Per-domain rate limiting (500ms) | Respect server limits |
+| **URL fetching** | Per-domain rate limiting (500ms) | Respects server limits |
 | **Text extraction** | Streaming PDF parsing | Low memory for large files |
 
 ### Resource Limits
 
 ```python
-MAX_FILE_SIZE = 30 MB             # Supports large dissertations
-REQUEST_TIMEOUT = 180 seconds     # 3-minute verification
-MAX_WORKERS = 5                   # API concurrency
-DB_QUERY_TIMEOUT = 30 seconds     # SQLite operations
+MAX_FILE_SIZE    = 30 MB       # Supports large dissertations
+TIMEOUT          = 180 seconds  # Per-request timeout (SIGALRM on Linux/macOS)
+MAX_WORKERS      = 5            # API concurrency
 ```
 
-### Benchmarks (on MacBook Pro M2, 16GB RAM)
+### Benchmarks (MacBook Pro M2, 16 GB RAM)
 
-| Task | Time | Notes |
-|------|------|-------|
-| Extract 50-page PDF | 1.2s | Parallel text extraction |
-| Parse 50 BibTeX entries | 0.3s | Regex-based, no external parser |
-| Cross-check citations | 0.8s | String matching, duplicate detection |
-| Verify 50 entries (cached) | 0.5s | Local DB lookups only |
-| Verify 50 entries (APIs) | 8-15s | Parallel queries to 5 APIs |
-| Full analysis (end-to-end) | 12-20s | PDF + parse + verify + AI |
+| Task | Time |
+|------|------|
+| Extract 50-page PDF | ~1.2s |
+| Parse 50 bibliography entries | ~0.3s |
+| Cross-check citations | ~0.8s |
+| Verify 50 entries (cached) | ~0.5s |
+| Verify 50 entries (APIs) | 8–15s |
+| Full analysis (end-to-end) | 12–20s |
 
 ---
 
 ## 🔐 Security & Reliability
 
 ### Input Validation
-- ✓ File type checking (magic bytes, not just extension)
-- ✓ File size limits (30 MB max)
-- ✓ Text encoding detection (UTF-8, Latin-1, auto-convert)
-- ✓ Malicious PDF detection (suspicious form actions)
+- File type checking (magic bytes, not just extension)
+- File size limit: 30 MB
+- Text encoding detection (UTF-8, Latin-1, auto-convert)
 
 ### Error Handling
-- ✓ Graceful API failures (falls through to next stage)
-- ✓ Timeout protection (180s max per request)
-- ✓ Database transaction integrity (WAL mode + PRAGMA foreign_keys)
-- ✓ Partial results handling (returns best-effort verification if API fails)
+- Graceful API failures (falls through to next verification stage)
+- Timeout protection (180s per request; SIGALRM on Linux/macOS, disabled on Windows)
+- Database transaction integrity (WAL mode)
+- Partial results returned if a stage fails
 
 ### Privacy
-- ✓ No uploaded files stored after processing (temp dir auto-cleanup)
-- ✓ No student/author names logged
-- ✓ Cache only stores reference metadata (title, DOI, year)
-- ✓ Session data cleared after response
+- Uploaded files are not stored after processing (temp dir auto-cleanup)
+- No student/author names logged
+- Cache stores only reference metadata (title, DOI, year, authors)
+- Session data cleared after each response
 
 ---
 
@@ -616,95 +666,88 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "2", "-t", "120", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "2", "-t", "180", "app:app"]
 ```
 
-**Build & run**:
 ```bash
 docker build -t lni-checker .
-docker run -p 5000:5000 -e AI_API_KEY=$GROQ_KEY lni-checker
+docker run -p 5000:5000 \
+  -e AI_API_KEY=$GROQ_KEY \
+  -e AI_API_KEY_GEMINI=$GEMINI_KEY \
+  lni-checker
 ```
 
-### Heroku
+### Gunicorn (Direct)
 
 ```bash
-# Deploy (uses Procfile)
-git push heroku main
-
-# View logs
-heroku logs --tail
-
-# Scale workers
-heroku ps:scale web=2
+gunicorn -b 0.0.0.0:5000 -w 2 -t 180 app:app
 ```
 
 ### Environment-Specific Notes
 
-- **Linux/macOS**: Signal-based timeouts (SIGALRM) enable strict 180s limits
-- **Windows**: Timeouts disabled; use `--timeout 120` in gunicorn
-- **Cloud (AWS/GCP)**: Auto-cleanup temp files; ensure sufficient /tmp space
+- **Linux/macOS**: SIGALRM-based timeouts enforce the 180s request limit
+- **Windows**: Signal-based timeouts are disabled; use `--timeout 120` in gunicorn
+- **Cloud (AWS/GCP)**: Ensure sufficient `/tmp` space; temp files are auto-cleaned after each request
 
 ---
 
 ## 📋 Configuration Reference
 
-| Variable | Default | Type | Purpose |
-|----------|---------|------|---------|
-| `AI_API_KEY` | (none) | string | Groq API key (llama-3.3-70b) |
-| `AI_API_KEY_GEMINI` | (none) | string | Google Gemini API key (fallback) |
-| `SEMANTIC_SCHOLAR_API_KEY` | (none) | string | Higher rate limits for S2 queries |
-| `GITHUB_TOKEN` | (none) | string | GitHub API token for repo verification |
-| `UNPAYWALL_EMAIL` | (none) | string | Email for Unpaywall polite pool (OA links) |
-| `LNI_CACHE_DIR` | `.lni_cache` | path | Disk cache for API results |
-| `LNI_DB_DIR` | `.lni_db` | path | SQLite database directory |
-| `FLASK_ENV` | `production` | string | Flask environment (development/production) |
-| `MAX_WORKERS` | `5` | int | API query concurrency |
-| `URL_TIMEOUT` | `10` | int | URL fetch timeout (seconds) |
-| `API_TIMEOUT` | `15` | int | Academic API timeout (seconds) |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AI_API_KEY` | (none) | Groq API key (llama-3.3-70b, primary LLM) |
+| `AI_API_KEY_GEMINI` | (none) | Google Gemini API key (fallback LLM) |
+| `SEMANTIC_SCHOLAR_API_KEY` | (none) | Higher rate limits for Semantic Scholar |
+| `GITHUB_TOKEN` | (none) | GitHub API token for repo citation verification |
+| `UNPAYWALL_EMAIL` | (none) | Email for Unpaywall polite pool (open-access links) |
+| `LNI_CACHE_DIR` | `.lni_cache` | Disk cache for API results |
+| `LNI_DB_DIR` | `.lni_db` | SQLite database directory |
+| `FLASK_ENV` | `production` | Flask environment (development/production) |
+
+At least one of `AI_API_KEY` or `AI_API_KEY_GEMINI` is required for the AI-fallback stage. All other keys are optional.
 
 ---
 
 ## ⚠️ Known Limitations & Workarounds
 
 ### Cannot Process
-| Issue | Reason | Workaround |
-|-------|--------|-----------|
-| Scanned PDFs (image-only) | No OCR engine | Use Tesseract or Adobe export first |
-| Non-Latin scripts (CJK, Cyrillic) | Limited API support | API results may be SUSPICIOUS; manual override |
-| Handwritten citations | No handwriting recognition | Type or photograph + transcribe |
-| Corrupted PDFs | Text extraction fails | Try online PDF repair tool first |
+
+| Issue | Workaround |
+|-------|-----------|
+| Scanned PDFs (image-only) | Run Tesseract OCR or export from Adobe first |
+| Non-Latin scripts (CJK, Cyrillic) | API coverage limited; use manual professor override |
+| Corrupted PDFs | Try an online PDF repair tool before uploading |
 
 ### Known Behaviors
 
 | Scenario | Behavior | Reason |
 |----------|----------|--------|
-| German conference proceedings marked SUSPICIOUS | Lower API coverage | Many German venues not in CrossRef; manual review needed |
-| Author name variations ("R. Sutton" vs "Richard Sutton") | SUSPICIOUS on first pass | APIs do prefix matching; professor override caches variant |
-| Very recent papers (< 3 months) | May be SUSPICIOUS | APIs lag by ~2-3 months; URL fallback catches most |
+| German conference proceedings | Often SUSPICIOUS | Many German venues not in CrossRef |
+| Author name variations ("R. Sutton" vs "Richard Sutton") | SUSPICIOUS on first pass | APIs do prefix matching; override and inject to cache |
+| Very recent papers (< 3 months old) | May be SUSPICIOUS | APIs lag by ~2–3 months; URL fallback catches most |
 | Self-published white papers | Lower thresholds applied | Grey literature detection activates automatically |
-| False positives (~2-4% historical) | SUSPICIOUS (not FAKE) | By design: safer to false-alarm than false-negative |
+| False positives (~2–4% historically) | SUSPICIOUS, not FAKE | By design: false-alarm is safer than false-negative |
 
 ### Edge Cases Handled
 
-✓ Diacritics (ä, ü, ö, é, etc.) — normalized before matching  
-✓ Ligatures (ﬁ, ﬂ, &) — converted to ASCII equivalents  
-✓ Abbreviations (et al., pp., vol.) — stripped during parsing  
-✓ Unicode entities (`&nbsp;`, `&lt;`) — decoded before search  
-✓ LaTeX macros (`\emph{}`, `\textbf{}`) — extracted before matching  
-✓ Truncated titles (pages field) — matched against first N words  
+- Diacritics (ä, ü, ö, é, …) — normalized before matching
+- Ligatures (ﬁ, ﬂ) — converted to ASCII equivalents
+- Abbreviations (et al., pp., vol.) — stripped during parsing
+- Unicode entities (`&nbsp;`, `&lt;`) — decoded before search
+- LaTeX macros (`\emph{}`, `\textbf{}`) — stripped before matching
 
 ---
 
 ## 🐛 Troubleshooting
 
-### No Verification Results (All SUSPICIOUS)
+### All Entries Coming Back SUSPICIOUS
 
 ```bash
-# 1. Check API configuration
-echo $AI_API_KEY    # Should be non-empty
+# 1. Verify API keys are loaded
+echo $AI_API_KEY
 echo $AI_API_KEY_GEMINI
 
-# 2. Test Groq API connectivity
+# 2. Test Groq connectivity
 curl -X POST https://api.groq.com/openai/v1/chat/completions \
   -H "Authorization: Bearer $AI_API_KEY" \
   -H "Content-Type: application/json" \
@@ -714,23 +757,21 @@ curl -X POST https://api.groq.com/openai/v1/chat/completions \
 df -h /tmp
 du -sh .lni_cache .lni_db
 
-# 4. Check network connectivity
-curl https://api.crossref.org/works?title=deep+learning
+# 4. Test CrossRef connectivity
+curl "https://api.crossref.org/works?query.title=deep+learning&rows=1"
 ```
 
 ### False SUSPICIOUS Verdicts
 
-**Why this happens:**
-- Author name variations (e.g., middle initials omitted)
-- Year off-by-one (±1 tolerance applied, but not always matching)
-- Venue abbreviations (Journal vs. J. for short)
-- Conference proceedings (often missing from CrossRef)
+Common causes: author middle initials omitted, off-by-one year, venue abbreviations, conference proceedings missing from CrossRef.
 
-**How to fix:**
-1. Click "View Details" on SUSPICIOUS entry
-2. Check "AI Reasoning" and "Metadata Warnings"
-3. Manually search institutional database
-4. Click **"Mark REAL"** if confirmed → cached for future submissions
+**Fix**: Use the Database tab to search for the paper → inject it manually via the UI, which calls `/api/inject_paper`. Future identical citations resolve instantly from cache.
+
+### DB Schema Error (`author_norm` column missing)
+
+```bash
+python fix_db.py
+```
 
 ### Performance Issues
 
@@ -738,29 +779,22 @@ curl https://api.crossref.org/works?title=deep+learning
 # Check database size
 du -sh .lni_db/
 
-# Clear old cache (CAUTION: removes all cached entries)
-python -c "from local_db import vacuum_db; vacuum_db()"
+# Clear cache (destructive)
+curl -X POST http://localhost:5000/api/db_delete_all
 
-# Profile CPU usage
-python -m cProfile -s cumulative app.py
-
-# Reduce worker concurrency (if CPU-constrained)
-# Edit checker.py: MAX_WORKERS = 2 (default 5)
+# Reduce concurrency if CPU-constrained
+# Edit checker.py: MAX_WORKERS = 2
 ```
 
 ### Connection Timeouts
 
 ```bash
-# Increase Flask timeout
-export FLASK_ENV=production
-# In gunicorn: --timeout 180 (default 30)
+# Increase gunicorn timeout
+gunicorn -b 0.0.0.0:5000 -w 2 -t 180 app:app
 
-# Check API rate limits
-curl -I https://api.crossref.org/works
-# Look for: X-Rate-Limit-Interval, X-Rate-Limit-Limit
-
-# Retry with backoff (automatic, but can be tuned)
-# Edit checker.py: MAX_RETRIES = 3
+# Check CrossRef rate limits
+curl -I "https://api.crossref.org/works?query.title=test"
+# Look for: X-Rate-Limit-Limit, X-Rate-Limit-Interval
 ```
 
 ---
@@ -773,181 +807,46 @@ curl -I https://api.crossref.org/works
 - Docstrings for modules and public functions
 - Single responsibility per module
 
-### Adding Verification Sources
-
-Example: Adding a new academic API
+### Adding a Verification Source
 
 ```python
 # 1. Create new_api_verifier.py
 def verify_with_new_api(entry: BibEntry, max_retries=3) -> VerificationResult:
     """Query NewAPI for reference verification."""
-    # Implement query logic
     # Return VerificationResult(verdict="REAL"/"SUSPICIOUS", confidence=0.85, source="newapi")
 
-# 2. Integrate into checker.py
-from new_api_verifier import verify_with_new_api
+# 2. Integrate into checker.py — add to VERIFICATION_SOURCES list
 
-def verify_all_references(entries):
-    # Add new_api to VERIFICATION_SOURCES list
-    # VERIFICATION_SOURCES = [local_db, crossref, semantic_scholar, neapi, ...]
+# 3. Add tests in tests/test_new_api.py with mocked responses
 
-# 3. Add tests
-# tests/test_new_api.py with mocked responses
-
-# 4. Tune thresholds
-# Edit: REAL_THRESHOLD_NORMAL = 0.85 (if applicable)
-```
-
-### Modifying Scoring Logic
-
-1. Update thresholds in `checker.py`:
-   ```python
-   REAL_THRESHOLD_NORMAL = 0.85        # Academic papers
-   REAL_THRESHOLD_GREY = 0.75          # Industry reports
-   SUSPICIOUS_THRESHOLD = 0.70         # AI fallback
-   ```
-
-2. Re-run test suite:
-   ```bash
-   python make_fixtures.py && pytest
-   ```
-
-3. Document changes in module docstring and this README
-
----
-
-## 📖 API Documentation (Detailed)
-
-### POST `/check` — Full Document Analysis
-
-**Form Parameters**:
-- `file` (required, multipart) — PDF, DOCX, or TEX file
-- `bib_file` (optional, multipart) — .bib sidecar for LaTeX
-- `deep_check` (optional, boolean) — Enable online verification (default: false)
-
-**Response Codes**:
-- `200 OK` — Analysis successful
-- `400 Bad Request` — Missing file or invalid format
-- `413 Payload Too Large` — File exceeds 30 MB
-- `500 Internal Server Error` — Processing error (partial results in response)
-
-**Response Fields**:
-- `status` — "success" or "error"
-- `filename` — Uploaded filename
-- `summary` — Counts: bib entries, citations, missing, orphaned, duplicates, fake, suspicious, verified
-- `score` — Overall score (0-100), grade (A+ to F), verdict (PASS/FLAG/FAIL)
-- `bibliography` — Array of parsed BibEntry objects with metadata warnings
-- `cross_check` — Citation gaps and unused entries
-- `verification` — AI verdicts with confidence scores and source attribution
-
-### POST `/mark_fake` & `/mark_real`
-
-**JSON Body**:
-```json
-{
-  "key": "AB20",
-  "filename": "my_paper.pdf"
-}
-```
-
-**Response**:
-```json
-{
-  "success": true,
-  "message": "Marked as FAKE",
-  "updated_score": 72
-}
-```
-
-**Effect**:
-- Updates professor's manual decision in SQLite
-- Re-renders all tabs (score, verification, etc.)
-- Persists across sessions
-
-### GET `/database/papers`
-
-**Query Parameters**:
-- `search` (optional) — Title/author search term
-- `limit` (optional, default 20) — Results per page
-- `offset` (optional, default 0) — Pagination offset
-- `source` (optional) — Filter by source (crossref, semantic_scholar, etc.)
-
-**Response**:
-```json
-{
-  "papers": [
-    {
-      "title": "...",
-      "authors": "...",
-      "year": 2015,
-      "doi": "...",
-      "url": "...",
-      "source": "crossref",
-      "confidence": 0.95,
-      "added": "2025-01-15T10:30:00Z",
-      "open_access_url": "..."
-    }
-  ],
-  "total": 523642,
-  "by_source": { ... },
-  "db_size_kb": 12450
-}
-```
-
-### GET `/database/stats`
-
-**Response**:
-```json
-{
-  "total_papers": 523642,
-  "by_source": {
-    "crossref": 250000,
-    "semantic_scholar": 150000,
-    "arxiv": 80000,
-    "dblp": 40000,
-    "user_verified": 3642
-  },
-  "db_size_kb": 12450,
-  "llm_cache_entries": 342
-}
+# 4. Tune thresholds in checker.py:
+REAL_THRESHOLD_NORMAL = 0.85   # Academic papers
+REAL_THRESHOLD_GREY   = 0.75   # Industry/grey literature
+SUSPICIOUS_THRESHOLD  = 0.70   # AI fallback
 ```
 
 ---
 
 ## 📚 Further Reading
 
-### Academic Context
-- **LNI Format Guide**: https://www.lni.de/en/  
-- **Citation Standards**: 
-  - IEEE (Computer Science): https://www.ieee.org/publications/style-manuals.html
-  - Chicago (General): https://www.chicagomanualofstyle.org/
-
-### Related Tools
-- **Zotero**: Open-source reference management
-- **Mendeley**: Commercial reference manager with API
-- **Retraction Watch**: Database of retracted papers
-- **Unpaywall**: Open-access link finder
-
-### Verification Sources
+- **LNI Format Guide**: https://www.gi.de/service/publikationen/lni
 - **CrossRef**: https://www.crossref.org/
 - **Semantic Scholar**: https://www.semanticscholar.org/
 - **OpenAlex**: https://openalex.org/
 - **DBLP**: https://dblp.uni-trier.de/
 - **arXiv**: https://arxiv.org/
+- **Unpaywall**: https://unpaywall.org/
 
 ---
 
 ## 📄 Citation
 
-If you use this tool in academic work or research, please cite as:
-
 ```bibtex
-@software{lni_reference_checker_2025,
-  title={LNI Reference Checker: Automated Academic Reference Verification and Validation},
-  author={Author Name},
-  year={2025},
-  url={https://github.com/example/lni-reference-checker},
-  version={8.3}
+@software{lni_reference_checker,
+  title  = {LNI Reference Checker: Automated Academic Reference Verification and Validation},
+  author = {Mithila Prabhu},
+  year   = {2025},
+  url    = {https://github.com/example/lni-reference-checker}
 }
 ```
 
@@ -955,61 +854,9 @@ If you use this tool in academic work or research, please cite as:
 
 ## 📝 License
 
-**MIT License** — Free for academic and commercial use. See `LICENSE` file for full text.
-
-This project uses only free/open-source dependencies. No paid subscriptions required.
+**MIT License** — Free for academic and commercial use. All dependencies are free/open-source. No paid subscriptions required.
 
 ---
 
-## 📞 Support & Contact
-
-### Getting Help
-- **Issues**: GitHub Issues for bugs and feature requests
-- **Email**: [contact@institution.edu]
-- **Documentation**: See this README + inline code comments
-
-### Reporting Bugs
-Include:
-1. Python version (`python --version`)
-2. Document type and size
-3. Error message or unexpected behavior
-4. Steps to reproduce
-
-### Feature Requests
-- Describe use case and expected behavior
-- Explain why existing features don't cover it
-- Provide example reference if applicable
-
----
-
-## 🎓 Version History
-
-| Version | Date | Key Improvements |
-|---------|------|-----------------|
-| **v8.3** | 2025 | Fixed API integration, improved grey literature detection, enhanced scoring thresholds |
-| **v8.2** | 2024 | Duplicate entry handling via verify_all_references(), better rate limiting |
-| **v8.1** | 2024 | Groq + Gemini fallback support, web search integration |
-| **v8.0** | 2024 | Strict 4-stage verification pipeline, professor-only FAKE verdicts |
-| **v7.0** | 2024 | Removed full-text AI pass, optimized for accuracy over speed |
-| **v6.0** | 2024 | React web UI, SQLite persistent caching, 96% accuracy audit |
-| **v5.0** | 2024 | Multi-format extraction (PDF/DOCX/LaTeX), API parallelization |
-
----
-
-## 🙏 Acknowledgments
-
-Built with:
-- **Flask** for web framework
-- **pdfplumber** for PDF extraction
-- **Requests** for HTTP client
-- **SQLite** for persistent caching
-- **Groq & Google Gemini** for LLM integration
-- **CrossRef, Semantic Scholar, DBLP, OpenAlex, arXiv** for reference verification
-
----
-
-  
 **Maintainer**: Mithila Prabhu (Frankfurt University of Applied Sciences)  
 **Status**: Production-ready ✓
-
----

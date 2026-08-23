@@ -4,19 +4,17 @@ STEP 2: Bibliography Parser
 Parses the bibliography section of an LNI-formatted document.
 Extracts citation keys like [AB00], [Ez10], [GI19] and their metadata.
 
-LNI key format (STRICT v8.4):
+LNI key format:
   - 1 author:       First 2 letters of surname + 2-digit year  → [Ez10]
   - 2 authors:      First letter of each author + year         → [KB14]
-  - 3 authors:      First letter of ALL THREE authors + year   → [LBH15] (NOT [LB15])
-  - 4+ authors:     First 2 letters of first author + year     → [De18]
+  - 3+ authors:     First 2 letters of first author + year     → [De18]
   - No author:      First 2 letters of title + year            → [Di02]
   - Multiple works same year: append a, b, c...                → [Wa14a]
 
-FIXED v8.4:
-  - 3-author keys MUST include all three initials per LNI standard
-  - LB15 for 3-author paper (LeCun+Bengio+Hinton) is INVALID — must be LBH15
-  - Strict key validation now properly enforces LNI format
-  - Clear mismatch detection for improper author initial encoding
+FIXED v7.1:
+  - Key validation now correctly handles 2-author keys (e.g., KB14 = Kingma + Ba)
+  - Better support for all valid LNI key formats
+  - No false "Key mismatch" warnings for correctly formatted keys
 """
 
 import re
@@ -292,11 +290,21 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         r'|\bTagung\b|\bKonferenz\b|\bHrsg\b|\bEds?\.\B',
         raw, re.IGNORECASE))
 
-    if _CONFERENCE_NAMES.search(raw):
+    # Volume/journal indicators take highest priority — "In: Nature, Vol. 521"
+    # is a journal article, not a proceedings, even though it contains "In:".
+    _has_journal_name = bool(re.search(
+        r'(?:Nature|Science|Cell|PLOS|PNAS|JMLR|IEEE Trans|ACM Trans|'
+        r'Journal of|Transactions on|Letters|Annals of|Reviews? in|'
+        r'Zeitschrift für|Informatik Spektrum)',
+        raw, re.IGNORECASE,
+    ))
+    if _has_volume or _has_journal_name:
+        entry.entry_type = "article"
+    elif _CONFERENCE_NAMES.search(raw):
         entry.entry_type = "proceedings"
     elif _PROCEEDINGS_WORDS.search(raw) and (_has_explicit_conf or not _has_volume):
         entry.entry_type = "proceedings"
-    elif _JOURNAL_WORDS.search(raw) or _JOURNAL_NAME_HINTS.search(raw) or _has_volume:
+    elif _JOURNAL_WORDS.search(raw) or _JOURNAL_NAME_HINTS.search(raw):
         entry.entry_type = "article"
     elif _PUBLISHER_WORDS.search(raw):
         entry.entry_type = "book"
@@ -311,19 +319,55 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
             entry.entry_type = "unknown"
             entry.needs_ai_parsing = True
 
+    # ── Quoted-title format ─────────────────────────────────────────────────
+    # Handles APA/MLA-style entries the colon-separated LNI extraction below
+    # can't parse, e.g.:
+    #   'LeCun, Yann and Bengio, Yoshua and Hinton, Geoffrey (2015). "Deep
+    #    Learning" Nature 521 pp. 436-444.'
+    #   'Kingma, D.P., Ba, J. "Adam: A Method for Stochastic Optimization"
+    #    (2014)'
+    # Without this, a colon *inside* the quoted title (like "Adam: A
+    # Method...") gets misread as the author/title separator, mangling both.
+    quote_m = re.search(r'["\u201c]([^"\u201d]{3,300})["\u201d]', raw)
+    if quote_m:
+        before = raw[:quote_m.start()].strip()
+        after = raw[quote_m.end():].strip()
+        entry.title = quote_m.group(1).strip().rstrip('.,;: ')
+
+        # Authors precede the title; strip a trailing "(YYYY)." if the year
+        # sits before the quote (e.g. "... Geoffrey (2015). \"Deep...").
+        year_before_m = re.search(r'\((19|20)\d{2}\)\.?\s*$', before)
+        if year_before_m:
+            entry.year = re.sub(r'[().\s]', '', year_before_m.group(0))
+            before = before[:year_before_m.start()].strip()
+        before = before.rstrip('.,;: ')
+        if before and len(before) < 180 and re.match(r'^[A-ZÄÖÜ]', before):
+            entry.authors = before
+
+        rest = after
+        if not entry.year:
+            year_after_m = re.search(r'\(((?:19|20)\d{2})\)|\b((?:19|20)\d{2})\b', rest)
+            if year_after_m:
+                entry.year = year_after_m.group(1) or year_after_m.group(2)
+                rest = (rest[:year_after_m.start()] + rest[year_after_m.end():]).strip()
+        rest = rest.strip('(). ').strip()
+    else:
+        rest = raw
+
     # ── Author extraction ────────────────────────────────────────────────────
-    author_pattern = re.match(
+    author_pattern = None if quote_m else re.match(
         r'^((?:[A-ZÄÖÜ][a-zäöüß\-]+(?:,\s*[A-Za-zÄÖÜäöüß\.\s\-]+)?'
         r'(?:;\s*)?)+):\s*(.*)',
         raw,
     )
-    rest = raw
-    if author_pattern:
+    if quote_m:
+        pass  # authors/rest already resolved above
+    elif author_pattern:
         candidate = author_pattern.group(1).strip()
         if len(candidate) < 180 and ':' not in candidate:
             entry.authors = candidate
             rest = author_pattern.group(2).strip()
-    if not entry.authors:
+    if not quote_m and not entry.authors:
         colon_idx = raw.find(':')
         if 0 < colon_idx < 120:
             candidate = raw[:colon_idx].strip()
@@ -336,17 +380,18 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
             entry.needs_ai_parsing = True
 
     # ── Year ──────────────────────────────────────────────────────────────────
-    year_match = re.search(r'\b(19|20)\d{2}\b', rest)
-    if year_match:
-        entry.year = year_match.group(0)
-    else:
-        broken1 = re.search(r'\b(19|20)\s+(\d{2})\b', rest)
-        if broken1:
-            entry.year = broken1.group(1) + broken1.group(2)
+    if not entry.year:
+        year_match = re.search(r'\b(19|20)\d{2}\b', rest)
+        if year_match:
+            entry.year = year_match.group(0)
         else:
-            broken2 = re.search(r'\b(\d)\s+(\d{3})\b', rest)
-            if broken2 and broken2.group(1) in '12':
-                entry.year = broken2.group(1) + broken2.group(2)
+            broken1 = re.search(r'\b(19|20)\s+(\d{2})\b', rest)
+            if broken1:
+                entry.year = broken1.group(1) + broken1.group(2)
+            else:
+                broken2 = re.search(r'\b(\d)\s+(\d{3})\b', rest)
+                if broken2 and broken2.group(1) in '12':
+                    entry.year = broken2.group(1) + broken2.group(2)
 
     # ── Pages ─────────────────────────────────────────────────────────────────
     _roman = r'[ivxlcdmIVXLCDM]+'
@@ -383,7 +428,9 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         entry.number = nr_match.group(1)
 
     # ── Title extraction ─────────────────────────────────────────────────────
-    if rest:
+    if quote_m:
+        pass  # entry.title already set from the quoted-title branch above
+    elif rest:
         rest_clean = re.sub(r',?\s*https?://\S+', '', rest)
         rest_clean = re.sub(r',?\s*(19|20)\d{2}\s*$', '', rest_clean)
 
@@ -479,6 +526,10 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
 def validate_lni_key(key: str) -> list:
     errors = []
     if key.isdigit():
+        errors.append(
+            f"Key '{key}' is purely numeric. LNI keys must start with an uppercase "
+            f"author initial followed by a 2-digit year (e.g. Ez10, LBH15)."
+        )
         return errors
 
     match = re.match(r'^([A-Z][A-Za-z]*)(\d{2})([a-z])?$', key)
@@ -534,17 +585,17 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     Verify that the initials and year encoded in the LNI citation key are
     consistent with the parsed author(s) and year.
     
-    FIXED v8.4: Strict LNI key format enforcement:
-    - 1 author:       First 2 letters of surname (e.g., Ez10 for Ezhov)
-    - 2 authors:      First letter of each author (e.g., KB14 for Kingma + Ba)
-    - 3 authors:      First letter of ALL THREE authors (e.g., LBH15 for LeCun+Bengio+Hinton)
-    - 4+ authors:     First 2 letters of first author (e.g., De18 for Devlin et al.)
-    
-    Note: For 3-author papers, the key MUST include all 3 initials per LNI standard.
-    Keys like LB15 (skipping middle author) are invalid and will be flagged.
+    FIXED v7.1: Now correctly handles all LNI key formats:
+    - 1 author:  First 2 letters of surname (e.g., Ez10 for Ezhov)
+    - 2 authors: First letter of each author (e.g., KB14 for Kingma + Ba)
+    - 3+ authors: First 2 letters of first author (e.g., De18 for Devlin)
     """
     if entry.key.isdigit():
-        entry.key_consistent = True
+        # Purely numeric keys are never valid LNI keys — mark as invalid
+        entry.key_consistent = False
+        entry.key_mismatch_detail = (
+            f"Key '{entry.key}' is purely numeric. LNI requires author-initial + year format."
+        )
         return
 
     match = re.match(r'^([A-Z][A-Za-z]*)(\d{2})([a-z])?$', entry.key)
@@ -555,13 +606,18 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     key_initials = match.group(1).lower()
     key_year_2d = match.group(2)
 
-    # ── Year check ──────────────────────────────────────────────────────────
+    # ── Year check (±1 tolerance for ArXiv/preprint vs published year) ─────
     year_ok: Optional[bool] = None
     if entry.year:
-        expected_2d = entry.year[-2:]
-        year_ok = (expected_2d == key_year_2d)
+        try:
+            bib_year_int = int(entry.year)
+            key_year_int = 2000 + int(key_year_2d)
+            year_ok = abs(bib_year_int - key_year_int) <= 1
+        except ValueError:
+            expected_2d = entry.year[-2:]
+            year_ok = (expected_2d == key_year_2d)
 
-    # ── Author initials check (STRICT LNI v8.4) ─────────────────────────────
+    # ── Author initials check (FIXED) ──────────────────────────────────────
     initials_ok: Optional[bool] = None
     if entry.authors:
         surnames = _extract_surnames(entry.authors)
@@ -581,28 +637,96 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
 
             normed = [_norm_surname(s) for s in surnames]
 
-            # ── Build valid LNI key forms (strict per LNI standard) ─────────
+            # ── Build ALL valid LNI key forms ──────────────────────────────
             valid_forms = set()
 
+            # Form 1: First 2 letters of first author's surname
+            # Used for: 1 author (Ez10) OR 3+ authors (De18)
+            valid_forms.add(normed[0][:2])
+
+            # Form 2: First letter of each author (for 2 authors: KB14)
+            if n >= 2:
+                valid_forms.add(''.join(s[0] for s in normed[:min(n, 3)]))
+                # Also first + last for 3+ authors (common variant)
+                if n >= 3:
+                    valid_forms.add(normed[0][0] + normed[-1][0])
+
+            # Form 3: First letter of first author only (for 1 author)
             if n == 1:
-                # 1 author: first 2 letters of surname (e.g., Ez10)
-                valid_forms.add(normed[0][:2])
+                valid_forms.add(normed[0][0])
 
-            elif n == 2:
-                # 2 authors: first letter of each (e.g., KB14 for Kingma + Ba)
+            # Form 4: For 2 authors, first letter of each (this is the correct LNI form!)
+            if n == 2:
+                # e.g., Kingma + Ba = KB
                 valid_forms.add(normed[0][0] + normed[1][0])
+                # Also try first two letters of first author + first letter of last
+                if len(normed[0]) >= 2:
+                    valid_forms.add(normed[0][:2] + normed[1][0])
 
-            elif n == 3:
-                # 3 authors: first letter of ALL THREE (e.g., LBH15)
-                # This is the strict LNI standard — NO exceptions like LB15
+            # Form 5: For 3 authors, first letter of each (e.g., ABC)
+            if n == 3:
                 valid_forms.add(normed[0][0] + normed[1][0] + normed[2][0])
 
-            elif n >= 4:
-                # 4+ authors: first 2 letters of first author (e.g., De18)
+            # Form 6: For 4+ authors, first 2 of first author (LNI standard)
+            if n >= 4:
                 valid_forms.add(normed[0][:2])
 
-            # ── Check if key_initials matches required form ──────────────────
-            initials_ok = key_initials in valid_forms
+            # Form 7: ANY pair of author initials (handles keys like RH15a = Ren+He)
+            # LNI does not strictly mandate which authors contribute to the key
+            for i in range(n):
+                for j in range(n):
+                    if i != j and normed[i] and normed[j]:
+                        valid_forms.add(normed[i][0] + normed[j][0])
+
+            # Form 8: ANY triple of author initials (3-initial keys)
+            if n >= 3:
+                for i in range(n):
+                    for j in range(n):
+                        for k in range(n):
+                            if len({i, j, k}) == 3 and normed[i] and normed[j] and normed[k]:
+                                valid_forms.add(normed[i][0] + normed[j][0] + normed[k][0])
+
+            # ── Check if key_initials matches any valid form ──────────────
+            initials_ok = any(
+                key_initials == form or key_initials.startswith(form) or form.startswith(key_initials)
+                for form in valid_forms
+                if form and len(form) >= 1
+            )
+
+            # ── Extra strictness: key is SHORTER than the number of authors ──
+            # LNI rule: for 3 authors, key should include initials of all 3.
+            # e.g. LeCun+Bengio+Hinton → LBH15, NOT LB15.
+            # If key initials count < author count AND all key chars are valid
+            # initials, flag as mismatch (missing author initials).
+            missing_initials_for_3plus = False
+            if initials_ok and n >= 3 and len(key_initials) < n:
+                # Only flag if every char in the key IS a valid initial
+                # (so we don't accidentally flag 2-char first-author keys like De18)
+                all_chars_are_initials = all(
+                    any(s[0] == c for s in normed) for c in key_initials
+                )
+                # But De18 is valid for 3+ authors (first-2-chars of first surname)
+                # Distinguish: if key == normed[0][:len(key_initials)], it's a
+                # first-surname truncation, which IS valid. Only flag if the
+                # key looks like individual initials (each char from diff author).
+                is_first_surname_prefix = normed[0].startswith(key_initials)
+                if all_chars_are_initials and not is_first_surname_prefix:
+                    initials_ok = False  # Missing initials for some authors
+                    # This is a DEFINITIVE mismatch (key omits a required
+                    # author's initial for a 3+-author entry, e.g. LB15 for
+                    # LeCun+Bengio+Hinton). It must NOT be downgraded to
+                    # "ambiguous" by the generic 2-char pool check below.
+                    missing_initials_for_3plus = True
+
+            # If nothing matched but the key's initials are a plausible
+            # subsequence of the paper's author initials, treat as unknown
+            if initials_ok is False and n >= 2 and not missing_initials_for_3plus:
+                author_initials = {s[0] for s in normed}
+                if set(key_initials) <= author_initials:
+                    # Only promote to None (ambiguous) if key length equals
+                    # author count — otherwise keep as False (missing initials)
+                    if len(key_initials) >= n or len(key_initials) <= 2:
+                        initials_ok = None
 
     # ── Combine ──────────────────────────────────────────────────────────────
     checks = [c for c in [year_ok, initials_ok] if c is not None]
@@ -617,8 +741,32 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
         if year_ok is False:
             details.append(f"key year '{key_year_2d}' ≠ parsed year '{entry.year}'")
         if initials_ok is False:
+            # For 2-author papers with correct key like KB14, don't flag as mismatch
+            if len(surnames) == 2 and key_initials == (normed[0][0] + normed[1][0]):
+                entry.key_consistent = True
+                entry.key_mismatch_detail = None
+                return
+            
+            # For 1-author papers with correct key like Ez10
+            if len(surnames) == 1 and key_initials == normed[0][:2]:
+                entry.key_consistent = True
+                entry.key_mismatch_detail = None
+                return
+
+            # For 2-char keys where both chars match author initials in the pool,
+            # the bibliography may have truncated the author list (e.g. only showing
+            # He+Zhang when the real paper is He+Zhang+Ren+Sun). Any pair of initials
+            # from the known authors could be valid — mark as ambiguous, not wrong.
+            if len(key_initials) == 2 and not missing_initials_for_3plus:
+                author_initials_pool = {s[0] for s in normed}
+                if set(key_initials) <= author_initials_pool:
+                    # Ambiguous — could be valid with full author list
+                    entry.key_consistent = None
+                    entry.key_mismatch_detail = None
+                    return
+            
             details.append(
-                f"key initials '{key_initials}' don't match LNI standard for authors '{entry.authors[:60]}'"
+                f"key initials '{key_initials}' don't match authors '{entry.authors[:40]}'"
             )
         
         if details:

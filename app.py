@@ -14,7 +14,7 @@ CHANGES v7.0:
 import os
 import re
 import sys
-from typing import Optional
+from typing import Optional, Dict, List
 
 try:
     from dotenv import load_dotenv
@@ -518,7 +518,7 @@ def _assemble_result(
 
     # Score
     retracted_count = sum(1 for vr in api_results_raw if getattr(vr, "is_retracted", False))
-    # Only professor-confirmed fakes count against the score
+    # Professor-confirmed fakes (manual action only)
     professor_confirmed_fakes = sum(
         1 for v in verification_output if v.get("ai_verdict") == "FAKE"
     )
@@ -527,6 +527,7 @@ def _assemble_result(
         style_suggestions, duplicates,
         professor_confirmed_fakes=professor_confirmed_fakes,
         retracted_count=retracted_count,
+        verification_results=verification_output,
     )
     s = det_score["score"]
     det_verdict = "PASS" if s >= 75 else "FLAG" if s >= 50 else "FAIL"
@@ -542,6 +543,40 @@ def _assemble_result(
         "max_score": 100,
     }
 
+    # ── Map each entry to the duplicate group it belongs to (if any) ──────────
+    # `duplicates` holds pairwise matches (key_a, key_b, reason); collapse
+    # these into groups via the same union-find canonicalization used
+    # elsewhere so entries can be flagged in the Bibliography Format Check
+    # tab too, not just the Reference Verification tab.
+    _dup_group_map: Dict[str, List[str]] = {}
+    if duplicates:
+        _parent = {e.key: e.key for e in bib_list}
+
+        def _dup_find(x):
+            while _parent.get(x, x) != x:
+                x = _parent[x]
+            return x
+
+        def _dup_union(x, y):
+            px, py = _dup_find(x), _dup_find(y)
+            if px != py:
+                _parent[py] = px
+
+        for d in duplicates:
+            ka, kb = d.get("key_a"), d.get("key_b")
+            if ka in _parent and kb in _parent:
+                _dup_union(ka, kb)
+
+        _groups: Dict[str, List[str]] = {}
+        for e in bib_list:
+            root = _dup_find(e.key)
+            _groups.setdefault(root, []).append(e.key)
+
+        for root, members in _groups.items():
+            if len(members) > 1:
+                for m in members:
+                    _dup_group_map[m] = [k for k in members if k != m]
+
     bib_output = [
         {"key": e.key, "type": e.entry_type or "unknown",
          "authors": e.authors, "title": e.title, "year": e.year,
@@ -549,6 +584,8 @@ def _assemble_result(
          "doi": e.doi, "isbn": e.isbn, "pages": e.pages, "raw": e.raw_text[:250],
          "completeness_issues": e.completeness_issues,
          "key_consistent": e.key_consistent,
+         "is_duplicate": e.key in _dup_group_map,
+         "duplicate_of": _dup_group_map.get(e.key, []),
          "ai_reparsed": e.key in ai_parse_improvements}
         for e in bib_list
     ]
@@ -618,16 +655,24 @@ def _assemble_result(
 def _run_streaming_check(main_path: str, bib_path: str = None,
                           verify: bool = True, filename: str = ""):
     """Generator yielding SSE strings. Final event is 'done' with full result JSON."""
+    import sys
 
     def _sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     start_time = time.time()
+    
+    # Diagnostic: log that we've started
+    print(f"[DIAG] _run_streaming_check started for {filename}", file=sys.stderr, flush=True)
 
     try:
-        yield _sse("progress", {"step": "extract", "message": "📄 Extracting text from document..."})
+        sse_msg = _sse("progress", {"step": "extract", "message": "📄 Extracting text from document..."})
+        print(f"[DIAG] Yielding extract message", file=sys.stderr, flush=True)
+        yield sse_msg
 
+        print(f"[DIAG] Calling extract({main_path})", file=sys.stderr, flush=True)
         sections = extract(main_path, bib_path)
+        print(f"[DIAG] Extract returned successfully", file=sys.stderr, flush=True)
         body = sections.get("body", "")
         bib_text = sections.get("bibliography", "")
         fmt = sections.get("format", "unknown")
@@ -649,8 +694,10 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                 "message": "⚠️ No bibliography section found. Add a 'Literaturverzeichnis' heading."})
 
         # ── Parse bibliography ────────────────────────────────────────────────
+        print(f"[DIAG] Calling parse_bibliography", file=sys.stderr, flush=True)
         yield _sse("progress", {"step": "parse", "message": "📚 Parsing bibliography entries..."})
         bib_list = parse_bibliography(bib_text)
+        print(f"[DIAG] parse_bibliography returned {len(bib_list)} entries", file=sys.stderr, flush=True)
         bib_dict = entries_to_dict(bib_list)
         yield _sse("progress", {"step": "parse_done",
             "message": f"✓ Found {len(bib_list)} bibliography entries"})
@@ -701,11 +748,13 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
         api_results_raw = []
         if verify and bib_dict:
             total = len(bib_dict)
+            print(f"[DIAG] Starting verify_all_references for {total} entries", file=sys.stderr, flush=True)
             yield _sse("progress", {"step": "verify_start",
                 "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
 
             # verify_all_references now handles duplicates internally
             api_results_raw = verify_all_references(bib_dict)
+            print(f"[DIAG] verify_all_references completed, got {len(api_results_raw)} results", file=sys.stderr, flush=True)
 
             verified_count = sum(1 for r in api_results_raw if r.status == "verified")
             suspicious_count = sum(1 for r in api_results_raw if r.status == "suspicious")

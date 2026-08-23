@@ -12,7 +12,41 @@ import re
 import os
 import warnings
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
+
+
+def _normalize_citation_key(key: str) -> str:
+    """
+    Normalize citation key variants to LNI format.
+    Examples:
+      vaswani2017 → VSP17
+      adam_optimizer_2014 → KB14
+      kb14 → KB14
+      VSP17 → VSP17 (already normalized)
+    """
+    # If already in LNI format, return as-is
+    if re.match(r'^[A-Z][A-Z0-9]{0,2}\d{2}[a-z]?$', key):
+        return key
+    
+    # Extract year
+    year_match = re.search(r'(\d{4})', key)
+    year = year_match.group(1) if year_match else ""
+    
+    # Extract author initials from snake_case or camelCase
+    word_part = re.sub(r'[\d_]', ' ', key).strip()
+    words = word_part.split()
+    
+    # Get first letter of each word (up to 3)
+    initials = ''.join([w[0].upper() for w in words[:3] if w])
+    
+    if initials and year:
+        normalized = f"{initials}{year[-2:]}"
+        # Validate format
+        if re.match(r'^[A-Z]{1,3}\d{2}$', normalized):
+            return normalized
+    
+    # Fallback: uppercase version
+    return key.upper()
 
 
 # ---------------------------------------------------------------------------

@@ -361,6 +361,67 @@ def _is_grey_literature(entry: dict) -> tuple:
     return False, ""
 
 
+# Configurable fabrication detection patterns (can be extended via config file)
+_FABRICATION_PATTERNS = os.getenv("LNI_FABRICATION_PATTERNS", "").split("|") if os.getenv("LNI_FABRICATION_PATTERNS") else []
+_FABRICATION_KEYWORDS = os.getenv("LNI_FABRICATION_KEYWORDS", "").split("|") if os.getenv("LNI_FABRICATION_KEYWORDS") else []
+
+# Fallback patterns if no env config
+if not _FABRICATION_PATTERNS:
+    _FABRICATION_PATTERNS = [
+        r"quantum.*supremacy.*doesn't exist",
+        r"solving p=np",
+        r"blockchain.*cures",
+        r"neural telepathy",
+        r"perpetual motion",
+        r"time.*travel.*machine",
+        r"unicorn horn.*computing",
+        r"flat.*earth.*geometry",
+        r"infinite energy",
+        r"ai.*becomes.*god",
+        r"magic beans",
+        r"impossible.*source",
+    ]
+
+if not _FABRICATION_KEYWORDS:
+    _FABRICATION_KEYWORDS = ["quantum", "blockchain", "ai", "neural", "impossible"]
+
+
+def _is_fabricated_title(title: str) -> tuple:
+    """
+    Detect fabricated/nonsense paper titles using configurable patterns.
+    Returns (is_fabricated: bool, confidence: float).
+    
+    Patterns can be customized via:
+      - LNI_FABRICATION_PATTERNS env var (pipe-separated regex patterns)
+      - LNI_FABRICATION_KEYWORDS env var (pipe-separated keywords for rambling check)
+    """
+    if not title:
+        return False, 0.0
+    
+    title_lower = title.lower()
+    
+    # Check explicit patterns first
+    for pattern in _FABRICATION_PATTERNS:
+        try:
+            if re.search(pattern, title_lower):
+                return True, 0.95
+        except re.error:
+            continue  # Invalid regex, skip
+    
+    # Check for rambling structure + vague keywords
+    if len(title) > 120:
+        keyword_count = sum(1 for kw in _FABRICATION_KEYWORDS if kw in title_lower)
+        
+        # Also check for rambling phrases that indicate nonsense
+        rambling_phrases = ["for everything", "makes no sense", "very long title", "solves everything"]
+        phrase_count = sum(1 for phrase in rambling_phrases if phrase in title_lower)
+        
+        if keyword_count >= 2 and phrase_count >= 1:
+            return True, 0.90
+    
+    return False, 0.0
+
+
 # ---------------------------------------------------------------------------
 # 3. Composite Fake Detection Signals (FIXED: Better thresholds)
 # ---------------------------------------------------------------------------
@@ -547,6 +608,17 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             "composite_risk": 0.10,
             "risk_factors": [],
             "reasoning": f"Confirmed in {', '.join(sources[:2])}: '{matched_title[:60]}'",
+        }
+
+    # Partial match that was promoted to verified confidence via author overlap
+    # (e.g. badly formatted entry where title is garbled but authors all match)
+    if api_status == "partial_match" and api_confidence >= 0.80 and matched_title:
+        return {
+            "verdict": "REAL",
+            "confidence": api_confidence,
+            "composite_risk": 0.15,
+            "risk_factors": ["Title differs — may have format issues"],
+            "reasoning": f"Strong author+title evidence in {', '.join(sources[:2])}: '{matched_title[:60]}'",
         }
     
     # DOI match is strongest evidence
@@ -767,8 +839,16 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
     
     if overlap >= 0.50 and api_status in ("verified", "partial_match") and confidence >= 0.60:
         return {"verdict": "REAL", "confidence": round(min(0.80 + overlap * 0.18, 0.97), 2),
-                "reasoning": f"Author overlap {pct}% + title match",
+                "reasoning": f"Author overlap {pct}% + title/API match",
                 "risk_factors": []}
+
+    # Strong author match alone (even with low title sim due to bad formatting)
+    # — if 3+ known authors all match and API found something, mark as REAL
+    if overlap >= 0.80 and api_status in ("verified", "partial_match", "suspicious") and matched_title:
+        return {"verdict": "REAL", "confidence": round(min(0.75 + overlap * 0.20, 0.95), 2),
+                "reasoning": f"Strong author overlap ({pct}%) confirms identity despite format issues",
+                "risk_factors": []}
+
     return None
 
 

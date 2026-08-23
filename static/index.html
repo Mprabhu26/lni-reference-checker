@@ -363,6 +363,15 @@ let dbLoaded = false;
 let markedFakeKeys = new Set();
 let confirmedRealKeys = new Set();
 
+// Effective verdict for a verification entry, accounting for manual
+// professor overrides (mark-as-fake / confirm-real) that supersede the
+// AI's original ai_verdict everywhere the verdict is displayed or counted.
+function effectiveVerdict(v) {
+  if (confirmedRealKeys.has(v.key)) return 'REAL';
+  if (markedFakeKeys.has(v.key)) return 'FAKE';
+  return v.ai_verdict;
+}
+
 function handleMainFile(inp) {
   mainFile = inp.files[0];
   if (!mainFile) return;
@@ -371,6 +380,22 @@ function handleMainFile(inp) {
   document.getElementById('dropZone').style.display = 'none';
   document.getElementById('runBtn').disabled = false;
   document.getElementById('bibUpload').style.display = mainFile.name.match(/\.(tex|latex)$/i) ? 'block' : 'none';
+  // If results from a previous file are still on screen, clear them now so
+  // stale data (and stale manual-review overrides, which are keyed only by
+  // citation key) doesn't leak into the next run.
+  if (result) {
+    result = null;
+    markedFakeKeys = new Set();
+    confirmedRealKeys = new Set();
+    document.getElementById('tabsWrap').classList.remove('show');
+    document.getElementById('verdictBanner').classList.remove('show');
+    document.getElementById('bibContent').innerHTML = '';
+    document.getElementById('xcheckContent').innerHTML = '';
+    document.getElementById('verifyContent').innerHTML = '';
+    document.getElementById('scoreContent').innerHTML = '';
+    document.getElementById('btnExport').disabled = true;
+    document.getElementById('topbarTitle').innerHTML = '<strong>LNI Reference Checker</strong> — Ready to check';
+  }
 }
 
 function clearFile() {
@@ -488,6 +513,12 @@ function closeDbTab() {
 
 async function runCheck() {
   if (!mainFile) return;
+  // Defensive reset: guarantees no stale data/overrides from a previous
+  // run survive into this one, even if runCheck is triggered without
+  // going through handleMainFile's reset (e.g. re-running the same file).
+  result = null;
+  markedFakeKeys = new Set();
+  confirmedRealKeys = new Set();
   const verify = document.getElementById('verifyToggle').checked;
   document.getElementById('welcomeScreen').style.display = 'none';
   document.getElementById('tabsWrap').classList.remove('show');
@@ -597,16 +628,24 @@ function renderResults(data) {
   document.getElementById('verdictIcon').textContent = icons[vc2] || '⚠️';
   document.getElementById('verdictTitle').textContent = vc2 === 'PASS' ? 'PASS — References look good' : vc2 === 'FAIL' ? 'FAIL — Critical issues found' : 'REVIEW — Issues need attention';
   document.getElementById('verdictReason').textContent = sc.verdict_reason || '';
-  document.getElementById('verdictScore').textContent = (sc.score || 0) + '/100';
+  const entryQuality = sc.entry_quality_score;
+  const qualityLabel = (entryQuality !== null && entryQuality !== undefined)
+    ? ' · ' + entryQuality + '% verified'
+    : '';
+  document.getElementById('verdictScore').textContent = (sc.score || 0) + '/100' + qualityLabel;
   document.getElementById('verdictBanner').classList.add('show');
   const missing = (data.cross_check?.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC')).length;
   const orphan = (data.cross_check?.in_bib_not_cited || []).length;
-  const fake = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length;
-  const susp = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS').length;
-  const bib_issues = (data.bibliography || []).filter(e => e.completeness_issues?.length || e.key_consistent === false).length;
+  const fake = (data.verification || []).filter(v => effectiveVerdict(v) === 'FAKE').length;
+  const susp = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
+  const verTotal = (data.verification || []).length;
+  const bib_issues = (data.bibliography || []).filter(e => e.completeness_issues?.length || e.key_consistent === false || e.is_duplicate).length;
   setBadge('tabBibBadge', bib_issues, bib_issues ? 'orange' : '');
   setBadge('tabXBadge', missing + orphan, (missing + orphan) ? 'red' : '');
-  setBadge('tabVerBadge', fake + susp, fake ? 'red' : susp ? 'orange' : '');
+  // Show flagged count if any issues; otherwise show total verified so badge isn't 0
+  const verBadgeCount = (fake + susp) > 0 ? (fake + susp) : verTotal;
+  const verBadgeCls = fake ? 'red' : susp ? 'orange' : verTotal > 0 ? 'green' : '';
+  setBadge('tabVerBadge', verBadgeCount, verBadgeCls);
   document.getElementById('tabsWrap').classList.add('show');
   document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -629,20 +668,27 @@ function setBadge(id, n, cls) {
 
 function renderBibTab(data) {
   const bib = data.bibliography || [];
-  const issues = bib.filter(e => e.completeness_issues?.length);
-  const rest = bib.filter(e => !e.completeness_issues?.length);
-  const flagged = rest.filter(e => e.key_consistent === false);
-  const clean = rest.filter(e => e.key_consistent !== false);
-  let html = `<div class="tab-description">Each bibliography entry is checked against LNI formatting rules — required fields (author, title, year, pages, etc.) are validated per entry type. Entries with missing or malformed fields are flagged. <strong>Note:</strong> "Correct format" means the entry is structurally complete — it does not indicate whether the referenced paper actually exists. Entries whose citation key doesn't match the author/year (e.g. [AB20] but authors/year suggest otherwise) are format-compliant per LNI rules but are called out separately for review, since key mnemonics have no single fixed convention.</div>
+  // Duplicates are grouped together as their own category regardless of
+  // whether they also have completeness issues or a key mismatch — those
+  // sub-issues still show as badges on the card itself.
+  const duped = bib.filter(e => e.is_duplicate);
+  const rest = bib.filter(e => !e.is_duplicate);
+  const issues = rest.filter(e => e.completeness_issues?.length);
+  const rest2 = rest.filter(e => !e.completeness_issues?.length);
+  const flagged = rest2.filter(e => e.key_consistent === false);
+  const clean = rest2.filter(e => e.key_consistent !== false);
+  let html = `<div class="tab-description">Each bibliography entry is checked against LNI formatting rules — required fields (author, title, year, pages, etc.) are validated per entry type. Entries with missing or malformed fields are flagged. Entries that appear to reference the same underlying paper (matching DOI, title, or author+year) are grouped and flagged as duplicates. <strong>Note:</strong> "Correct format" means the entry is structurally complete — it does not indicate whether the referenced paper actually exists. Entries whose citation key doesn't match the author/year (e.g. [AB20] but authors/year suggest otherwise) are format-compliant per LNI rules but are called out separately for review, since key mnemonics have no single fixed convention.</div>
   <div class="stat-bar">
     <div class="stat-box"><div class="value">${bib.length}</div><div class="label">Total Entries</div></div>
     <div class="stat-box ${issues.length ? 'orange' : 'green'}"><div class="value">${issues.length}</div><div class="label">With Issues</div></div>
     <div class="stat-box ${flagged.length ? 'orange' : 'green'}"><div class="value">${flagged.length}</div><div class="label">Key Mismatch (Review)</div></div>
+    <div class="stat-box ${duped.length ? 'orange' : 'green'}"><div class="value">${duped.length}</div><div class="label">Duplicates</div></div>
     <div class="stat-box green"><div class="value">${clean.length}</div><div class="label">Correct Format</div></div>
   </div>
   <div class="search-bar"><input type="text" placeholder="Filter entries…" oninput="filterBib(this.value)"></div>`;
   if (issues.length) html += `<div class="section-heading">⚠ Entries with issues (${issues.length})</div>` + issues.map(e => bibCard(e)).join('');
   if (flagged.length) html += `<div class="section-heading">🔑 Key mismatch — review recommended (${flagged.length})</div>` + flagged.map(e => bibCard(e)).join('');
+  if (duped.length) html += `<div class="section-heading">📑 Duplicate references (${duped.length})</div>` + duped.map(e => bibCard(e)).join('');
   if (clean.length) html += `<div class="section-heading">✓ Correct format (${clean.length})</div>` + clean.map(e => bibCard(e)).join('');
   document.getElementById('bibContent').innerHTML = html;
 }
@@ -657,6 +703,10 @@ function bibCard(e) {
   if (e.type) badges.push(`<span class="badge" style="background:var(--primary-bg);color:var(--primary)">${escapeHtml(e.type)}</span>`);
   if (hasIssues) badges.push(`<span class="badge badge-issue">⚠ ${e.completeness_issues.length} issue(s)</span>`);
   if (e.key_consistent === false) badges.push(`<span class="badge badge-fake">⚠ Key mismatch</span>`);
+  if (e.is_duplicate) {
+    const dupList = (e.duplicate_of || []).map(k => escapeHtml(k)).join(', ');
+    badges.push(`<span class="badge badge-fake" title="Same paper as: ${dupList}">📑 Duplicate of ${dupList}</span>`);
+  }
   if (e.ai_reparsed) badges.push(`<span class="badge" style="background:var(--info-bg);color:var(--info)">🤖 AI re-parsed</span>`);
   let directLinks = '';
   if (e.doi) { directLinks += `<a href="https://doi.org/${escapeHtml(e.doi)}" target="_blank" class="resource-link" style="background:var(--success-bg);color:var(--success);">🔗 DOI: ${escapeHtml(e.doi)}</a>`; }
@@ -758,10 +808,13 @@ function renderVerifyTab(data) {
     return isCaseOnly || isMinorDiff;
   }
 
-  // Separate by verdict
-  const fake = ver.filter(v => v.ai_verdict === 'FAKE');
-  const susp = ver.filter(v => v.ai_verdict === 'SUSPICIOUS');
-  const real = ver.filter(v => v.ai_verdict === 'REAL');
+  // Separate by verdict — professor overrides (mark-as-fake / confirm-real)
+  // take precedence over the AI's original verdict, so a confirmed-real
+  // entry moves into the Verified section and a confirmed-fake entry
+  // moves into Flagged, matching the badge shown on its card.
+  const fake = ver.filter(v => effectiveVerdict(v) === 'FAKE');
+  const susp = ver.filter(v => effectiveVerdict(v) === 'SUSPICIOUS');
+  const real = ver.filter(v => effectiveVerdict(v) === 'REAL');
 
   // Sort REAL: metadata warnings first (author/year mismatch), then title differs, then clean
   const realSorted = [...real].sort((a, b) => {
@@ -828,10 +881,16 @@ function friendlyApiNote(note, sources) {
 }
 
 function verifyCard(v) {
-  const verdict = v.ai_verdict || 'SUSPICIOUS';
+  const isConfirmedReal = confirmedRealKeys.has(v.key);
+  const isConfirmedFake = markedFakeKeys.has(v.key);
+  const verdict = effectiveVerdict(v) || 'SUSPICIOUS';
   const conf = Math.round((v.confidence || 0) * 100);
   const badgeCls = verdict === 'REAL' ? 'badge-real' : verdict === 'FAKE' ? 'badge-fake' : 'badge-suspicious';
-  const badgeLabel = verdict === 'REAL' ? '✓ REAL — Verified' : verdict === 'FAKE' ? '✕ FAKE — Likely Fabricated' : '? SUSPICIOUS — Manual Review Needed';
+  const badgeLabel = isConfirmedReal ? '✓ REAL — Confirmed by reviewer'
+    : isConfirmedFake ? '✕ FAKE — Confirmed by reviewer'
+    : verdict === 'REAL' ? '✓ REAL — Verified'
+    : verdict === 'FAKE' ? '✕ FAKE — Likely Fabricated'
+    : '? SUSPICIOUS — Manual Review Needed';
     // ── DUPLICATE BADGE ──
   let isDup = false;
   let dupOf = null;
@@ -899,9 +958,17 @@ function verifyCard(v) {
           ${duplicateBadge}
           ${(()=>{
             if (!v.matched_title || v.matched_title === v.title) return '';
-            const cN = (v.title||'').toLowerCase().trim();
-            const fN = v.matched_title.toLowerCase().trim();
-            if (cN === fN) return '<span class="conf-pill med" style="background:#eef9ff;color:#0e6f9e;border-color:#bae6fd;cursor:help;" title="Titles are identical except for capitalisation — not an error. LNI uses sentence case.">ℹ Case difference</span>';
+            // Normalise both sides: lowercase, collapse whitespace, strip leading/trailing punctuation
+            const normTitle = t => t.toLowerCase().trim()
+              .replace(/\s+/g, ' ')               // collapse internal whitespace
+              .replace(/[.,:;!?'"\u2013\u2014\-]+$/g, '')  // strip trailing punctuation
+              .replace(/^[.,:;!?'"\u2013\u2014\-]+/g, ''); // strip leading punctuation
+            const cN = normTitle(v.title || '');
+            const fN = normTitle(v.matched_title);
+            if (cN === fN) return '';  // Identical after normalisation — suppress badge
+            if (cN.replace(/[^a-z0-9]/g,'') === fN.replace(/[^a-z0-9]/g,'')) return '<span class="conf-pill med" style="background:#eef9ff;color:#0e6f9e;border-color:#bae6fd;cursor:help;" title="Titles are identical except for capitalisation — not an error. LNI uses sentence case.">ℹ Case difference</span>';
+            // Check for subtitle truncation: one title is a prefix of the other
+            if (cN.startsWith(fN) || fN.startsWith(cN)) return '<span class="conf-pill med" style="cursor:help;" title="Titles match except for punctuation or spacing — likely the same publication.">⚠ Minor difference</span>';
             if (cN.replace(/[^a-z0-9]/g,'') === fN.replace(/[^a-z0-9]/g,'')) return '<span class="conf-pill med" style="cursor:help;" title="Titles match except for punctuation or spacing — likely the same publication.">⚠ Minor difference</span>';
             return '<span class="conf-pill low" style="cursor:help;" title="The cited title and the database title differ in wording — confirm it is the correct publication.">⚠ Title differs</span>';
           })()}
@@ -1022,7 +1089,7 @@ async function saveToDb(key) {
         if (d.success) { 
             showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success');
             confirmedRealKeys.add(key);
-            if (result) renderVerifyTab(result);   // re-render so confirmedRealKeys hides the section
+            if (result) { renderVerifyTab(result); renderScoreTab(result); }   // re-render so confirmedRealKeys reflects everywhere
             // Refresh the database badge
             if (d.db_total) {
                 document.getElementById('topbarDbCount').textContent = d.db_total;
@@ -1049,9 +1116,9 @@ function renderScoreTab(data) {
   const penalties = adj.penalties;
   const actualScore = adj.score;
   const grade = adj.grade;
-  const verificationFakeCount = (data.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size;
-  const verificationSuspCount = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length;
-  const verificationRealCount = (data.verification || []).filter(v => v.ai_verdict === 'REAL').length;
+  const verificationFakeCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'FAKE').length;
+  const verificationSuspCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
+  const verificationRealCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'REAL').length;
   const gradeColor = actualScore >= 75 ? 'green' : actualScore >= 50 ? 'orange' : 'red';
   let html = `<div class="stat-bar">
     <div class="stat-box ${gradeColor}"><div class="value">${actualScore}/100</div><div class="label">Final Score · ${grade}</div></div>
@@ -1061,7 +1128,7 @@ function renderScoreTab(data) {
     <div class="stat-box ${s.missing_from_bib ? 'red' : 'green'}"><div class="value">${s.missing_from_bib || 0}</div><div class="label">Missing from Bib</div></div>
   </div>`;
   if (sc.verdict_reason) html += `<div class="explanation-box" style="margin-bottom:14px;">🤖 <strong>AI Verdict:</strong> ${escapeHtml(sc.verdict_reason)}</div>`;
-  const suspiciousRefs = (data.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key));
+  const suspiciousRefs = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS');
   if (suspiciousRefs.length > 0) {
     html += `<div style="background:var(--warning-bg);border:1px solid #fed7aa;border-radius:var(--radius);padding:12px 14px;margin-bottom:14px;">
       <div style="font-weight:700;font-size:12px;color:var(--warning);margin-bottom:8px;">⚠ ${suspiciousRefs.length} Suspicious Reference(s) — Pending Professor Review</div>
@@ -1261,9 +1328,11 @@ function markAsFake(key, btnEl) {
   if (result) {
     renderVerifyTab(result);   // re-render so markedFakeKeys.has() hides the section
     renderScoreTab(result);
-    const fakeNow = (result.verification || []).filter(v => v.ai_verdict === 'FAKE').length + markedFakeKeys.size;
-    const suspNow = (result.verification || []).filter(v => v.ai_verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key)).length;
-    setBadge('tabVerBadge', fakeNow + suspNow, fakeNow ? 'red' : suspNow ? 'orange' : '');
+    const fakeNow = (result.verification || []).filter(v => effectiveVerdict(v) === 'FAKE').length;
+    const suspNow = (result.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
+    const verTotalNow = (result.verification || []).length;
+    const flaggedNow = fakeNow + suspNow;
+    setBadge('tabVerBadge', flaggedNow > 0 ? flaggedNow : verTotalNow, fakeNow ? 'red' : suspNow ? 'orange' : verTotalNow > 0 ? 'green' : '');
   }
   showToast(`✕ [${key}] confirmed as fake — score updated`, 'error');
 }

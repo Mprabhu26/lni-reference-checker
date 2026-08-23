@@ -1,15 +1,18 @@
 """
 Web Search Verifier - RefChecker-style hallucination detection
-FIXED v7.2: Better landmark paper detection, fixed SQL errors
+FIXED v7.3: Aggressive timeouts on DDGS + requests, skip hung queries, fallback paths
 """
 
 import json
 import re
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 try:
     from dotenv import load_dotenv
@@ -65,8 +68,21 @@ def _title_similarity_simple(title1: str, title2: str) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def _make_requests_session(timeout: int = 5):
+    """Create requests session with aggressive timeout & retry strategy."""
+    session = requests.Session()
+    # Max 1 retry, fail fast
+    retry_strategy = Retry(total=1, backoff_factor=0.5,
+                          status_forcelist=[429, 500, 502, 503, 504],
+                          method_whitelist=["GET"])
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
 def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
-    """Search the web for a paper using DuckDuckGo."""
+    """Search the web for a paper using DuckDuckGo. Fail fast if DDGS hangs."""
     if DDGS is None:
         return []
     
@@ -109,11 +125,13 @@ def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
     queries = list(dict.fromkeys(queries))
     
     results = []
-    for attempt in range(2):
-        for query in queries[:4]:
+    # Try ONLY the first 2 queries with aggressive short timeout
+    for attempt in range(1):  # Single attempt, fail fast
+        for query in queries[:2]:  # Only try 2 queries max
             try:
                 with DDGS() as ddgs:
-                    for r in ddgs.text(query, max_results=6):
+                    # max_results=3 to fail fast if first 3 don't help
+                    for r in ddgs.text(query, max_results=3):
                         result_title = r.get("title", "")
                         if any(skip in result_title.lower() for skip in 
                                ['amazon', 'ebay', 'facebook', 'twitter', 'search results']):
@@ -124,11 +142,10 @@ def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
                             "body": r.get("body", "")[:500]
                         })
                     if results:
-                        break
+                        return results  # Return early if found
             except Exception:
+                # Skip this query if it times out or errors
                 continue
-        if results:
-            break
     
     # Remove duplicates by URL
     seen_urls = set()
@@ -140,6 +157,23 @@ def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
             unique_results.append(r)
     
     return unique_results
+
+
+def _search_web_with_timeout(title: str, authors: str = "", timeout: float = 10.0) -> List[Dict]:
+    """Bound a third-party search iterator that may ignore request timeouts."""
+    result: List[Dict] = []
+    finished = threading.Event()
+
+    def run_search() -> None:
+        try:
+            result.extend(search_web_for_paper(title, authors))
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=run_search, daemon=True)
+    thread.start()
+    finished.wait(timeout)
+    return result if finished.is_set() else []
 
 
 def _call_llm_for_verification(prompt: str) -> dict:
@@ -247,7 +281,7 @@ Return ONLY valid JSON:
 def verify_with_web_search(entry: dict, api_status: str) -> dict:
     """
     Main entry point for Step 4 verification.
-    FIXED v7.2: Better landmark detection, no SQL errors.
+    FIXED v7.3: Fail-fast on DDGS/requests hangs, skip to fallback if slow.
     """
     title = entry.get("title", "")
     authors = entry.get("authors", "")
@@ -312,11 +346,12 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
                 "sources_checked": ["landmark_detection"],
             }
 
-    # ── URL VERIFICATION ──────────────────────────────────────────────────────
+    # ── URL VERIFICATION (AGGRESSIVE TIMEOUT) ──────────────────────────────────
     if original_url and original_url.startswith("http"):
         try:
+            session = _make_requests_session(timeout=3)  # 3 sec hard timeout
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            resp = requests.get(original_url, headers=headers, timeout=8, allow_redirects=True)
+            resp = session.get(original_url, headers=headers, timeout=3, allow_redirects=True)
             if resp.status_code == 200:
                 # Try to extract title
                 page_title = ""
@@ -336,10 +371,12 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
                             "sources_checked": ["url_verify"],
                         }
         except Exception:
+            # URL check hung or failed — skip to fallback
             pass
 
-    # ── WEB SEARCH ────────────────────────────────────────────────────────────
-    web_results = search_web_for_paper(title, authors)
+    # ── WEB SEARCH (FAIL-FAST) ──────────────────────────────────────────────────
+    # If DDGS hangs, search_web_for_paper() will timeout and return empty list
+    web_results = _search_web_with_timeout(title, authors)
     
     if web_results:
         result = llm_verify_with_web_search(title, authors, year, web_results)
