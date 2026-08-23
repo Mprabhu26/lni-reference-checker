@@ -1113,6 +1113,19 @@ def ai_overall_verdict(filename: str, summary: dict, xcheck,
     bib_count = len(bib_list)
     cited_count = len(xcheck.correctly_used) + missing_cit
     key_issues = [e for e in bib_list if e.key_consistent is False]
+
+    # A clean, fully verified submission needs no second LLM call. This avoids
+    # waiting on provider retries after the substantive checks already passed.
+    if (fake_count == 0 and suspicious == 0 and missing_cit == 0
+            and orphaned == 0 and incomplete == 0 and not key_issues):
+        return {
+            "verdict": "PASS",
+            "score": 100,
+            "grade": "A",
+            "verdict_reason": "All references verified and no citation or format issues found.",
+            "student_feedback": [],
+            "professor_note": "No issues found",
+        }
     
     # Try AI if available
     if _ai_available():
