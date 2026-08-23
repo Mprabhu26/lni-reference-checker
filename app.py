@@ -32,7 +32,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 
 from extractor import extract
-from parser import parse_bibliography, entries_to_dict
+from parser import parse_bibliography, entries_to_dict, _validate_key_vs_metadata
 from checker import (
     extract_citations_from_body,
     extract_citation_contexts,
@@ -322,6 +322,9 @@ def _apply_ai_improvements(bib_list: list, improvements: dict) -> list:
         for field in ("journal", "booktitle", "publisher", "pages"):
             if not getattr(entry, field) and imp.get(field):
                 setattr(entry, field, imp[field])
+        entry.key_consistent = None
+        entry.key_mismatch_detail = None
+        _validate_key_vs_metadata(entry)
     return bib_list
 
 

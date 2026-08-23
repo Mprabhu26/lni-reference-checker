@@ -1285,7 +1285,11 @@ def _check_author_match(entry: BibEntry, api_result: "VerificationResult") -> "V
 # MAIN VERIFICATION FUNCTION — FIXED with better fallbacks
 # ---------------------------------------------------------------------------
 
-def verify_reference(entry: BibEntry, dup_map: dict = None) -> VerificationResult:
+def verify_reference(
+    entry: BibEntry,
+    dup_map: dict = None,
+    allow_ai_fallback: bool = True,
+) -> VerificationResult:
     """
     4-step pipeline with duplicate check FIRST.
     FIXED v8.5: Using concurrent.futures timeout instead of signals (Windows-safe).
@@ -1562,6 +1566,22 @@ def verify_reference(entry: BibEntry, dup_map: dict = None) -> VerificationResul
                 sources_checked=["fabrication_detector"],
             )
 
+        if not allow_ai_fallback:
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="suspicious",
+                confidence=api_result.confidence if api_result else 0.0,
+                matched_title=api_matched_title or None,
+                doi=api_result.doi if api_result else None,
+                open_access_url=api_result.open_access_url if api_result else None,
+                note="No database or URL confirmation; queued for final AI review.",
+                sources_checked=(api_result.sources_checked if api_result else ["none"]),
+                correct_authors=api_result.correct_authors if api_result else None,
+                title_match_score=api_result.title_match_score if api_result else None,
+                author_match_score=api_result.author_match_score if api_result else None,
+            )
+
         web_result = verify_with_web_search(entry_dict, api_status)
 
         # If web search or AI confirms it, save to cache
@@ -1626,10 +1646,16 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
     
     unique_entries = [e for e in entries if e.key not in skip_keys]
     
-    ex = ThreadPoolExecutor(max_workers=8)
-    future_map = {ex.submit(verify_reference, e, dup_map): e for e in unique_entries}
+    # References are independent. Use one worker per entry up to a bounded
+    # ceiling so a batch does not wait behind unrelated slow references.
+    worker_count = min(16, max(1, len(unique_entries)))
+    ex = ThreadPoolExecutor(max_workers=worker_count)
+    future_map = {
+        ex.submit(verify_reference, e, dup_map): e
+        for e in unique_entries
+    }
     completed_keys = set()
-    batch_timeout = 75
+    batch_timeout = 180
     try:
         for future in as_completed(future_map, timeout=batch_timeout):
             e = future_map[future]

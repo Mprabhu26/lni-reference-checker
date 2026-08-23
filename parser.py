@@ -209,6 +209,9 @@ def parse_bibliography(bib_text: str) -> list:
 # ---------------------------------------------------------------------------
 
 def _classify_and_parse(entry: BibEntry, raw: str) -> None:
+    # PDF extraction can split punctuation, e.g. "Vol . 521".
+    raw = re.sub(r'\s+([.,;:)])', r'\1', raw)
+
     # ── DOI ──────────────────────────────────────────────────────────────────
     doi_match = re.search(
         r'(?:doi:\s*|https?://doi\.org/|DOI:\s*)([^\s,;\]]+)',
@@ -699,7 +702,7 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
             # If key initials count < author count AND all key chars are valid
             # initials, flag as mismatch (missing author initials).
             missing_initials_for_3plus = False
-            if initials_ok and n >= 3 and len(key_initials) < n:
+            if initials_ok and n >= 3 and len(key_initials) < n and len(key_initials) < 3:
                 # Only flag if every char in the key IS a valid initial
                 # (so we don't accidentally flag 2-char first-author keys like De18)
                 all_chars_are_initials = all(
@@ -717,6 +720,14 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
                     # LeCun+Bengio+Hinton). It must NOT be downgraded to
                     # "ambiguous" by the generic 2-char pool check below.
                     missing_initials_for_3plus = True
+                    # Rescue: if every key char IS a valid author initial
+                    # (e.g. RH for He+Zhang+Ren+Sun), the key is ambiguous
+                    # — not a definitive mismatch. Clear the flag so the
+                    # pool check below can promote to None (ambiguous).
+                    if len(key_initials) >= 2:
+                        author_initials_pool = {s[0] for s in normed}
+                        if set(key_initials) <= author_initials_pool:
+                            missing_initials_for_3plus = False
 
             # If nothing matched but the key's initials are a plausible
             # subsequence of the paper's author initials, treat as unknown
