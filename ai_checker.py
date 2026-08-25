@@ -17,6 +17,8 @@ import threading
 import requests
 from typing import List, Dict, Any, Optional
 from review_queue import is_venue_whitelisted
+from dotenv import load_dotenv
+load_dotenv()  # This loads the variables from the .env file into the environment
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -724,6 +726,30 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
         if not journal_plausible:
             signals.append({"name": "journal", "risk": 0.5, "weight": 0.0,
                             "friendly": "Journal name appears suspicious"})
+
+    # Signal 6a: Suspicious / placeholder author name — strong weighted signal
+    _fake_author_surnames = {
+        "ghost", "fake", "test", "example", "placeholder", "unknown",
+        "anonymous", "nobody", "someone", "author", "dummy", "sample",
+        "demo", "null", "none",
+    }
+    authors_str = (entry.get("authors") or "").strip()
+    if authors_str:
+        first_author = authors_str.split(";")[0].strip()
+        if "," in first_author:
+            surname_part = first_author.split(",")[0].strip().lower()
+        else:
+            parts = first_author.split()
+            surname_part = parts[-1].lower() if parts else ""
+        if surname_part in _fake_author_surnames:
+            signals.append({
+                "name": "fake_author",
+                "risk": 0.90,
+                "weight": 0.30,
+                "friendly": f"Author name '{first_author}' looks like a placeholder",
+            })
+            weighted_sum += 0.90 * 0.30
+            total_weight += 0.30
     
     # Signal 6: Page range (informational only)
     pages = entry.get("pages", "")
@@ -790,6 +816,23 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
     is_grey, _ = _is_grey_literature(entry)
     if is_grey:
         return None
+
+    # Suspicious / placeholder author: never pre-screen as REAL
+    _fake_author_surnames = {
+        "ghost", "fake", "test", "example", "placeholder", "unknown",
+        "anonymous", "nobody", "someone", "author", "dummy", "sample",
+        "demo", "null", "none",
+    }
+    authors_str = (entry.get("authors") or "").strip()
+    if authors_str:
+        first_author = authors_str.split(";")[0].strip()
+        surname_part = (
+            first_author.split(",")[0].strip().lower()
+            if "," in first_author
+            else (first_author.split()[-1].lower() if first_author.split() else "")
+        )
+        if surname_part in _fake_author_surnames:
+            return None  # force full analysis; don't shortcut to REAL
 
     if is_retracted:
         return {"verdict": "REAL", "confidence": 0.99,
@@ -914,10 +957,26 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     vr_by_key = {vr["key"]: vr for vr in api_results}
 
     # Do not make an unnecessary LLM call when the verification stage already
-    # confirmed every bibliography entry. This also prevents provider retries
-    # from blocking rendering of a fully verified document.
+    # confirmed every bibliography entry via an authoritative source.
+    # IMPORTANT: exclude entries that were promoted from a partial match — those
+    # need the AI sanity check because the API evidence is weaker.
+    _promoted_sources = {"partial_match", "suspicious"}
+
+    def _is_authoritatively_verified(vr: dict) -> bool:
+        """True only if the result came from a direct, high-confidence source."""
+        if vr.get("status") != "verified":
+            return False
+        note = (vr.get("note") or "").lower()
+        # Promoted partial matches are explicitly flagged in their note
+        if "promoted from partial" in note:
+            return False
+        # Low-confidence 'verified' results still need AI review
+        if vr.get("confidence", 0) < 0.80:
+            return False
+        return True
+
     if (len(api_results) == len(bib_entries)
-            and all(vr.get("status") == "verified" for vr in api_results)):
+            and all(_is_authoritatively_verified(vr) for vr in api_results)):
         verdicts = [
             {
                 "key": entry["key"],

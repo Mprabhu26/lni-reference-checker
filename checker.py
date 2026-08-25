@@ -1476,14 +1476,47 @@ def verify_reference(
         # Check if we have a good API match (verified or strong partial)
         if api_result and api_result.status in ("verified", "partial_match"):
             title_sim = _title_similarity(entry.title or "", api_result.matched_title or "")
-            # For partial matches, require strong author corroboration to promote
+
+            # ── SUSPICIOUS ENTRY GUARD ────────────────────────────────────────
+            # Before trusting any API match, check whether the entry itself
+            # looks fabricated.  A generic/placeholder author (single word, or
+            # a word that is not a real surname) combined with a title that
+            # returns no close match in any academic database is a strong signal
+            # that the reference was invented.
+            def _looks_like_fake_author(authors_str: str) -> bool:
+                """Return True if the author string looks like a placeholder."""
+                if not authors_str:
+                    return False
+                # Split on semicolons and check the first author only
+                first = authors_str.split(";")[0].strip()
+                # "Ghost, Author" — surname is a common English word / dictionary word
+                _fake_surnames = {
+                    "ghost", "fake", "test", "example", "placeholder",
+                    "unknown", "anonymous", "nobody", "someone", "author",
+                    "dummy", "sample", "demo", "null", "none",
+                }
+                if "," in first:
+                    surname = first.split(",")[0].strip().lower()
+                else:
+                    parts = first.split()
+                    surname = parts[-1].lower() if parts else ""
+                return surname in _fake_surnames
+
+            entry_has_fake_author = _looks_like_fake_author(entry.authors or "")
+
+            # For partial matches, require STRONG author + title corroboration
             if api_result.status == "partial_match":
                 author_overlap = author_overlap_score(
                     entry.authors or "", api_result.correct_authors or ""
                 ) if entry.authors and api_result.correct_authors else None
-                # Promote to verified if: title >=60% AND author overlap >=70%
-                # This catches real papers that have format differences (e.g. "Deep Learning" in Nature)
-                if title_sim >= 0.60 and author_overlap is not None and author_overlap >= 0.70:
+
+                # Require title ≥ 0.75 AND author ≥ 0.80 to promote a partial
+                # match to verified — previous thresholds (0.60/0.70) were too
+                # loose and caused fabricated entries to slip through.
+                if (not entry_has_fake_author
+                        and title_sim >= 0.75
+                        and author_overlap is not None
+                        and author_overlap >= 0.80):
                     api_result.status = "verified"
                     api_result.confidence = round(min(title_sim * 0.6 + author_overlap * 0.4, 0.92), 4)
                     api_result.note = (
@@ -1491,10 +1524,28 @@ def verify_reference(
                         f"author {int(author_overlap*100)}% — likely real with format differences"
                     )
                 else:
-                    # Don't return yet — let URL and AI have a chance
-                    pass
+                    # Insufficient evidence to promote — leave as partial and
+                    # let the AI/web-search fallback decide.
+                    api_result = None  # discard weak partial match
 
-            if api_result.status == "verified" and title_sim >= 0.70:
+            if api_result and api_result.status == "verified" and title_sim >= 0.70:
+                # Reject verification if the entry has a known-fake author,
+                # regardless of what the API returned.  The API match is likely
+                # a false positive caused by a short/generic title fragment.
+                if entry_has_fake_author:
+                    return VerificationResult(
+                        key=entry.key, title=entry.title or "",
+                        status="suspicious",
+                        confidence=0.30,
+                        matched_title=api_result.matched_title,
+                        note=(
+                            "Suspicious author name detected. "
+                            "API returned a match but the author string looks "
+                            "like a placeholder — manual review required."
+                        ),
+                        sources_checked=api_result.sources_checked or [],
+                    )
+
                 # Check author overlap if available
                 author_ok = True
                 if entry.authors and api_result.correct_authors:

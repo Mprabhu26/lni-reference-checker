@@ -328,28 +328,8 @@ def search_cache(title: str, authors: str = "") -> Optional[CachedPaper]:
             LIMIT 1
         """, (norm,)).fetchone()
         
-        # If no match, try DOI lookup
-        if not row and authors:
-            # Try to find by author name in the authors_blob
-            # This is a text search on the compressed blob - not ideal but works
-            rows = conn.execute("""
-                SELECT title_blob, authors_blob, year, doi, url, source, confidence, last_seen
-                FROM verified_papers
-                WHERE confirmed_real = 1
-                LIMIT 20
-            """).fetchall()
-            
-            # Filter by author match
-            first_author = authors.split(';')[0].strip().lower()
-            for r in rows:
-                if r["authors_blob"]:
-                    try:
-                        db_authors = _decompress(r["authors_blob"]).lower()
-                        if first_author in db_authors:
-                            row = r
-                            break
-                    except Exception:
-                        continue
+        # Do not fall back to author-only matching: common or fabricated
+        # author strings can otherwise return an unrelated real paper.
     finally:
         conn.close()
     
