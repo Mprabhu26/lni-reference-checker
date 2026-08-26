@@ -746,16 +746,17 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
             if resp.status_code == 200:
                 content_type = resp.headers.get('Content-Type', '').lower()
 
+                # PDFs: extract title from content if possible, otherwise require AI
                 if 'application/pdf' in content_type or url.lower().endswith('.pdf'):
+                    # We can't easily parse PDF title here — escalate to AI for title check
                     return VerificationResult(
                         key=entry.key,
                         title=entry.title or "",
-                        status="verified",
-                        confidence=0.90,
-                        matched_title=entry.title,
+                        status="url_blocked",
+                        confidence=0.0,
                         open_access_url=resp.url,
-                        note="PDF verified (HTTP 200)",
-                        sources_checked=["url_verify"],
+                        note="PDF reachable (HTTP 200) but title cannot be verified from content. Escalating to AI.",
+                        sources_checked=["url_fetch"],
                     )
 
                 soup = BeautifulSoup(resp.text, "html.parser")
@@ -784,9 +785,22 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
                         sources_checked=["url_fetch"],
                     )
 
-                if page_title and entry.title:
+                if not page_title:
+                    # No title extractable — cannot verify, escalate
+                    return VerificationResult(
+                        key=entry.key,
+                        title=entry.title or "",
+                        status="url_blocked",
+                        confidence=0.0,
+                        open_access_url=url,
+                        note="URL reachable (HTTP 200) but no page title found. Escalating to AI.",
+                        sources_checked=["url_fetch"],
+                    )
+
+                if entry.title:
                     sim = _title_similarity(entry.title, page_title)
-                    if sim >= 0.70:
+                    # Require ≥0.80 similarity — title must actually match
+                    if sim >= 0.80:
                         return VerificationResult(
                             key=entry.key,
                             title=entry.title or "",
@@ -794,20 +808,32 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
                             confidence=round(sim, 4),
                             matched_title=page_title,
                             open_access_url=resp.url,
-                            note=f"URL verified (title match {int(sim*100)}%)",
+                            note=f"URL verified: title match {int(sim*100)}% (page: '{page_title[:60]}')",
                             sources_checked=["url_verify"],
                         )
+                    # Title found but doesn't match well enough — escalate with evidence
+                    return VerificationResult(
+                        key=entry.key,
+                        title=entry.title or "",
+                        status="url_blocked",
+                        confidence=0.0,
+                        open_access_url=url,
+                        note=(
+                            f"URL reachable (HTTP 200) but title mismatch "
+                            f"(cited: '{(entry.title or '')[:50]}' | page: '{page_title[:50]}' | sim: {int(sim*100)}%). "
+                            f"Escalating to AI."
+                        ),
+                        sources_checked=["url_fetch"],
+                    )
 
+                # No cited title to compare against — escalate
                 return VerificationResult(
                     key=entry.key,
                     title=entry.title or "",
                     status="url_blocked",
                     confidence=0.0,
                     open_access_url=url,
-                    note=(
-                        f"URL reachable (HTTP 200) but title similarity too low "
-                        f"(page: '{page_title[:60]}'). Escalating to AI."
-                    ),
+                    note=f"URL reachable (HTTP 200) but no cited title to compare. Escalating to AI.",
                     sources_checked=["url_fetch"],
                 )
 
@@ -1290,16 +1316,16 @@ def verify_reference(
                     url_blocked = True
                     url_note = url_result.note or "URL reachable but bot-blocked."
                 else:
-                    url_note = "URL fetch returned no result or 404."
+                    url_blocked = True
+                    url_note = "URL fetch returned no result or non-200 status."
             else:
                 url_note = "No URL in grey literature entry."
 
             # ── ✅ FIX: CALL AI FOR GREY LITERATURE ──────────────────────────────
-            # Even for grey literature, try AI verification before giving up
             if allow_ai_fallback and _ai_available():
                 grey_dict = {
                     **_entry_dict_for_grey,
-                    "api_status": "not_found",
+                    "api_status": "url_blocked" if url_blocked else "not_found",
                     "api_matched_title": "",
                     "url_note": url_note,
                     "url_blocked": url_blocked,

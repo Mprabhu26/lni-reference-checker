@@ -347,20 +347,23 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
             }
 
     # ── URL VERIFICATION (AGGRESSIVE TIMEOUT) ──────────────────────────────────
-    if original_url and original_url.startswith("http"):
+    # Skip URL fetch entirely if caller already told us the URL is dead/blocked
+    url_already_dead = entry.get("url_blocked", False)
+    
+    if original_url and original_url.startswith("http") and not url_already_dead:
         try:
-            session = _make_requests_session(timeout=3)  # 3 sec hard timeout
+            session = _make_requests_session(timeout=3)
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             resp = session.get(original_url, headers=headers, timeout=3, allow_redirects=True)
             if resp.status_code == 200:
-                # Try to extract title
                 page_title = ""
                 match = re.search(r'<title[^>]*>([^<]+)</title>', resp.text, re.IGNORECASE)
                 if match:
                     page_title = match.group(1).strip()
                 if page_title and title:
                     sim = _title_similarity_simple(title, page_title)
-                    if sim >= 0.30:
+                    # Require 0.70 — 30% was far too loose and matched unrelated pages
+                    if sim >= 0.70:
                         return {
                             "status": "verified",
                             "web_verified": True,
@@ -370,24 +373,57 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
                             "note": f"URL verified with title match ({int(sim*100)}%)",
                             "sources_checked": ["url_verify"],
                         }
+                    # URL alive but title doesn't match — mark as suspicious, don't fall through to REAL
+                    return {
+                        "status": "suspicious",
+                        "web_verified": False,
+                        "confidence": 0.35,
+                        "note": f"URL reachable but page title does not match cited title (sim: {int(sim*100)}%). Manual review required.",
+                        "sources_checked": ["url_verify"],
+                    }
+                # 200 but no extractable title
+                return {
+                    "status": "suspicious",
+                    "web_verified": False,
+                    "confidence": 0.35,
+                    "note": "URL reachable (HTTP 200) but no page title found to verify against. Manual review required.",
+                    "sources_checked": ["url_verify"],
+                }
+            else:
+                # Non-200 — URL is dead
+                return {
+                    "status": "suspicious",
+                    "web_verified": False,
+                    "confidence": 0.20,
+                    "note": f"URL returned HTTP {resp.status_code} — page does not exist. Manual review required.",
+                    "sources_checked": ["url_verify"],
+                }
         except Exception:
-            # URL check hung or failed — skip to fallback
-            pass
+            pass  # timeout or connection error — fall through to web search
+
+    if url_already_dead:
+        url_note = entry.get("url_note", "URL check failed")
+        # Still allow web search to find evidence, but note the dead URL
+        dead_url_note = f"URL check failed: {url_note}. "
+
+    else:
+        dead_url_note = ""
 
     # ── WEB SEARCH (FAIL-FAST) ──────────────────────────────────────────────────
-    # If DDGS hangs, search_web_for_paper() will timeout and return empty list
     web_results = _search_web_with_timeout(title, authors)
     
     if web_results:
         result = llm_verify_with_web_search(title, authors, year, web_results)
-        if result.verdict == "REAL" and result.confidence >= 0.50:
+        # If URL is already known dead, require higher confidence from web search
+        min_confidence = 0.70 if url_already_dead else 0.50
+        if result.verdict == "REAL" and result.confidence >= min_confidence:
             return {
                 "status": "verified",
                 "web_verified": True,
                 "confidence": max(result.confidence, 0.75),
                 "matched_title": result.found_title or title,
-                "open_access_url": result.found_url or original_url,
-                "note": result.explanation,
+                "open_access_url": result.found_url or (None if url_already_dead else original_url),
+                "note": dead_url_note + result.explanation,
                 "sources_checked": ["web_search", "llm_analysis"],
             }
 

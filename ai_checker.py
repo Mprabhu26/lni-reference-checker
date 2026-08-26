@@ -681,6 +681,20 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
         }
     
     # ─────────────────────────────────────────────────────────────────────────
+    # STEP 2b: URL was attempted but failed or title didn't match
+    # A dead/mismatched URL is concrete negative evidence — cannot be REAL.
+    # ─────────────────────────────────────────────────────────────────────────
+    if api_status == "url_blocked":
+        url_note = api_result.get("note", "")
+        return {
+            "verdict": "SUSPICIOUS",
+            "confidence": 0.70,
+            "composite_risk": 0.75,
+            "risk_factors": [f"URL check failed: {url_note[:120]}"],
+            "reasoning": f"URL check failed — {url_note[:120]}",
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
     # STEP 3: Grey literature detection (valid sources not in academic DBs)
     # ─────────────────────────────────────────────────────────────────────────
     is_grey, grey_reason = _is_grey_literature(entry)
@@ -729,7 +743,7 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     total_weight = 0
     weighted_sum = 0
     
-    # Signal 1: API status (FIXED: Lower risk for not_found)
+    # Signal 1: API status
     status_scores = {
         "verified": 0.0,
         "retracted": 0.1,
@@ -738,6 +752,7 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
         "not_found": 0.50,
         "suspicious": 0.60,
         "error": 0.55,
+        "url_blocked": 0.75,   # URL fetch failed or title mismatch — strong negative signal
     }
     status_risk = status_scores.get(api_status, 0.50)
     signals.append({"name": "database_match", "risk": status_risk, "weight": 0.35, 
@@ -864,9 +879,17 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
     has_version_note = bool(api_result.get("version_note"))
     matched_title = api_result.get("matched_title", "")
 
-    # Grey literature: never pre-screen as FAKE
-    is_grey, _ = _is_grey_literature(entry)
+    # Grey literature: never pre-screen as FAKE, but dead URLs are SUSPICIOUS immediately
+    is_grey, grey_reason = _is_grey_literature(entry)
     if is_grey:
+        if api_status == "url_blocked":
+            url_note = api_result.get("note", "URL check failed")
+            return {
+                "verdict": "SUSPICIOUS",
+                "confidence": 0.75,
+                "reasoning": f"Grey literature with failed URL check: {url_note[:120]}",
+                "risk_factors": [f"URL check failed: {url_note[:80]}"],
+            }
         return None
 
     # Suspicious / placeholder author: never pre-screen as REAL
@@ -1135,28 +1158,50 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                         "web_evidence": vr.get("web_evidence") or "",
                         "arxiv_version_note": vr.get("version_note") or "",
                         "composite_risk": composite.get("composite_risk", 0.5),
+                        # Concrete URL fetch outcome — treat this as ground truth
+                        "url_fetch_result": vr.get("note") or "",
                     })
                 
-                prompt = f"""You are a senior academic librarian. Analyze each reference below and return REAL / SUSPICIOUS / FAKE.
+                prompt = f"""You are a strict academic librarian verifying bibliography entries. For each reference return REAL / SUSPICIOUS / FAKE.
 
-CRITERIA:
-- REAL: Paper/source exists and is verifiable. This includes:
-    * Academic papers found in databases (CrossRef, Semantic Scholar, arXiv, DBLP)
-    * Legitimate website citations (GitHub repos, official documentation, government sites,
-      industry reports from known organizations like GI, IEEE, ACM, Bitkom, etc.)
-    * Well-known papers (BERT, ResNet, Adam, etc.) even with minor citation format issues
-- SUSPICIOUS: Partial evidence, ambiguous metadata, or URL cannot be verified
-- FAKE: No evidence, placeholder authors, nonsense titles, or clearly fabricated metadata
+Each entry includes a field "url_fetch_result" — this is the ACTUAL outcome of fetching the URL. Treat it as ground truth.
+Each entry includes "api_status" — treat "url_blocked" as meaning the URL check failed or title did not match.
 
-Important: Website/grey literature citations (entry_type=website/misc/online) with a real URL
-from a known organization are REAL, not SUSPICIOUS. Only flag them SUSPICIOUS if the URL
-looks broken, the organization is unknown, or metadata is inconsistent.
+RULES — apply ALL, no exceptions:
+
+REAL requires ALL of:
+  - Specific, plausible title (not generic)
+  - Named real person as author — NOT "Medium Staff", "Web Author", "Unknown", "Community", "StackOverflow Community", "GitHub Contributors", or any team/org name
+  - Year present and plausible
+  - For URL-only entries: api_status must be "verified" (HTTP 200 + title matched). If api_status is "url_blocked", the URL either returned a non-200 status or the page title did not match the cited title — this entry CANNOT be REAL.
+  - For academic entries: database match with matching title AND author AND year (±1 year)
+
+SUSPICIOUS when any of:
+  - api_status is "url_blocked" — URL is dead, returned an error, or page title does not match
+  - Author is a team/org name, not a specific person
+  - Year missing
+  - Partial database match with differing author or year
+  - Insufficient evidence to confirm
+
+FAKE when:
+  - Title is nonsensical or fabricated
+  - Authors are clearly placeholders
+  - Year is impossible
+
+NEVER mark REAL based on:
+  - Domain looking legitimate (gi.de, medium.com, github.com are not evidence alone)
+  - URL path looking plausible
+  - Title sounding reasonable
+  - Organization being well-known
+  - Your own knowledge that a domain exists
+
+Your reasoning must reference specific fields from the entry data (url_fetch_result, api_status, author name, year) — not general impressions.
 
 Return ONLY valid JSON:
 {{
   "verdicts": [
     {{"key": "string", "verdict": "REAL", "confidence": 0.95,
-      "reasoning": "one sentence", "risk_factors": []}}
+      "reasoning": "cite the specific field values that support this verdict", "risk_factors": []}}
   ]
 }}
 
