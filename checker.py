@@ -1270,11 +1270,17 @@ def verify_reference(
             )
 
         # ── STEP 1: Local SQLite DB ───────────────────────────────────────────────
+        # search_cache() only ever returns rows with confirmed_real = 1 — i.e.
+        # papers already verified (via API/AI) or explicitly confirmed by a
+        # professor. Anything found here is authoritative and should short
+        # circuit the rest of the pipeline; re-gating on confidence caused
+        # already-cached/professor-confirmed entries to be silently re-checked
+        # and sometimes re-flagged as SUSPICIOUS.
         cached = search_cache(entry.title or "", entry.authors or "")
-        if cached and cached.confidence >= 0.90:
+        if cached:
             return VerificationResult(
                 key=entry.key, title=entry.title or "",
-                status="verified", confidence=cached.confidence,
+                status="verified", confidence=max(cached.confidence, 0.90),
                 matched_title=cached.title, doi=cached.doi,
                 open_access_url=cached.url,
                 note=f"Found in local database (source: {cached.source})",

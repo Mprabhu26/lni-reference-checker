@@ -120,12 +120,14 @@ input:checked + .toggle-slider:before { transform: translateX(18px); }
 .verdict-card.PASS { background: var(--success-bg); border-color: #c8e6d9; }
 .verdict-card.FLAG { background: var(--warning-bg); border-color: #fed7aa; }
 .verdict-card.FAIL { background: var(--error-bg); border-color: #fecaca; }
+.verdict-card.PENDING { background: #f1f0fb; border-color: #c7c3f0; }
 .verdict-icon { font-size: 32px; }
 .verdict-meta { flex: 1; }
 .verdict-title { font-size: 18px; font-weight: 700; }
 .verdict-card.PASS .verdict-title { color: var(--success); }
 .verdict-card.FLAG .verdict-title { color: var(--warning); }
 .verdict-card.FAIL .verdict-title { color: var(--error); }
+.verdict-card.PENDING .verdict-title { color: #5b4fc2; }
 .verdict-reason { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
 .verdict-score { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; text-align: right; }
 
@@ -622,17 +624,24 @@ function renderResults(data) {
   const sc = data.score || {};
   const s = data.summary || {};
   document.getElementById('topbarTitle').innerHTML = `<strong>${escapeHtml(data.filename)}</strong> · ${data.format} · Checked ${s.bib_entry_count || 0} references`;
-  const icons = { PASS:'✅', FLAG:'⚠️', FAIL:'❌' };
+  const icons = { PASS:'✅', FLAG:'⚠️', FAIL:'❌', PENDING:'⏳' };
   const vc2 = sc.verdict || 'FLAG';
   document.getElementById('verdictCard').className = 'verdict-card ' + vc2;
   document.getElementById('verdictIcon').textContent = icons[vc2] || '⚠️';
-  document.getElementById('verdictTitle').textContent = vc2 === 'PASS' ? 'PASS — References look good' : vc2 === 'FLAG' ? 'FLAG — Issues need attention' : 'FAIL — Significant issues found';
+  const titles2 = {
+    PASS: 'PASS — References look good',
+    FLAG: 'FLAG — Issues need attention',
+    FAIL: 'FAIL — Significant issues found',
+    PENDING: 'PENDING — Awaiting professor review',
+  };
+  document.getElementById('verdictTitle').textContent = titles2[vc2] || titles2.FLAG;
   document.getElementById('verdictReason').textContent = sc.verdict_reason || '';
   const entryQuality = sc.entry_quality_score;
   const qualityLabel = (entryQuality !== null && entryQuality !== undefined)
     ? ' · ' + entryQuality + '% verified'
     : '';
-  document.getElementById('verdictScore').textContent = (sc.score || 0) + '/100' + qualityLabel;
+  const scoreLabel2 = vc2 === 'PENDING' ? 'Tentative: ' : '';
+  document.getElementById('verdictScore').textContent = scoreLabel2 + (sc.score || 0) + '/100' + qualityLabel;
   document.getElementById('verdictBanner').classList.add('show');
   const missing = (data.cross_check?.cited_not_in_bib || []).filter(k => !k.includes('__NUMERIC')).length;
   const orphan = (data.cross_check?.in_bib_not_cited || []).length;
@@ -1089,7 +1098,7 @@ async function saveToDb(key) {
         if (d.success) { 
             showToast(`✓ "${title.slice(0,40)}…" saved to local DB`, 'success');
             confirmedRealKeys.add(key);
-            if (result) { renderVerifyTab(result); renderScoreTab(result); }   // re-render so confirmedRealKeys reflects everywhere
+            if (result) { renderVerifyTab(result); renderScoreTab(result); refreshVerdictBanner(); }   // re-render so confirmedRealKeys reflects everywhere
             // Refresh the database badge
             if (d.db_total) {
                 document.getElementById('topbarDbCount').textContent = d.db_total;
@@ -1119,9 +1128,11 @@ function renderScoreTab(data) {
   const verificationFakeCount = markedFakeKeys.size;
   const verificationSuspCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
   const verificationRealCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'REAL').length;
-  const gradeColor = actualScore >= 80 ? 'green' : actualScore >= 60 ? 'orange' : 'red';
+  const gradeColor = adj.verdict === 'PENDING' ? 'orange' : actualScore >= 80 ? 'green' : actualScore >= 60 ? 'orange' : 'red';
+  const gradeLabel = grade || 'Pending';
+  const scorePrefix = adj.verdict === 'PENDING' ? 'Tentative ' : '';
   let html = `<div class="stat-bar">
-    <div class="stat-box ${gradeColor}"><div class="value">${actualScore}/100</div><div class="label">Final Score · ${grade}</div></div>
+    <div class="stat-box ${gradeColor}"><div class="value">${scorePrefix}${actualScore}/100</div><div class="label">Final Score · ${gradeLabel}</div></div>
     <div class="stat-box ${verificationFakeCount ? 'red' : 'green'}"><div class="value">${verificationFakeCount}</div><div class="label">Confirmed Fake References</div></div>
     <div class="stat-box ${verificationSuspCount ? 'orange' : 'green'}"><div class="value">${verificationSuspCount}</div><div class="label">Suspicious References</div></div>
     <div class="stat-box green"><div class="value">${verificationRealCount}</div><div class="label">Verified Real</div></div>
@@ -1141,7 +1152,7 @@ function renderScoreTab(data) {
     <table class="penalty-table"><thead><tr><th>Issue Category</th><th>Count</th><th>Deduction</th><th>Why it matters</th></tr></thead><tbody>
       ${penalties.map(p => `<tr><td style="font-weight:600;">${escapeHtml(p.category)}</td><td>${p.count}</td><td class="deduct-cell">-${p.deduction}</td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml(explainPenalty(p.category))}</td></tr>`).join('')}
       ${penalties.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--success);">✓ No deductions — perfect score!</td></tr>' : ''}
-      <tr class="total-row"><td colspan="2"><strong>Final Score</strong></td><td><strong>${actualScore}/100 (${grade})</strong></td><td></td></tr>
+      <tr class="total-row"><td colspan="2"><strong>${adj.verdict === 'PENDING' ? 'Tentative Score' : 'Final Score'}</strong></td><td><strong>${actualScore}/100 (${gradeLabel})</strong></td><td></td></tr>
     </tbody></table>
   </div>`;
   if (sc.professor_note) { let cleanNote = sc.professor_note; cleanNote = cleanNote.replace(/^I will manually review\s+/, ''); html += `<div class="explanation-box"><strong>📝 Note:</strong> ${escapeHtml(cleanNote)}</div>`; }
@@ -1328,13 +1339,7 @@ function markAsFake(key, btnEl) {
   if (result) {
     renderVerifyTab(result);
     renderScoreTab(result);
-    const adj2 = computeAdjustedScore(result);
-    const vc3 = adj2.score >= 80 ? 'PASS' : adj2.score >= 60 ? 'FLAG' : 'FAIL';
-    const icons3 = { PASS:'✅', FLAG:'⚠️', FAIL:'❌' };
-    document.getElementById('verdictCard').className = 'verdict-card ' + vc3;
-    document.getElementById('verdictIcon').textContent = icons3[vc3] || '⚠️';
-    document.getElementById('verdictTitle').textContent = vc3 === 'PASS' ? 'PASS — References look good' : vc3 === 'FLAG' ? 'FLAG — Issues need attention' : 'FAIL — Significant issues found';
-    document.getElementById('verdictScore').textContent = adj2.score + '/100';
+    refreshVerdictBanner();
     const fakeNow = (result.verification || []).filter(v => effectiveVerdict(v) === 'FAKE').length;
     const suspNow = (result.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
     const verTotalNow = (result.verification || []).length;
@@ -1344,6 +1349,11 @@ function markAsFake(key, btnEl) {
   showToast(`✕ [${key}] confirmed as fake — score updated`, 'error');
 }
 
+// Recompute score/verdict from the server's original numbers plus whatever
+// the professor has resolved so far (markedFakeKeys / confirmedRealKeys).
+// As long as any reference is still effectively SUSPICIOUS — i.e. the AI
+// flagged it and the professor hasn't confirmed real or fake yet — the
+// verdict stays PENDING with only a tentative score, no PASS/FLAG/FAIL.
 function computeAdjustedScore(data) {
   const sc = data.score || {};
   let score = sc.score || 0;
@@ -1357,10 +1367,40 @@ function computeAdjustedScore(data) {
     if (fakePenalty) { fakePenalty.count += newlyConfirmedCount; fakePenalty.deduction += deduction; }
     else { penalties.push({ category: 'Confirmed fake references', count: newlyConfirmedCount, deduction }); }
   }
-  const verdictLabel = score >= 80 ? 'PASS' : score >= 60 ? 'FLAG' : 'FAIL';
-  const grades = [[90,'A'],[80,'B'],[60,'C'],[50,'D'],[0,'F']];
-  const grade = (grades.find(([min]) => score >= min) || [0,'F'])[1];
-  return { score, grade, penalties };
+
+  const stillPending = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
+
+  let verdict, grade;
+  if (stillPending > 0) {
+    verdict = 'PENDING';
+    grade = null;
+  } else {
+    verdict = score >= 80 ? 'PASS' : score >= 60 ? 'FLAG' : 'FAIL';
+    const grades = [[90,'A'],[80,'B'],[60,'C'],[50,'D'],[0,'F']];
+    grade = (grades.find(([min]) => score >= min) || [0,'F'])[1];
+  }
+  return { score, grade, penalties, verdict, pending: stillPending };
+}
+
+// Re-render the verdict banner using the latest professor overrides.
+function refreshVerdictBanner() {
+  if (!result) return;
+  const adj = computeAdjustedScore(result);
+  const icons3 = { PASS:'✅', FLAG:'⚠️', FAIL:'❌', PENDING:'⏳' };
+  const titles3 = {
+    PASS: 'PASS — References look good',
+    FLAG: 'FLAG — Issues need attention',
+    FAIL: 'FAIL — Significant issues found',
+    PENDING: 'PENDING — Awaiting professor review',
+  };
+  document.getElementById('verdictCard').className = 'verdict-card ' + adj.verdict;
+  document.getElementById('verdictIcon').textContent = icons3[adj.verdict] || '⚠️';
+  document.getElementById('verdictTitle').textContent = titles3[adj.verdict] || titles3.FLAG;
+  document.getElementById('verdictReason').textContent = adj.verdict === 'PENDING'
+    ? `${adj.pending} reference(s) still need professor review before a final verdict can be issued.`
+    : (result.score && result.score.verdict === adj.verdict ? (result.score.verdict_reason || '') : '');
+  const scoreLabel3 = adj.verdict === 'PENDING' ? 'Tentative: ' : '';
+  document.getElementById('verdictScore').textContent = scoreLabel3 + adj.score + '/100';
 }
 
 function escapeHtml(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

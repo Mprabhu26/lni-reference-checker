@@ -555,25 +555,52 @@ def _assemble_result(
         verification_results=verification_output,
     )
     s = det_score["score"]
-    det_verdict = "PASS" if s >= 80 else "FLAG" if s >= 60 else "FAIL"
+
+    # References the AI could not resolve one way or the other still need a
+    # professor's manual call (real vs. fake). Until every one of them has
+    # been resolved, no PASS/FLAG/FAIL verdict is issued — the submission
+    # sits in PENDING with only a tentative score shown, since a confirmed
+    # fake reference could still swing the outcome.
+    suspicious_pending = sum(
+        1 for v in verification_output if v.get("ai_verdict") == "SUSPICIOUS"
+    )
+
+    if suspicious_pending > 0:
+        det_verdict = "PENDING"
+    else:
+        det_verdict = "PASS" if s >= 80 else "FLAG" if s >= 60 else "FAIL"
 
     _pen_parts = "; ".join(
         f"{p['count']} {p['category'].lower()} (-{p['deduction']}pts)"
         for p in det_score.get("penalties", [])
     ) or "No issues detected."
-    _det_reason = f"Score {s}/100. {_pen_parts}"
+
+    if suspicious_pending > 0:
+        _det_reason = (
+            f"Tentative score {s}/100 — {suspicious_pending} reference(s) are "
+            f"SUSPICIOUS and awaiting professor review. No verdict can be issued "
+            f"until each is confirmed as real or fake. {_pen_parts}"
+        )
+    else:
+        _det_reason = f"Score {s}/100. {_pen_parts}"
+
     _ai_reason = overall.get("verdict_reason", "")
-    _verdict_reason = _ai_reason if (_ai_reason and overall.get("verdict") == det_verdict) else _det_reason
+    _verdict_reason = (
+        _ai_reason if (suspicious_pending == 0 and _ai_reason and overall.get("verdict") == det_verdict)
+        else _det_reason
+    )
 
     final_score = {
         "score": det_score["score"],
-        "grade": det_score["grade"],
+        "grade": det_score["grade"] if suspicious_pending == 0 else None,
         "verdict": det_verdict,
         "verdict_reason": _verdict_reason,
         "student_feedback": overall.get("student_feedback", []),
         "professor_note": overall.get("professor_note", ""),
         "penalties": det_score.get("penalties", []),
         "max_score": 100,
+        "pending_review": suspicious_pending > 0,
+        "suspicious_pending": suspicious_pending,
     }
 
     # ── Map each entry to the duplicate group it belongs to (if any) ──────────
