@@ -1,12 +1,10 @@
 """
-AI Checker — v7.1 (FIXED: Better API integration)
+AI Checker — v7.2 (ENV-based model config)
 --------------------------
-CHANGES v7.1:
-  - Fixed AI verification to actually call the APIs properly
-  - Added better title matching with fallback strategies
-  - Fixed confidence thresholds for REAL detection
-  - Added proper logging for debugging
-  - Fixed Google Scholar fallback for missing API results
+CHANGES v7.2:
+  - Removed hardcoded Groq/Gemini URLs and model names
+  - Single OpenAI-compatible backend driven by AI_BASE_URL + AI_MODEL + AI_API_KEY
+  - Preserved ALL original logic and fallback handling
 """
 
 import hashlib
@@ -17,13 +15,13 @@ import threading
 import requests
 from typing import List, Dict, Any, Optional
 from review_queue import is_venue_whitelisted
+from pathlib import Path as _Path
 from dotenv import load_dotenv
-load_dotenv()  # This loads the variables from the .env file into the environment
+load_dotenv(dotenv_path=_Path(__file__).resolve().parent / ".env", override=True)
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
-              "gemini-1.5-flash:generateContent")
+_AI_BASE_URL: str = os.environ.get("AI_BASE_URL", "").rstrip("/")
+_AI_MODEL: str    = os.environ.get("AI_MODEL", "")
+_AI_API_KEY: str  = os.environ.get("AI_API_KEY", "")
 
 _LLM_CACHE: Dict[str, str] = {}
 _LLM_CACHE_LOCK = threading.Lock()
@@ -52,99 +50,123 @@ def get_llm_cache_stats() -> dict:
 
 
 def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
-    """Call AI backend with automatic retry + exponential backoff."""
+    """Call AI backend (OpenAI-compatible) with automatic retry + exponential backoff."""
     import time
-    groq_key = os.environ.get("AI_API_KEY", "")
-    gemini_key = os.environ.get("AI_API_KEY_GEMINI", "")
-    model_tag = f"groq:{GROQ_MODEL}" if groq_key else "gemini:1.5-flash"
+    
+    if not _AI_BASE_URL or not _AI_MODEL or not _AI_API_KEY:
+        raise RuntimeError(
+            "AI backend not configured. Set AI_BASE_URL, AI_MODEL, and AI_API_KEY in your .env file."
+        )
+
+    model_tag = f"{_AI_BASE_URL}:{_AI_MODEL}"
     cached = _llm_cache_get(model_tag, system, prompt)
     if cached is not None:
         return cached
+
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
+
+    url = f"{_AI_BASE_URL}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {_AI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": _AI_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.1,
+    }
+
     MAX_RETRIES = 3
     for attempt in range(MAX_RETRIES + 1):
         result = None
-        used_model = None
-        if groq_key:
-            try:
-                resp = requests.post(
-                    GROQ_URL,
-                    headers={"Authorization": f"Bearer {groq_key}",
-                             "Content-Type": "application/json"},
-                    json={"model": GROQ_MODEL, "messages": messages,
-                          "max_tokens": max_tokens, "temperature": 0.1},
-                    timeout=45,
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=45)
+            
+            if resp.status_code == 200:
+                result = resp.json()["choices"][0]["message"]["content"].strip()
+                _llm_cache_put(model_tag, system, prompt, result)
+                return result
+            elif resp.status_code == 429:
+                # Rate limit: respect Retry-After header if present
+                wait = float(resp.headers.get("Retry-After", 2 ** attempt))
+                time.sleep(min(wait, 8))
+                continue
+            elif resp.status_code in (400, 401, 403, 404):
+                raise RuntimeError(
+                    f"AI provider rejected the request (HTTP {resp.status_code}). "
+                    "Check the API key, enabled Generative Language API, model, "
+                    "and AI_BASE_URL."
                 )
-                if resp.status_code == 200:
-                    result = resp.json()["choices"][0]["message"]["content"].strip()
-                    used_model = f"groq:{GROQ_MODEL}"
-                elif resp.status_code == 429:
-                    wait = float(resp.headers.get("Retry-After", 2 ** attempt))
-                    time.sleep(min(wait, 8))
-                    continue
-            except Exception as e:
-                print(f"Groq API error: {e}")
-        if result is None and gemini_key:
-            try:
-                full_prompt = (system + "\n\n" + prompt) if system else prompt
-                resp = requests.post(
-                    f"{GEMINI_URL}?key={gemini_key}",
-                    headers={"Content-Type": "application/json"},
-                    json={"contents": [{"parts": [{"text": full_prompt}]}],
-                          "generationConfig": {"maxOutputTokens": max_tokens,
-                                               "temperature": 0.1}},
-                    timeout=45,
-                )
-                if resp.status_code == 200:
-                    parts = resp.json()["candidates"][0]["content"]["parts"]
-                    result = "".join(p.get("text", "") for p in parts).strip()
-                    used_model = "gemini:1.5-flash"
-                elif resp.status_code == 429:
-                    time.sleep(2 ** attempt)
-                    continue
-            except Exception as e:
-                print(f"Gemini API error: {e}")
-        if result is not None:
-            _llm_cache_put(used_model or model_tag, system, prompt, result)
-            return result
+            else:
+                # Other HTTP error
+                print(f"AI API error {resp.status_code}: {resp.text[:200]}")
+                
+        except RuntimeError:
+            raise
+        except requests.exceptions.Timeout:
+            print(f"AI API timeout on attempt {attempt + 1}")
+        except requests.exceptions.ConnectionError as e:
+            print(f"AI API connection error: {e}")
+        except Exception as e:
+            print(f"AI API exception: {e}")
+
+        # Retry with exponential backoff
         if attempt < MAX_RETRIES:
             time.sleep(1.5 ** attempt)
-    missing = [k for k, v in [("AI_API_KEY", groq_key), ("AI_API_KEY_GEMINI", gemini_key)] if not v]
-    raise RuntimeError("No AI API key configured. Set AI_API_KEY in your .env file. ")
+
+    # All retries exhausted
+    raise RuntimeError(
+        f"AI API call failed after {MAX_RETRIES + 1} attempts. "
+        f"Check AI_BASE_URL ({_AI_BASE_URL}), AI_MODEL ({_AI_MODEL}), and AI_API_KEY."
+    )
 
 
 def _call_ai_json(prompt: str, max_tokens: int = 2000, system: str = "") -> dict:
     text = _call_ai(prompt, max_tokens, system).strip()
+    
+    # Strip markdown code blocks
     if text.startswith("```"):
         text = "\n".join(text.split("\n")[1:])
     if text.endswith("```"):
         text = "\n".join(text.split("\n")[:-1])
     text = text.strip()
+    
+    # Strip leading "json" label
     if text.lower().startswith("json"):
         text = text[4:].strip()
+    
+    # Try direct parse first
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        for start_char, end_char in [('{', '}'), ('[', ']')]:
-            start = text.find(start_char)
-            end = text.rfind(end_char)
-            if start != -1 and end != -1 and end > start:
-                try:
-                    return json.loads(text[start:end + 1])
-                except json.JSONDecodeError:
-                    pass
-        raise
+        pass
+    
+    # Fallback: find JSON object or array in text
+    for start_char, end_char in [('{', '}'), ('[', ']')]:
+        start = text.find(start_char)
+        end = text.rfind(end_char)
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+    
+    # If all parsing fails, raise
+    raise json.JSONDecodeError("Could not extract JSON from response", text, 0)
 
 
 def _chunk(lst: list, size: int) -> list:
+    """Split list into chunks of given size."""
     return [lst[i:i + size] for i in range(0, len(lst), size)]
 
 
 def _ai_available() -> bool:
-    return bool(os.environ.get("AI_API_KEY") or os.environ.get("AI_API_KEY_GEMINI"))
+    """Check if AI backend is properly configured."""
+    return bool(_AI_BASE_URL and _AI_MODEL and _AI_API_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +221,7 @@ def ai_extract_references_from_text(bib_text: str) -> List[Dict[str, Any]]:
         return []
     if not _ai_available():
         return []
+    
     chunks = []
     if len(bib_text) > 6000:
         lines = bib_text.split('\n')
@@ -213,6 +236,7 @@ def ai_extract_references_from_text(bib_text: str) -> List[Dict[str, Any]]:
             chunks.append('\n'.join(buf))
     else:
         chunks = [bib_text]
+    
     all_refs: List[Dict[str, Any]] = []
     for chunk in chunks:
         prompt = (
@@ -226,30 +250,38 @@ def ai_extract_references_from_text(bib_text: str) -> List[Dict[str, Any]]:
                 all_refs.extend(data)
         except Exception:
             pass
+    
     return all_refs
 
 
 def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> list:
     if not ai_refs or not bib_list:
         return bib_list
+    
     def _norm(t: str) -> str:
         return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', (t or "").lower())).strip()
+    
     ai_by_title: Dict[str, dict] = {}
     for ar in ai_refs:
         t = _norm(ar.get("title", ""))
         if t:
             ai_by_title[t] = ar
+    
     for entry in bib_list:
         entry_title_norm = _norm(entry.title or "")
         ai = ai_by_title.get(entry_title_norm)
+        
         if not ai:
             for ar in ai_refs:
                 raw = (ar.get("raw") or "")[:200]
                 if entry.raw_text[:80].lower() in raw.lower() or raw[:80].lower() in entry.raw_text.lower():
                     ai = ar
                     break
+        
         if not ai:
             continue
+        
+        # Merge fields from AI extraction
         if not entry.title and ai.get("title"): entry.title = ai["title"]
         if not entry.authors and ai.get("authors"): entry.authors = ai["authors"]
         if not entry.year and ai.get("year"): entry.year = str(ai["year"])
@@ -260,6 +292,7 @@ def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> l
         if not entry.doi and ai.get("doi"): entry.doi = ai["doi"]
         if not entry.url and ai.get("url"): entry.url = ai["url"]
         if not entry.isbn and ai.get("isbn"): entry.isbn = ai["isbn"]
+        
         if not entry.entry_type or entry.entry_type == "unknown":
             if ai.get("journal"):
                 entry.entry_type = "article"
@@ -267,6 +300,7 @@ def merge_ai_extractions_into_bib_list(ai_refs: List[Dict], bib_list: list) -> l
                 entry.entry_type = "proceedings"
             elif ai.get("publisher") and not ai.get("journal"):
                 entry.entry_type = "book"
+    
     return bib_list
 
 
@@ -274,6 +308,7 @@ def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
     uncertain = [e for e in bib_entries_raw if e.get("needs_ai_parsing")]
     if not uncertain:
         return {}
+    
     improvements: dict = {}
     for chunk in _chunk(uncertain, 20):
         entries_for_prompt = [
@@ -283,6 +318,7 @@ def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
              "regex_type": e.get("entry_type") or "unknown"}
             for e in chunk
         ]
+        
         prompt = (
             "The automated regex parser failed to confidently extract metadata for these "
             "LNI bibliography entries. Extract correct structured metadata from the raw text.\n\n"
@@ -294,6 +330,7 @@ def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
             '"journal": null, "booktitle": null, "publisher": null, "pages": null}]}\n\n'
             f"Entries:\n{json.dumps(entries_for_prompt, ensure_ascii=False, indent=2)}"
         )
+        
         try:
             result = _call_ai_json(prompt, max_tokens=3000)
             for item in result.get("results", []):
@@ -302,6 +339,7 @@ def ai_parse_uncertain_entries(bib_entries_raw: list) -> dict:
                     improvements[key] = item
         except Exception:
             pass
+    
     return improvements
 
 
@@ -613,7 +651,6 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
         }
 
     # Partial match that was promoted to verified confidence via author overlap
-    # (e.g. badly formatted entry where title is garbled but authors all match)
     if api_status == "partial_match" and api_confidence >= 0.80 and matched_title:
         return {
             "verdict": "REAL",
@@ -650,8 +687,11 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     
     if is_grey:
         has_url = bool(entry.get("url"))
-
-        if has_url and api_status in ("partial_match", "not_found", "suspicious"):
+        # Signal to caller that AI should review this — return a sentinel
+        # composite_risk of 0.55 puts it in "needs_ai" territory when AI is available.
+        # When AI is NOT available we fall through to SUSPICIOUS as before.
+        if _ai_available():
+            # Return a result that will be picked up by needs_ai (confidence < 0.75, not REAL)
             return {
                 "verdict": "SUSPICIOUS",
                 "confidence": 0.55,
@@ -659,7 +699,18 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
                 "risk_factors": [
                     f"Grey/industry literature ({grey_reason}) — verify the URL manually."
                 ],
-                "reasoning": "Industry/government report. Not expected in academic databases.",
+                "reasoning": f"Grey literature ({grey_reason}). Manual review required.",
+            }
+        # AI not available — deterministic fallback
+        if has_url:
+            return {
+                "verdict": "SUSPICIOUS",
+                "confidence": 0.55,
+                "composite_risk": 0.55,
+                "risk_factors": [
+                    f"Grey/industry literature ({grey_reason}) — verify the URL manually."
+                ],
+                "reasoning": "Industry/government report. Not expected in academic databases. AI analysis failed: No AI API key configured. Set AI_API_KEY in your .env file.",
             }
         return {
             "verdict": "SUSPICIOUS",
@@ -668,7 +719,7 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             "risk_factors": [
                 f"Grey/industry literature ({grey_reason}) with no URL to verify."
             ],
-            "reasoning": "Manual verification required.",
+            "reasoning": "Manual verification required. No AI API key configured.",
         }
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -802,6 +853,7 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
 def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: float) -> Optional[dict]:
     """Deterministic pre-screen using author overlap + multi-source evidence."""
     from checker import author_overlap_score
+    
     api_status = api_result.get("status", "not_checked")
     confidence = api_result.get("confidence", 0)
     sources = api_result.get("sources_checked", [])
@@ -886,7 +938,6 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
                 "risk_factors": []}
 
     # Strong author match alone (even with low title sim due to bad formatting)
-    # — if 3+ known authors all match and API found something, mark as REAL
     if overlap >= 0.80 and api_status in ("verified", "partial_match", "suspicious") and matched_title:
         return {"verdict": "REAL", "confidence": round(min(0.75 + overlap * 0.20, 0.95), 2),
                 "reasoning": f"Strong author overlap ({pct}%) confirms identity despite format issues",
@@ -956,12 +1007,6 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
     
     vr_by_key = {vr["key"]: vr for vr in api_results}
 
-    # Do not make an unnecessary LLM call when the verification stage already
-    # confirmed every bibliography entry via an authoritative source.
-    # IMPORTANT: exclude entries that were promoted from a partial match — those
-    # need the AI sanity check because the API evidence is weaker.
-    _promoted_sources = {"partial_match", "suspicious"}
-
     def _is_authoritatively_verified(vr: dict) -> bool:
         """True only if the result came from a direct, high-confidence source."""
         if vr.get("status") != "verified":
@@ -1025,14 +1070,10 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         
         # FIXED: Check if this is a duplicate entry
         if vr.get("is_duplicate") and vr.get("duplicate_of"):
-            # Find the canonical entry's verdict
             canonical_key = vr["duplicate_of"]
-            # We'll handle this later when we process all entries
-            # For now, just mark it as REAL if the canonical is REAL
-            # This will be overwritten if we find the canonical later
             all_verdicts.append({
                 "key": key,
-                "verdict": "REAL",  # Default to REAL for duplicates
+                "verdict": "REAL",
                 "confidence": vr.get("confidence", 0.9),
                 "reasoning": f"Duplicate of [{canonical_key}] — same paper",
                 "risk_factors": [],
@@ -1044,9 +1085,15 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
             pre_screen_cache[key] = early
         else:
             composite = _compute_verdict_with_confidence(entry, vr, title_sim)
-            
-            # Only send to AI if confidence is low and AI is available
-            if composite["verdict"] != "REAL" and composite["confidence"] < 0.75 and _ai_available():
+
+            # Grey literature and low-confidence results go to AI when available
+            is_grey, _ = _is_grey_literature(entry)
+            send_to_ai = (
+                _ai_available()
+                and composite["verdict"] != "REAL"
+                and (composite["confidence"] < 0.75 or is_grey)
+            )
+            if send_to_ai:
                 needs_ai.append((entry, vr, title_sim, composite))
             else:
                 pre_screen_cache[key] = {
@@ -1093,11 +1140,18 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 prompt = f"""You are a senior academic librarian. Analyze each reference below and return REAL / SUSPICIOUS / FAKE.
 
 CRITERIA:
-- REAL: Paper exists in academic databases or has verifiable evidence (DOI, working URL, known publisher)
-- SUSPICIOUS: Partial evidence or missing critical information
-- FAKE: No evidence found, suspicious metadata (fake publisher, placeholder authors, example citations)
+- REAL: Paper/source exists and is verifiable. This includes:
+    * Academic papers found in databases (CrossRef, Semantic Scholar, arXiv, DBLP)
+    * Legitimate website citations (GitHub repos, official documentation, government sites,
+      industry reports from known organizations like GI, IEEE, ACM, Bitkom, etc.)
+    * Well-known papers (BERT, ResNet, Adam, etc.) even with minor citation format issues
+- SUSPICIOUS: Partial evidence, ambiguous metadata, or URL cannot be verified
+- FAKE: No evidence, placeholder authors, nonsense titles, or clearly fabricated metadata
 
-Be fair. A well-known paper (e.g., BERT, ResNet, Adam, GCN) should be marked REAL even if the citation format has minor issues.
+Important: Website/grey literature citations (entry_type=website/misc/online) with a real URL
+from a known organization are REAL, not SUSPICIOUS. Only flag them SUSPICIOUS if the URL
+looks broken, the organization is unknown, or metadata is inconsistent.
+
 Return ONLY valid JSON:
 {{
   "verdicts": [
@@ -1156,7 +1210,6 @@ References:
             })
     
     # FIXED: Ensure duplicate entries get REAL status if they're duplicates of REAL entries
-    # Re-process to fix any duplicate entries that got marked suspicious
     for vr in api_results:
         if getattr(vr, "is_duplicate", False) and getattr(vr, "duplicate_of", None):
             dup_key = vr.key

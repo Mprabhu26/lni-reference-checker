@@ -1,11 +1,11 @@
 """
-STEP 3: Citation Cross-Checker + Reference Verifier — v8.3
+STEP 3: Citation Cross-Checker + Reference Verifier — v8.7
 ----------------------------------------------------------
-FIXED v8.3:
-  - Better API handling with proper timeouts and retries
-  - Improved fallback for known papers that APIs miss
-  - Fixed Semantic Scholar search with better query building
-  - Added Google Scholar as a fallback for missing papers
+FIXED v8.7:
+  - Grey literature now properly calls AI verification instead of immediately returning SUSPICIOUS
+  - Fixed URL repair for broken PDF extraction
+  - Better fallback for web search
+  - Proper AI integration for ALL entries including grey literature
 """
 
 import hashlib
@@ -28,7 +28,7 @@ from concurrent.futures import TimeoutError as ConcurrentTimeoutError
 from local_db import search_cache, save_to_cache, get_cache_stats, init_cache_db
 from web_search_verifier import verify_with_web_search
 from review_queue import is_venue_whitelisted, get_review_decision, get_false_positive
-from ai_checker import _is_grey_literature
+from ai_checker import _is_grey_literature, _is_fabricated_title
 
 # ---------------------------------------------------------------------------
 # Configurable verification thresholds (can be overridden via environment)
@@ -337,7 +337,7 @@ def _check_unpaywall(doi: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Academic API lookups — FIXED with better fallbacks
+# Academic API lookups
 # ---------------------------------------------------------------------------
 
 def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
@@ -466,7 +466,7 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                             title_match_score=round(sim, 4),
                             author_match_score=round(author_sim, 4) if author_sim is not None else None,
                         )
-                return None  # 200 but no match
+                return None
             elif resp.status_code in (429, 503):
                 time.sleep(2 ** attempt)
                 continue
@@ -483,13 +483,10 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
 
 
 def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
-    """FIXED: Better Semantic Scholar search with proper query building."""
     if not entry.title:
         return None
     
-    # Clean up title for better search
     clean_title = entry.title
-    # Remove common trailing patterns
     for pattern in [r'\.\s*In:\s*.*$', r'\.\s*doi:\s*.*$', r'\.\s*https?://\S+$']:
         clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
     clean_title = clean_title.strip().strip('.,;:')
@@ -503,14 +500,12 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
     if ss_key:
         headers["x-api-key"] = ss_key
     
-    # Try multiple search strategies
     search_queries = [
         clean_title,
         f'"{clean_title}"',
         clean_title[:100] if len(clean_title) > 100 else clean_title,
     ]
     
-    # Add first author if available
     if entry.authors:
         first_author = entry.authors.split(';')[0].split(',')[0].strip()
         first_author = re.sub(r'\s+et\s+al\.?$', '', first_author, flags=re.IGNORECASE)
@@ -518,7 +513,7 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
             search_queries.append(f'{clean_title} {first_author}')
     
     for attempt in range(2):
-        for query in search_queries[:2]:  # Try first 2 strategies
+        for query in search_queries[:2]:
             try:
                 resp = requests.get(
                     "https://api.semanticscholar.org/graph/v1/paper/search",
@@ -551,7 +546,6 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
                                 title_match_score=round(sim, 4),
                                 author_match_score=round(author_sim, 4) if author_sim is not None else None,
                             )
-                    # If no high-confidence match, return partial match if found
                     for paper in data[:3]:
                         title = paper.get("title", "")
                         if title:
@@ -593,7 +587,6 @@ _OPENALEX_SESSION_LOCK = threading.Lock()
 
 
 def _get_openalex_session() -> requests.Session:
-    """Shared, connection-pooled session for OpenAlex."""
     global _OPENALEX_SESSION
     if _OPENALEX_SESSION is not None:
         return _OPENALEX_SESSION
@@ -616,11 +609,9 @@ def _get_openalex_session() -> requests.Session:
 
 
 def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
-    """OpenAlex — free, no API key required, 100k req/day, very reliable."""
     if not entry.title:
         return None
     
-    # Clean up title
     clean_title = entry.title
     for pattern in [r'\.\s*In:\s*.*$', r'\.\s*doi:\s*.*$']:
         clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
@@ -673,7 +664,6 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
                     title_match_score=round(sim, 4),
                     author_match_score=round(author_sim, 4) if author_sim is not None else None,
                 )
-        # If no high-confidence match, try partial
         for work in results[:3]:
             title = work.get("title") or ""
             if title:
@@ -900,19 +890,11 @@ def extract_citations_from_body(body: str) -> set:
     - LNI format: [KEY], [KEY1], [KEY1a], [KEY1a, KEY2b], etc.
     - LaTeX: \cite{KEY}, \citet{KEY1, KEY2}
     - Numeric: [1], [1-3], [2, 5]
-    
-    FIXED v8.2:
-    - Handles PDF extraction artifacts: spaces/newlines in citations like [RH15 a], [SHK1 4]
-    - Removes ALL whitespace within bracket citations before matching
-    - Works for [LBH 15], [RH15 a], [SHK1\n4], etc.
     """
     keys = set()
     if not body:
         return keys
     
-    # CRITICAL FIX v8.2: Remove ALL whitespace within brackets (spaces, newlines, tabs)
-    # PDF extraction produces [RH15 a], [RH15\na], [SHK1 4] instead of [RH15a], [SHK14]
-    # Use a lambda to normalize each bracketed section
     def normalize_brackets(m):
         content = m.group(1)
         normalized = re.sub(r'\s+', '', content)
@@ -921,8 +903,6 @@ def extract_citations_from_body(body: str) -> set:
     body_clean = re.sub(r'\[([A-Za-z0-9\s\n,]+)\]', normalize_brackets, body)
     
     # Match LNI-format citations with optional suffix for multiple works same year
-    # Pattern: [LETTERS][DIGITS][optional a-z]
-    # Examples: [AB20], [EZ10], [RH15a], [RH15b], [Multi,Keys15c]
     for m in re.finditer(
         r'\[([A-Z][A-Za-z+]{0,5}\d{2}[a-z]?(?:,\s*[A-Z][A-Za-z+]{0,5}\d{2}[a-z]?)*)\]', body_clean
     ):
@@ -931,15 +911,6 @@ def extract_citations_from_body(body: str) -> set:
             if k:
                 keys.add(k)
 
-    # FIX: the strict pattern above requires a 2-digit year suffix, so keys
-    # like [LeCun2015] or [Vaswani2017] (4-digit year — itself an LNI format
-    # violation, but a violation that belongs in the format checker, not
-    # here) were never matched. That silently made real in-text citations
-    # invisible to cross-checking, wrongly reporting the matching
-    # bibliography entry as "never cited" even though it plainly is. Catch
-    # any generic bracketed alphanumeric key (letters + digits, optional
-    # trailing letter/digits) so cross-referencing works regardless of
-    # whether the key itself follows strict LNI convention.
     for m in re.finditer(
         r'\[([A-Za-z][A-Za-z0-9+]{0,40})\]', body_clean
     ):
@@ -954,7 +925,7 @@ def extract_citations_from_body(body: str) -> set:
             if k:
                 keys.add(k)
     
-    # Numeric citations (e.g., [1], [1-3], [2, 5])
+    # Numeric citations
     if re.search(r'\[\d[\d,\s\-]*\]', body_clean):
         keys.add('__numeric_citations__')
     
@@ -966,7 +937,6 @@ def extract_citation_contexts(body: str) -> List[dict]:
     if not body:
         return contexts
     
-    # First normalize whitespace in brackets (same fix as extract_citations_from_body)
     def normalize_brackets(m):
         content = m.group(1)
         normalized = re.sub(r'\s+', '', content)
@@ -1004,8 +974,6 @@ def cross_check(bib_dict: dict, cited_keys: set) -> CrossCheckResult:
     result = CrossCheckResult()
     bib_keys = set(bib_dict.keys()) if bib_dict else set()
     real_cited = {k for k in cited_keys if k and not k.startswith('__')}
-    # Even with an empty bibliography, every cited key is missing — do NOT
-    # short-circuit here; an empty bib_dict is itself the most important case.
     if '__numeric_citations__' in cited_keys:
         result.correctly_used = sorted(bib_keys)
         return result
@@ -1058,17 +1026,12 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
             if pair in seen_pairs:
                 continue
             
-            # Skip obviously generic/placeholder titles (word-count based check)
-            # A real paper title has enough semantic content; single-word or 2-word titles
-            # are almost always placeholders or malformed
             def is_generic_title(t):
                 if not t:
                     return True
                 words = t.lower().split()
-                # Titles with <3 words are suspicious (placeholder or test data)
                 if len(words) < 3:
                     return True
-                # All-caps single word or repetitive patterns also suspicious
                 if len(words) == 1 and t.isupper():
                     return True
                 return False
@@ -1079,11 +1042,10 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
             norm_a = _normalize_title(a.title)
             norm_b = _normalize_title(b.title)
             if norm_a and norm_b and norm_a == norm_b:
-                # For exact match, require author overlap >= threshold
                 if a.authors and b.authors:
                     auth_sim = author_overlap_score(a.authors, b.authors)
                     if auth_sim is None or auth_sim < AUTHOR_OVERLAP_THRESHOLD:
-                        continue  # Authors don't match, skip
+                        continue
                 
                 seen_pairs.add(pair)
                 duplicates.append({
@@ -1097,14 +1059,13 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
                 continue
             
             sim = _title_similarity(a.title, b.title)
-            if sim >= TITLE_SIMILARITY_THRESHOLD:  # Configurable threshold
-                # For high title similarity, REQUIRE author match
+            if sim >= TITLE_SIMILARITY_THRESHOLD:
                 if not (a.authors and b.authors):
-                    continue  # Can't verify authors, skip
+                    continue
                 
                 auth_sim = author_overlap_score(a.authors, b.authors)
                 if auth_sim is None or auth_sim < AUTHOR_OVERLAP_THRESHOLD:
-                    continue  # Authors don't match, skip
+                    continue
                 
                 seen_pairs.add(pair)
                 duplicates.append({
@@ -1117,7 +1078,7 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
                 })
                 continue
             
-            # Author-year match for flexible keys (LBH15, LB15, Deep15, LeCun2015)
+            # Author-year match for flexible keys
             if a.authors and b.authors and a.year and b.year and a.year == b.year:
                 def get_surnames(authors_str):
                     surnames = set()
@@ -1156,32 +1117,19 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
 
 
 def get_duplicate_map(bib_dict: dict) -> Dict[str, str]:
-    """
-    Create a duplicate map that properly handles transitive relationships.
-    Uses union-find to group all equivalent entries, then maps each to its 
-    canonical representative (first key in document order from each group).
-    
-    FIXED v8.4: Handles multiple duplicates correctly.
-    Before: LB15→LBH15, Deep15→LB15, LeCun2015→Deep15 (chains/ambiguous)
-    After:  LB15→LBH15, Deep15→LBH15, LeCun2015→LBH15 (all→first canonical)
-    """
+    """Create a duplicate map that properly handles transitive relationships."""
     duplicates = find_duplicates(bib_dict)
     
-    # Union-find structure for grouping equivalent entries
     parent = {key: key for key in bib_dict.keys()}
     
     def find(x):
-        """Find the canonical representative (root) of x."""
         if parent[x] != x:
-            parent[x] = find(parent[x])  # Path compression for efficiency
+            parent[x] = find(parent[x])
         return parent[x]
     
     def union(x, y):
-        """Union two groups by their representatives."""
         px, py = find(x), find(y)
         if px != py:
-            # Canonicalize: use the key that appears first in document order (bib_dict)
-            # This requires checking the order in bib_dict
             x_idx = list(bib_dict.keys()).index(px) if px in bib_dict else 999
             y_idx = list(bib_dict.keys()).index(py) if py in bib_dict else 999
             if x_idx < y_idx:
@@ -1189,11 +1137,9 @@ def get_duplicate_map(bib_dict: dict) -> Dict[str, str]:
             else:
                 parent[px] = py
     
-    # Union all duplicate pairs to build equivalence groups
     for d in duplicates:
         union(d["key_a"], d["key_b"])
     
-    # Create map from each non-canonical key to its canonical representative
     dup_map = {}
     for key in bib_dict.keys():
         canonical = find(key)
@@ -1233,11 +1179,9 @@ def detect_self_citations(bib_dict: dict, body: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 # Field validation helpers
 # ---------------------------------------------------------------------------
+
 def _validate_entry_fields(entry: BibEntry) -> Optional[VerificationResult]:
-    """
-    Pre-verification validation. Returns error result if fields missing.
-    Returns None if entry is valid.
-    """
+    """Pre-verification validation. Returns error result if fields missing."""
     missing_fields = []
     
     if not entry.title or entry.title.strip() == "":
@@ -1247,7 +1191,6 @@ def _validate_entry_fields(entry: BibEntry) -> Optional[VerificationResult]:
     if not entry.year or entry.year.strip() == "":
         missing_fields.append("year")
     
-    # If missing title OR (authors AND year), reject immediately
     if "title" in missing_fields or ("authors" in missing_fields and "year" in missing_fields):
         return VerificationResult(
             key=entry.key, title=entry.title or "",
@@ -1257,32 +1200,11 @@ def _validate_entry_fields(entry: BibEntry) -> Optional[VerificationResult]:
             sources_checked=["structural_validation"],
         )
     
-    return None  # Valid, proceed to verification
-
-
-def _check_author_match(entry: BibEntry, api_result: "VerificationResult") -> "VerificationResult":
-    """Verify author match; downgrade to SUSPICIOUS if mismatch."""
-    if not (entry.authors and api_result.correct_authors):
-        return api_result  # Can't verify, accept as-is
-    
-    author_sim = author_overlap_score(entry.authors, api_result.correct_authors)
-    
-    # Less than threshold author overlap → likely false match
-    if author_sim and author_sim < AUTHOR_MISMATCH_THRESHOLD:
-        return VerificationResult(
-            key=entry.key, title=entry.title or "",
-            status="suspicious",
-            confidence=0.30,
-            matched_title=api_result.matched_title,
-            note=f"Title match found but authors differ ({author_sim*100:.0f}% overlap). Manual review recommended.",
-            sources_checked=["api_author_mismatch"],
-        )
-    
-    return api_result
+    return None
 
 
 # ---------------------------------------------------------------------------
-# MAIN VERIFICATION FUNCTION — FIXED with better fallbacks
+# MAIN VERIFICATION FUNCTION — FIXED with grey literature AI support
 # ---------------------------------------------------------------------------
 
 def verify_reference(
@@ -1292,7 +1214,7 @@ def verify_reference(
 ) -> VerificationResult:
     """
     4-step pipeline with duplicate check FIRST.
-    FIXED v8.5: Using concurrent.futures timeout instead of signals (Windows-safe).
+    FIXED v8.7: Grey literature now properly uses AI fallback.
     """
     try:
         # Check if this is a duplicate FIRST
@@ -1308,7 +1230,7 @@ def verify_reference(
                 duplicate_of=canonical_key,
             )
         
-        # ✅ NEW: Validate fields BEFORE any API calls
+        # Validate fields BEFORE any API calls
         field_error = _validate_entry_fields(entry)
         if field_error:
             return field_error
@@ -1333,7 +1255,7 @@ def verify_reference(
                 sources_checked=["local_db"],
             )
 
-        # ── STEP 1b: Fast-path for grey literature ────────────────────────────────
+        # ── STEP 1b: Grey literature detection ────────────────────────────────
         _entry_dict_for_grey = {
             "title":      entry.title or "",
             "authors":    getattr(entry, "authors", "") or "",
@@ -1343,7 +1265,6 @@ def verify_reference(
             "entry_type": getattr(entry, "entry_type", "") or "",
             "raw_text":   getattr(entry, "raw_text", "") or "",
         }
-        from ai_checker import _is_grey_literature
         _is_grey, _grey_reason = _is_grey_literature(_entry_dict_for_grey)
 
         if _is_grey:
@@ -1351,6 +1272,7 @@ def verify_reference(
             url_blocked = False
             url_note = ""
 
+            # ── Try URL verification first ────────────────────────────────────────
             if entry_url and entry_url.startswith("http"):
                 url_result = _fetch_url_strict(entry)
                 if url_result and url_result.status == "verified":
@@ -1372,45 +1294,67 @@ def verify_reference(
             else:
                 url_note = "No URL in grey literature entry."
 
-            raw_ref = entry.raw_text 
+            # ── ✅ FIX: CALL AI FOR GREY LITERATURE ──────────────────────────────
+            # Even for grey literature, try AI verification before giving up
+            if allow_ai_fallback and _ai_available():
+                grey_dict = {
+                    **_entry_dict_for_grey,
+                    "api_status": "not_found",
+                    "api_matched_title": "",
+                    "url_note": url_note,
+                    "url_blocked": url_blocked,
+                    "open_access_url": None,
+                }
+                try:
+                    web_result = verify_with_web_search(grey_dict, "not_found")
+                    
+                    if web_result.get("status") == "verified" and web_result.get("confidence", 0) >= 0.55:
+                        matched = web_result.get("matched_title") or entry.title
+                        save_to_cache(
+                            title=matched,
+                            authors=entry.authors or "",
+                            year=entry.year or "",
+                            doi="",
+                            url=web_result.get("open_access_url") or entry_url,
+                            source="ai_grey_verified",
+                            confidence=web_result["confidence"],
+                        )
+                        return VerificationResult(
+                            key=entry.key, title=entry.title or "",
+                            status="verified",
+                            confidence=web_result["confidence"],
+                            matched_title=matched,
+                            open_access_url=web_result.get("open_access_url"),
+                            note=web_result.get("note", f"Grey literature verified via AI ({_grey_reason})"),
+                            sources_checked=["grey_lit", "ai_verified"],
+                        )
+                    else:
+                        # AI couldn't verify it either
+                        return VerificationResult(
+                            key=entry.key, title=entry.title or "",
+                            status="suspicious",
+                            confidence=web_result.get("confidence", 0.4),
+                            note=f"Grey literature ({_grey_reason}). {web_result.get('note', 'Could not be auto-verified.')}",
+                            sources_checked=["grey_lit", "ai_attempted"],
+                        )
+                except Exception as e:
+                    # AI call failed — log and return suspicious
+                    print(f"[grey_lit] AI verification error for {entry.key}: {e}")
+                    return VerificationResult(
+                        key=entry.key, title=entry.title or "",
+                        status="suspicious",
+                        confidence=0.4,
+                        note=f"Grey literature ({_grey_reason}). AI verification failed: {str(e)[:100]}",
+                        sources_checked=["grey_lit", "ai_error"],
+                    )
             
-            grey_dict = {
-                **_entry_dict_for_grey,
-                "api_status":        "not_found",
-                "api_matched_title": "",
-                "url_note":          url_note,
-                "url_blocked":       url_blocked,
-                "raw_text":          raw_ref,
-            }
-            web_result = verify_with_web_search(grey_dict, "not_found")
-            
-            if (web_result.get("status") == "verified"
-                    and web_result.get("confidence", 0) >= 0.70):
-                matched = web_result.get("matched_title") or entry.title
-                save_to_cache(
-                    title=matched,
-                    authors=entry.authors or "",
-                    year=entry.year or "",
-                    doi="",
-                    url=web_result.get("open_access_url") or entry_url,
-                    source="ai_grey_verified",
-                    confidence=web_result["confidence"],
-                )
-                return VerificationResult(
-                    key=entry.key, title=entry.title or "",
-                    status="verified",
-                    confidence=web_result["confidence"],
-                    matched_title=matched,
-                    open_access_url=web_result.get("open_access_url"),
-                    note=web_result.get("note", f"Grey literature verified via AI ({_grey_reason})"),
-                    sources_checked=["grey_lit", "ai_verified"],
-                )
+            # ── No AI available ── return suspicious ──────────────────────────
             return VerificationResult(
                 key=entry.key, title=entry.title or "",
                 status="suspicious",
-                confidence=web_result.get("confidence", 0.5),
-                note=f"Grey literature ({_grey_reason}). {web_result.get('note', 'Could not be auto-verified — manual check recommended.')}",
-                sources_checked=["grey_lit", "ai_attempted"],
+                confidence=0.55,
+                note=f"Grey literature ({_grey_reason}). Manual review required.",
+                sources_checked=["grey_lit"],
             )
 
         # ── STEP 2: Academic APIs ─────────────────────────────────────────────────
@@ -1428,43 +1372,31 @@ def verify_reference(
             futures = {ex.submit(fn, entry): fn for fn in
                        [_search_crossref, _search_semantic_scholar, _search_openalex]}
 
-            max_wait = 50  # Global timeout: 50 seconds for all 3 APIs combined
-
+            max_wait = 50
             try:
-                # A timeout on as_completed is essential: a future can be stuck
-                # in a network library and never become available.
                 for future in as_completed(futures, timeout=max_wait):
-                        
-                        # Get result with per-task timeout
-                        try:
-                            r = future.result(timeout=5)
-                        except (ConcurrentTimeoutError, Exception):
-                            r = None
-                        
-                        if r is None:
-                            continue
-                        
-                        if r.status == "verified" and r.confidence >= 0.75:
-                            if best is None or r.confidence > best.confidence:
-                                best = r
-                            # Early exit if we found an excellent match
-                            if best.confidence >= 0.95:
-                                for f in futures:
-                                    f.cancel()
-                                break
-                        elif r.status == "partial_match" and (best is None or r.confidence > best.confidence):
+                    try:
+                        r = future.result(timeout=5)
+                    except (ConcurrentTimeoutError, Exception):
+                        r = None
+                    
+                    if r is None:
+                        continue
+                    
+                    if r.status == "verified" and r.confidence >= 0.75:
+                        if best is None or r.confidence > best.confidence:
                             best = r
-                
+                        if best.confidence >= 0.95:
+                            for f in futures:
+                                f.cancel()
+                            break
+                    elif r.status == "partial_match" and (best is None or r.confidence > best.confidence):
+                        best = r
             except Exception as outer_ex:
-                    # Fallback for any unexpected exceptions during the loop
-                    print(f"[API LOOKUP] Unexpected error during API search: {outer_ex}", 
-                          file=sys.stderr, flush=True)
-                    for f in futures:
-                        f.cancel()
-                
+                print(f"[API LOOKUP] Unexpected error: {outer_ex}", file=sys.stderr, flush=True)
+                for f in futures:
+                    f.cancel()
             finally:
-                # Do not wait here: the API workers have their own request
-                # timeouts, but a third-party client may ignore them.
                 for f in futures:
                     if not f.done():
                         f.cancel()
@@ -1472,24 +1404,14 @@ def verify_reference(
             
             api_result = best
 
-
-        # Check if we have a good API match (verified or strong partial)
+        # Check if we have a good API match
         if api_result and api_result.status in ("verified", "partial_match"):
             title_sim = _title_similarity(entry.title or "", api_result.matched_title or "")
 
-            # ── SUSPICIOUS ENTRY GUARD ────────────────────────────────────────
-            # Before trusting any API match, check whether the entry itself
-            # looks fabricated.  A generic/placeholder author (single word, or
-            # a word that is not a real surname) combined with a title that
-            # returns no close match in any academic database is a strong signal
-            # that the reference was invented.
             def _looks_like_fake_author(authors_str: str) -> bool:
-                """Return True if the author string looks like a placeholder."""
                 if not authors_str:
                     return False
-                # Split on semicolons and check the first author only
                 first = authors_str.split(";")[0].strip()
-                # "Ghost, Author" — surname is a common English word / dictionary word
                 _fake_surnames = {
                     "ghost", "fake", "test", "example", "placeholder",
                     "unknown", "anonymous", "nobody", "someone", "author",
@@ -1504,15 +1426,11 @@ def verify_reference(
 
             entry_has_fake_author = _looks_like_fake_author(entry.authors or "")
 
-            # For partial matches, require STRONG author + title corroboration
             if api_result.status == "partial_match":
                 author_overlap = author_overlap_score(
                     entry.authors or "", api_result.correct_authors or ""
                 ) if entry.authors and api_result.correct_authors else None
 
-                # Require title ≥ 0.75 AND author ≥ 0.80 to promote a partial
-                # match to verified — previous thresholds (0.60/0.70) were too
-                # loose and caused fabricated entries to slip through.
                 if (not entry_has_fake_author
                         and title_sim >= 0.75
                         and author_overlap is not None
@@ -1524,14 +1442,9 @@ def verify_reference(
                         f"author {int(author_overlap*100)}% — likely real with format differences"
                     )
                 else:
-                    # Insufficient evidence to promote — leave as partial and
-                    # let the AI/web-search fallback decide.
-                    api_result = None  # discard weak partial match
+                    api_result = None
 
             if api_result and api_result.status == "verified" and title_sim >= 0.70:
-                # Reject verification if the entry has a known-fake author,
-                # regardless of what the API returned.  The API match is likely
-                # a false positive caused by a short/generic title fragment.
                 if entry_has_fake_author:
                     return VerificationResult(
                         key=entry.key, title=entry.title or "",
@@ -1546,7 +1459,6 @@ def verify_reference(
                         sources_checked=api_result.sources_checked or [],
                     )
 
-                # Check author overlap if available
                 author_ok = True
                 if entry.authors and api_result.correct_authors:
                     overlap = author_overlap_score(entry.authors, api_result.correct_authors)
@@ -1570,7 +1482,6 @@ def verify_reference(
 
         # ── STEP 3: URL fetch ─────────────────────────────────────────────────────
         entry_url = (getattr(entry, "url", "") or "").strip()
-        url_note = ""
 
         if entry_url and entry_url.startswith("http"):
             url_result = _fetch_url_strict(entry)
@@ -1587,7 +1498,6 @@ def verify_reference(
                 return url_result
 
         # ── STEP 4: AI / web-search fallback ─────────────────────────────────────
-        # If we have a partial match from APIs, use it as evidence
         api_status = api_result.status if api_result else "not_found"
         api_matched_title = api_result.matched_title if api_result else ""
         
@@ -1601,12 +1511,11 @@ def verify_reference(
             "raw_text":   getattr(entry, "raw_text", "") or "",
             "api_status": api_status,
             "api_matched_title": api_matched_title,
-            "url_note":   url_note,
+            "url_note":   "",
             "open_access_url": api_result.open_access_url if api_result else None,
         }
 
-        # ✅ Check if title is obviously fabricated FIRST (PDF 07 fix)
-        from ai_checker import _is_fabricated_title
+        # Check if title is obviously fabricated
         is_fabricated, fab_confidence = _is_fabricated_title(entry.title or "")
         if is_fabricated and fab_confidence >= 0.80:
             return VerificationResult(
@@ -1635,9 +1544,8 @@ def verify_reference(
 
         web_result = verify_with_web_search(entry_dict, api_status)
 
-        # If web search or AI confirms it, save to cache
         if (web_result.get("status") == "verified"
-                and web_result.get("confidence", 0.0) >= 0.60):
+                and web_result.get("confidence", 0.0) >= 0.55):
             matched = web_result.get("matched_title") or entry.title
             save_to_cache(
                 title=matched,
@@ -1658,7 +1566,6 @@ def verify_reference(
                 sources_checked=web_result.get("sources_checked", ["web_search"]),
             )
 
-        # Nothing confirmed it → SUSPICIOUS
         return VerificationResult(
             key=entry.key, title=entry.title or "",
             status="suspicious",
@@ -1669,7 +1576,6 @@ def verify_reference(
         )
     
     except Exception as e:
-        # Catch-all for any unexpected hang or error
         return VerificationResult(
             key=entry.key, title=entry.title or "",
             status="suspicious",
@@ -1677,7 +1583,6 @@ def verify_reference(
             note=f"Verification error: {str(e)[:100]}",
             sources_checked=["error"],
         )
-
 
 
 def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
@@ -1697,8 +1602,6 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
     
     unique_entries = [e for e in entries if e.key not in skip_keys]
     
-    # References are independent. Use one worker per entry up to a bounded
-    # ceiling so a batch does not wait behind unrelated slow references.
     worker_count = min(16, max(1, len(unique_entries)))
     ex = ThreadPoolExecutor(max_workers=worker_count)
     future_map = {
@@ -1794,16 +1697,6 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
 # Score computation
 # ---------------------------------------------------------------------------
 
-"""
-FIXED: compute_score() function with recalibrated penalties
-This replaces the function at checker.py:1553-1614
-
-Key changes:
-1. Stricter caps on fake/suspicious penalties
-2. Added entry_quality_score metric
-3. Better separation between penalty score and entry verification quality
-"""
-
 def compute_score(
     bib_list: list,
     xcheck: "CrossCheckResult",
@@ -1816,18 +1709,11 @@ def compute_score(
 ) -> dict:
     """
     Compute academic submission score with recalibrated penalties.
-    
-    Returns dict with:
-    - score: penalty-based score (0-100)
-    - entry_quality_score: % of entries verified as REAL (0-100)
-    - grade: letter grade
-    - penalties: list of deductions
-    - summary: human-readable summary
     """
     score = 100
     penalties = []
 
-    # MISSING CITATIONS: cited in text but not in bibliography
+    # MISSING CITATIONS
     missing = len(xcheck.cited_not_in_bib)
     if missing:
         deduct = min(missing * 5, 20)
@@ -1838,7 +1724,7 @@ def compute_score(
             "deduction": deduct
         })
 
-    # ORPHANED ENTRIES: in bibliography but never cited
+    # ORPHANED ENTRIES
     orphaned = len(xcheck.in_bib_not_cited)
     if orphaned:
         deduct = min(orphaned * 2, 10)
@@ -1849,7 +1735,7 @@ def compute_score(
             "deduction": deduct
         })
 
-    # STYLE/FORMAT ISSUES: incomplete fields, wrong format
+    # STYLE/FORMAT ISSUES
     style_count = len(style_suggestions)
     if style_count:
         deduct = min(style_count * 2, 15)
@@ -1871,12 +1757,7 @@ def compute_score(
             "deduction": deduct
         })
 
-    # ─────────────────────────────────────────────────────────────────
-    # STRICTER PENALTIES FOR FAKE/RETRACTED (recalibrated)
-    # ─────────────────────────────────────────────────────────────────
-
-    # CONFIRMED FAKES: professor marked or high-confidence hallucinations
-    # -10 per fake, max -60 (9 fakes → score drops to ~30–40)
+    # CONFIRMED FAKES
     if professor_confirmed_fakes:
         deduct = min(professor_confirmed_fakes * 10, 60)
         score -= deduct
@@ -1886,8 +1767,7 @@ def compute_score(
             "deduction": deduct
         })
 
-    # SUSPICIOUS REFERENCES: not confirmed by any source after full API pass
-    # -6 per suspicious reference, max -40
+    # SUSPICIOUS REFERENCES
     suspicious_count = 0
     if verification_results:
         suspicious_count = sum(
@@ -1903,7 +1783,7 @@ def compute_score(
             "deduction": deduct
         })
 
-    # RETRACTED PAPERS: papers that were retracted after publication
+    # RETRACTED PAPERS
     if retracted_count:
         deduct = min(retracted_count * 8, 25)
         score -= deduct
@@ -1913,7 +1793,7 @@ def compute_score(
             "deduction": deduct
         })
 
-    # INCOMPLETE ENTRIES: missing required LNI fields
+    # INCOMPLETE ENTRIES
     incomplete = sum(1 for e in bib_list if getattr(e, "completeness_issues", None))
     if incomplete:
         deduct = min(incomplete * 2, 10)
@@ -1926,18 +1806,13 @@ def compute_score(
 
     score = max(0, score)
 
-    # ─────────────────────────────────────────────────────────────────
-    # ENTRY QUALITY SCORE: % of bibliography verified as REAL
-    # ─────────────────────────────────────────────────────────────────
-    entry_quality_score = None  # None = not computed (no verification data)
+    # ENTRY QUALITY SCORE
+    entry_quality_score = None
     if verification_results and bib_list:
         real_count = sum(1 for v in verification_results if v.get("ai_verdict") == "REAL")
         total_entries = len(bib_list)
         entry_quality_score = int((real_count / total_entries * 100)) if total_entries else None
 
-    # ─────────────────────────────────────────────────────────────────
-    # LETTER GRADE
-    # ─────────────────────────────────────────────────────────────────
     grade = (
         "A" if score >= 90 else
         "B" if score >= 75 else
@@ -1946,9 +1821,6 @@ def compute_score(
         "F"
     )
 
-    # ─────────────────────────────────────────────────────────────────
-    # HUMAN-READABLE SUMMARY
-    # ─────────────────────────────────────────────────────────────────
     summary_parts = []
     if professor_confirmed_fakes:
         summary_parts.append(f"{professor_confirmed_fakes} confirmed fake reference(s)")

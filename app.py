@@ -14,11 +14,12 @@ CHANGES v7.0:
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Optional, Dict, List
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
 except ImportError:
     pass
 
@@ -27,7 +28,6 @@ import tempfile
 import shutil
 import time
 import signal
-from pathlib import Path
 from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 
