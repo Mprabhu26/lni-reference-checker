@@ -626,7 +626,7 @@ function renderResults(data) {
   const vc2 = sc.verdict || 'FLAG';
   document.getElementById('verdictCard').className = 'verdict-card ' + vc2;
   document.getElementById('verdictIcon').textContent = icons[vc2] || '⚠️';
-  document.getElementById('verdictTitle').textContent = vc2 === 'PASS' ? 'PASS — References look good' : vc2 === 'FAIL' ? 'FAIL — Critical issues found' : 'REVIEW — Issues need attention';
+  document.getElementById('verdictTitle').textContent = vc2 === 'PASS' ? 'PASS — References look good' : vc2 === 'FLAG' ? 'FLAG — Issues need attention' : 'FAIL — Significant issues found';
   document.getElementById('verdictReason').textContent = sc.verdict_reason || '';
   const entryQuality = sc.entry_quality_score;
   const qualityLabel = (entryQuality !== null && entryQuality !== undefined)
@@ -1025,7 +1025,7 @@ function verifyCard(v) {
         ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-title">⚠ Red Flags</div><ul class="risk-list">${v.ai_risk_factors.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
         ${links.length ? `<div class="detail-section"><div class="detail-title">🔗 Links & Resources</div><div class="sources-row">${links.join('')}</div></div>` : ''}
         ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s => { const label = s === 'url_check' ? 'URL Check (direct fetch)' : s === 'content_title_match' ? 'Title Match (page content)' : s; return `<span class="source-chip" title="${s === 'url_check' ? 'The cited URL was fetched and the page title was compared to the cited title' : s === 'content_title_match' ? 'The page content title matched the cited title' : ''}">${escapeHtml(label)}</span>`; }).join('')}</div></div>` : ''}
-        ${verdict === 'SUSPICIOUS' && !markedFakeKeys.has(v.key) && !confirmedRealKeys.has(v.key) ? `<div class="detail-section"><div class="detail-title">➕ Professor Actions</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, save it to the local database. If it is fabricated, mark it as fake to deduct points.</div>
+        ${(verdict === 'SUSPICIOUS' || verdict === 'FAKE') && !markedFakeKeys.has(v.key) && !confirmedRealKeys.has(v.key) ? `<div class="detail-section"><div class="detail-title">➕ Professor Actions</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, save it to the local database. If it is fabricated, mark it as fake to deduct points.</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <button onclick="saveToDb('${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✓ Confirm as Real — Save to DB</button>
             ${markedFakeKeys.has(v.key) ? '<button disabled style="padding:6px 14px;background:var(--error);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;font-weight:600;cursor:default;">✕ Confirmed Fake</button>' : '<button onclick="markAsFake(\'' + escapeHtml(v.key) + '\', this)" style="padding:6px 14px;background:var(--error-bg);color:var(--error);border:1px solid var(--error);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✕ Mark as Fake</button>'}
@@ -1116,13 +1116,13 @@ function renderScoreTab(data) {
   const penalties = adj.penalties;
   const actualScore = adj.score;
   const grade = adj.grade;
-  const verificationFakeCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'FAKE').length;
+  const verificationFakeCount = markedFakeKeys.size;
   const verificationSuspCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
   const verificationRealCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'REAL').length;
-  const gradeColor = actualScore >= 75 ? 'green' : actualScore >= 50 ? 'orange' : 'red';
+  const gradeColor = actualScore >= 80 ? 'green' : actualScore >= 60 ? 'orange' : 'red';
   let html = `<div class="stat-bar">
     <div class="stat-box ${gradeColor}"><div class="value">${actualScore}/100</div><div class="label">Final Score · ${grade}</div></div>
-    <div class="stat-box ${verificationFakeCount ? 'red' : 'green'}"><div class="value">${verificationFakeCount}</div><div class="label">Fake References</div></div>
+    <div class="stat-box ${verificationFakeCount ? 'red' : 'green'}"><div class="value">${verificationFakeCount}</div><div class="label">Confirmed Fake References</div></div>
     <div class="stat-box ${verificationSuspCount ? 'orange' : 'green'}"><div class="value">${verificationSuspCount}</div><div class="label">Suspicious References</div></div>
     <div class="stat-box green"><div class="value">${verificationRealCount}</div><div class="label">Verified Real</div></div>
     <div class="stat-box ${s.missing_from_bib ? 'red' : 'green'}"><div class="value">${s.missing_from_bib || 0}</div><div class="label">Missing from Bib</div></div>
@@ -1132,7 +1132,7 @@ function renderScoreTab(data) {
   if (suspiciousRefs.length > 0) {
     html += `<div style="background:var(--warning-bg);border:1px solid #fed7aa;border-radius:var(--radius);padding:12px 14px;margin-bottom:14px;">
       <div style="font-weight:700;font-size:12px;color:var(--warning);margin-bottom:8px;">⚠ ${suspiciousRefs.length} Suspicious Reference(s) — Pending Professor Review</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">These references are flagged as suspicious. If you confirm them as fake, <strong>-15 points each</strong> will be deducted. Go to the <strong>Reference Verification</strong> tab and click <em>Mark as Fake</em> to confirm.</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">These references are flagged as suspicious. If you confirm them as fake, <strong>-10 points each</strong> will be deducted. Go to the <strong>Reference Verification</strong> tab and click <em>Mark as Fake</em> to confirm.</div>
       <table class="penalty-table" style="background:transparent;"><thead><tr><th>Key</th><th>Title</th><th>Deduction if confirmed fake</th></tr></thead><tbody>${suspiciousRefs.map(v => `<tr><td><code style="font-family:JetBrains Mono,monospace;font-size:11px;">[${escapeHtml(v.key)}]</code></td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml((v.title||'').slice(0,60))}</td><td class="deduct-cell">–</td></tr>`).join('')}</tbody></table>
     </div>`;
   }
@@ -1151,7 +1151,7 @@ function renderScoreTab(data) {
 
 function explainPenalty(cat) {
   const explanations = { 'Retracted papers cited': 'Citing retracted papers is a serious academic integrity violation.', 'Missing from bibliography': 'Every in-text citation [Key] must have a matching bibliography entry.', 'Likely fabricated references': 'These references could not be found in any academic database — possible AI hallucinations.', 'Year mismatch (>1 yr off)': 'Cited year differs from the actual publication year by more than 1 year.', 'Author mismatch': 'Author names don\'t match the verified source.', 'Cited nowhere in text': 'Bibliography entries never cited in the text should be removed.', 'Incomplete LNI entries': 'Missing required fields (author, title, year, pages, etc.).', 'Duplicate entries': 'Same paper listed multiple times — remove duplicates.', 'LNI style violations': 'Wrong author order, single-dash page ranges, or forbidden macros.' };
-  return explanations[cat] || 'Affects LNI compliance and quality.';
+  explanations['Key mismatches (author/year)'] = 'Citation key does not match the author name or year — violates LNI key format rules.'; return explanations[cat] || 'Affects LNI compliance and quality.';
 }
 
 async function loadDbTab() {
@@ -1326,8 +1326,15 @@ function markAsFake(key, btnEl) {
   if (markedFakeKeys.has(key)) return;
   markedFakeKeys.add(key);
   if (result) {
-    renderVerifyTab(result);   // re-render so markedFakeKeys.has() hides the section
+    renderVerifyTab(result);
     renderScoreTab(result);
+    const adj2 = computeAdjustedScore(result);
+    const vc3 = adj2.score >= 80 ? 'PASS' : adj2.score >= 60 ? 'FLAG' : 'FAIL';
+    const icons3 = { PASS:'✅', FLAG:'⚠️', FAIL:'❌' };
+    document.getElementById('verdictCard').className = 'verdict-card ' + vc3;
+    document.getElementById('verdictIcon').textContent = icons3[vc3] || '⚠️';
+    document.getElementById('verdictTitle').textContent = vc3 === 'PASS' ? 'PASS — References look good' : vc3 === 'FLAG' ? 'FLAG — Issues need attention' : 'FAIL — Significant issues found';
+    document.getElementById('verdictScore').textContent = adj2.score + '/100';
     const fakeNow = (result.verification || []).filter(v => effectiveVerdict(v) === 'FAKE').length;
     const suspNow = (result.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
     const verTotalNow = (result.verification || []).length;
@@ -1344,13 +1351,14 @@ function computeAdjustedScore(data) {
   const originalFakeKeys = new Set((data.verification || []).filter(v => v.ai_verdict === 'FAKE').map(v => v.key));
   const newlyConfirmedCount = [...markedFakeKeys].filter(k => !originalFakeKeys.has(k)).length;
   if (newlyConfirmedCount > 0) {
-    const deduction = newlyConfirmedCount * 15;
+    const deduction = newlyConfirmedCount * 10;
     score = Math.max(0, score - deduction);
-    const fakePenalty = penalties.find(p => p.category === 'Likely fabricated references');
+    const fakePenalty = penalties.find(p => p.category === 'Confirmed fake references');
     if (fakePenalty) { fakePenalty.count += newlyConfirmedCount; fakePenalty.deduction += deduction; }
-    else { penalties.push({ category: 'Likely fabricated references', count: newlyConfirmedCount, deduction }); }
+    else { penalties.push({ category: 'Confirmed fake references', count: newlyConfirmedCount, deduction }); }
   }
-  const grades = [[90,'A+'],[85,'A'],[80,'A-'],[75,'B+'],[70,'B'],[65,'B-'],[60,'C+'],[55,'C'],[50,'C-'],[0,'F']];
+  const verdictLabel = score >= 80 ? 'PASS' : score >= 60 ? 'FLAG' : 'FAIL';
+  const grades = [[90,'A'],[80,'B'],[60,'C'],[50,'D'],[0,'F']];
   const grade = (grades.find(([min]) => score >= min) || [0,'F'])[1];
   return { score, grade, penalties };
 }

@@ -1008,6 +1008,27 @@ class TestVerificationIntegration:
         if result:
             assert result.confidence < 0.5
 
+    def test_I05a_automated_fake_findings_do_not_reduce_score(self):
+        """Only professor-confirmed fake references may reduce the score."""
+        from checker import CrossCheckResult, compute_score
+
+        entry = BibEntry(key="FA99", raw_text="")
+        entry.key_consistent = True
+        result = compute_score(
+            [entry], CrossCheckResult(), [], [], [],
+            verification_results=[{"key": "FA99", "ai_verdict": "FAKE", "status": "not_found"}],
+        )
+        assert result["score"] == 100
+        assert not any(p["category"] == "Confirmed fake references" for p in result["penalties"])
+
+        confirmed = compute_score(
+            [entry], CrossCheckResult(), [], [], [],
+            professor_confirmed_fakes=1,
+            verification_results=[{"key": "FA99", "ai_verdict": "FAKE", "status": "not_found"}],
+        )
+        assert confirmed["score"] == 90
+        assert any(p["category"] == "Confirmed fake references" for p in confirmed["penalties"])
+
     def test_I06_author_fallback_s2(self):
         """Author-first fallback: if title changed between preprint/published, still found."""
         from checker import _search_semantic_scholar

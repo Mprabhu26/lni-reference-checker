@@ -1793,19 +1793,21 @@ def compute_score(
             "deduction": deduct
         })
 
-    # SUSPICIOUS REFERENCES
-    suspicious_count = 0
-    if verification_results:
-        suspicious_count = sum(
-            1 for v in verification_results
-            if v.get("ai_verdict") == "SUSPICIOUS" or v.get("status") == "suspicious"
-        )
-    if suspicious_count:
-        deduct = min(suspicious_count * 6, 40)
+    # Automated verification findings are review signals, not confirmed fakes.
+    # They must not affect the score until the professor confirms them manually.
+    suspicious_count = sum(
+        1 for v in (verification_results or [])
+        if v.get("ai_verdict") == "SUSPICIOUS" or v.get("status") == "suspicious"
+    )
+
+    # KEY MISMATCHES (citation key doesn't match author/year metadata)
+    key_mismatch_count = sum(1 for e in bib_list if getattr(e, "key_consistent", None) is False)
+    if key_mismatch_count:
+        deduct = min(key_mismatch_count * 3, 15)
         score -= deduct
         penalties.append({
-            "category": "Suspicious / unverified references",
-            "count": suspicious_count,
+            "category": "Key mismatches (author/year)",
+            "count": key_mismatch_count,
             "deduction": deduct
         })
 
@@ -1841,7 +1843,7 @@ def compute_score(
 
     grade = (
         "A" if score >= 90 else
-        "B" if score >= 75 else
+        "B" if score >= 80 else
         "C" if score >= 60 else
         "D" if score >= 50 else
         "F"

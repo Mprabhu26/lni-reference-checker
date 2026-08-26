@@ -545,10 +545,8 @@ def _assemble_result(
 
     # Score
     retracted_count = sum(1 for vr in api_results_raw if getattr(vr, "is_retracted", False))
-    # Professor-confirmed fakes (manual action only)
-    professor_confirmed_fakes = sum(
-        1 for v in verification_output if v.get("ai_verdict") == "FAKE"
-    )
+    # Fakes only deducted after professor manually confirms via Mark as Fake — not auto.
+    professor_confirmed_fakes = 0
     det_score = compute_score(
         bib_list, xcheck, api_results_raw,
         style_suggestions, duplicates,
@@ -557,13 +555,21 @@ def _assemble_result(
         verification_results=verification_output,
     )
     s = det_score["score"]
-    det_verdict = "PASS" if s >= 75 else "FLAG" if s >= 50 else "FAIL"
+    det_verdict = "PASS" if s >= 80 else "FLAG" if s >= 60 else "FAIL"
+
+    _pen_parts = "; ".join(
+        f"{p['count']} {p['category'].lower()} (-{p['deduction']}pts)"
+        for p in det_score.get("penalties", [])
+    ) or "No issues detected."
+    _det_reason = f"Score {s}/100. {_pen_parts}"
+    _ai_reason = overall.get("verdict_reason", "")
+    _verdict_reason = _ai_reason if (_ai_reason and overall.get("verdict") == det_verdict) else _det_reason
 
     final_score = {
         "score": det_score["score"],
         "grade": det_score["grade"],
-        "verdict": overall.get("verdict", det_verdict),
-        "verdict_reason": overall.get("verdict_reason", ""),
+        "verdict": det_verdict,
+        "verdict_reason": _verdict_reason,
         "student_feedback": overall.get("student_feedback", []),
         "professor_note": overall.get("professor_note", ""),
         "penalties": det_score.get("penalties", []),

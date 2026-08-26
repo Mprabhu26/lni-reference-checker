@@ -1309,59 +1309,48 @@ def ai_overall_verdict(filename: str, summary: dict, xcheck,
             "professor_note": "No issues found",
         }
     
-    # Try AI if available
+    # Deterministic score/verdict — the AI may only write feedback text, not change these
+    # Suspicious findings require professor review and do not reduce the score.
+    det_score = 100
+    det_score -= min(missing_cit * 5, 20)
+    det_score -= min(incomplete * 2, 10)
+    det_score -= min(orphaned * 2, 10)
+    det_score -= min(len(key_issues) * 3, 15)
+    det_score = max(0, min(100, det_score))
+    det_verdict = "PASS" if det_score >= 80 else "FLAG" if det_score >= 60 else "FAIL"
+    det_grade = "A" if det_score >= 90 else "B" if det_score >= 80 else "C" if det_score >= 60 else "D" if det_score >= 50 else "F"
+
+    keys_to_review = [
+        f"[{v['key']}]" for v in verification_result.get("verdicts", [])[:5]
+        if v.get("verdict") in ("FAKE", "SUSPICIOUS")
+    ]
+    professor_note = f"Manually review: {' '.join(keys_to_review)}" if keys_to_review else "No issues found"
+
     if _ai_available():
-        prompt = f"""You are a professor reviewing a student submission.
-Automated checks have run on "{filename}".
+        prompt = f"""You are a professor reviewing "{filename}".
+System computed: score={det_score}/100, verdict={det_verdict}.
+Issues: {suspicious} suspicious reference(s), {missing_cit} missing citation(s), {incomplete} incomplete entries, {len(key_issues)} key mismatch(es).
+Note: fake references are NOT yet deducted — professor must confirm manually.
 
-STATISTICS:
-- Bibliography entries: {bib_count}
-- In-text citations: {cited_count}
-- Cited but missing: {missing_cit}
-- Never cited: {orphaned}
-- Incomplete entries: {incomplete}
-- Key mismatches: {len(key_issues)}
-- FAKE references: {fake_count}
-- SUSPICIOUS references: {suspicious}
-
-Return JSON: {{"verdict": "PASS/FLAG/FAIL", "score": 0-100, "grade": "A-F",
-"verdict_reason": "...", "student_feedback": [], "professor_note": "..."}}"""
-        
+Return ONLY this JSON with exactly these values for verdict/score/grade:
+{{"verdict": "{det_verdict}", "score": {det_score}, "grade": "{det_grade}",
+"verdict_reason": "<one sentence max 25 words summarising main issues>",
+"student_feedback": ["<tip1>", "<tip2>"],
+"professor_note": "<one sentence>"}}"""
         try:
-            return _call_ai_json(prompt, max_tokens=800)
+            result = _call_ai_json(prompt, max_tokens=300)
+            result["verdict"] = det_verdict
+            result["score"] = det_score
+            result["grade"] = det_grade
+            return result
         except Exception:
             pass
-    
-    # Deterministic fallback (strict)
-    score = 100
-    score -= min(fake_count * 20, 60)      # FAKE references: -20 each, max 60
-    score -= min(suspicious * 8, 30)       # SUSPICIOUS: -8 each, max 30
-    score -= min(missing_cit * 10, 30)     # Missing citations: -10 each, max 30
-    score -= min(incomplete * 5, 20)       # Incomplete entries: -5 each, max 20
-    score -= min(orphaned * 3, 15)         # Orphaned: -3 each, max 15
-    score -= min(len(key_issues) * 5, 15)  # Key mismatches: -5 each, max 15
-    score = max(0, min(100, score))
-    
-    grade = "A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60 else "D" if score >= 45 else "F"
-    
-    if fake_count >= 1:                    # Any fake = FAIL
-        verdict = "FAIL"
-    elif suspicious >= 2 or score < 70:
-        verdict = "FLAG"
-    else:
-        verdict = "PASS"
-    
-    keys_to_review = []
-    for v in verification_result.get("verdicts", [])[:5]:
-        if v.get("verdict") in ("FAKE", "SUSPICIOUS"):
-            keys_to_review.append(f"[{v['key']}]")
-    professor_note = f"Manually review: {' '.join(keys_to_review)}" if keys_to_review else "No issues found"
-    
+
     return {
-        "verdict": verdict,
-        "score": score,
-        "grade": grade,
-        "verdict_reason": f"Score {score}/100. {fake_count} fake, {suspicious} suspicious.",
+        "verdict": det_verdict,
+        "score": det_score,
+        "grade": det_grade,
+        "verdict_reason": f"Score {det_score}/100: {suspicious} suspicious reference(s), {missing_cit} missing citation(s).",
         "student_feedback": [],
         "professor_note": professor_note,
     }
