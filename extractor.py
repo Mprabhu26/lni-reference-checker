@@ -419,30 +419,44 @@ def _clean_fallback_text(text: str) -> str:
     """
     if not text:
         return ""
-    
+
     # ── Fix missing spaces between lowercase and uppercase ─────────────────
-    # Include all German umlauts and ß
+    # Include all German umlauts and ß.
+    # CRITICAL: must not split inside URLs — camelCase boundaries inside a
+    # URL path (e.g. "ChartsCloudReport") would produce a space that breaks
+    # the URL irreparably after _repair_urls_in_text already joined it.
+    # Strategy: temporarily mask all URLs, apply the camelCase fix, then
+    # restore the original URLs.
+    url_placeholders: list = []
+    def _mask_url(m):
+        url_placeholders.append(m.group(0))
+        return f"\x00URL{len(url_placeholders) - 1}\x00"
+
+    # Mask all URLs before any substitution that could corrupt path segments,
+    # then restore them after all fixes are applied.
+    text = re.sub(r'https?://\S+', _mask_url, text)
+
     text = re.sub(r'([a-zäöüß])([A-ZÄÖÜ])', r'\1 \2', text)
-    
+
     # ── Fix missing spaces after punctuation ──────────────────────────────
-    # Handle cases like "cloud:New" → "cloud: New"
-    # Also handle "S.1025" → "S. 1025" (common in LNI)
     text = re.sub(r'([:;.!?])([A-ZÄÖÜ0-9])', r'\1 \2', text)
-    
+
     # ── Fix missing spaces after "S." (LNI page marker) ──────────────────
-    # "S.1025" → "S. 1025"
     text = re.sub(r'(S\.)(\d)', r'\1 \2', text)
-    
+
     # ── Fix missing spaces after numbers followed by letters ──────────────
-    # e.g., "2025State" → "2025 State"
     text = re.sub(r'(\d)([A-ZÄÖÜa-zäöüß])', r'\1 \2', text)
-    
-    # ── Fix "https://example.com" → "https://example.com" ────────────────
+
+    # ── Fix "https: //…" (space after colon) ─────────────────────────────
     text = re.sub(r'(https?):\s+//', r'\1://', text)
-    
+
+    # ── Restore masked URLs ───────────────────────────────────────────────
+    for i, url in enumerate(url_placeholders):
+        text = text.replace(f"\x00URL{i}\x00", url)
+
     # ── Remove double spaces ──────────────────────────────────────────────
     text = re.sub(r'\s{2,}', ' ', text)
-    
+
     return text
 
 def extract_pdf(path: str) -> dict:
