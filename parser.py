@@ -137,7 +137,17 @@ def parse_bibliography(bib_text: str) -> list:
 
     raw_unbracketed_key = [(m.start(1), m.group(1), m.end(), False)
                             for m in UNBRACKETED_KEY.finditer(bib_text)
-                            if m.group(1).lower() not in _LNI_MARKER_WORDS]
+                            if m.group(1).lower() not in _LNI_MARKER_WORDS
+                            # Reject candidates with no digit/underscore — a
+                            # hyphenated publisher name (e.g. "Format-Verlag,
+                            # Bonn, 1999") matches the same "WORD - Capitalized,"
+                            # shape as a genuine unbracketed key (e.g.
+                            # "smith2020: Jones, A...") but real keys almost
+                            # always carry a year digit or underscore; plain
+                            # dictionary words never do. This avoids splitting
+                            # one bibliography entry into two at a publisher
+                            # name that happens to look key-like.
+                            and re.search(r'[0-9_]', m.group(1))]
     raw_linestart_key = [(m.start(1), m.group(1), m.end(), False)
                           for m in LINESTART_KEY.finditer(bib_text)]
     

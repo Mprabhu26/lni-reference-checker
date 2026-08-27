@@ -746,31 +746,93 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
             if resp.status_code == 200:
                 content_type = resp.headers.get('Content-Type', '').lower()
 
-                # PDFs: extract title from content if possible, otherwise require AI
+                # PDFs: try to extract a real title from the fetched bytes
+                # before giving up and escalating to the weaker AI/web-search
+                # path. We already have the full PDF in memory (resp.content)
+                # from the fetch above — no extra request needed.
                 if 'application/pdf' in content_type or url.lower().endswith('.pdf'):
-                    # We can't easily parse PDF title here — escalate to AI for title check
+                    pdf_title = ""
+                    try:
+                        import io
+                        import pdfplumber
+                        with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
+                            meta_title = (pdf.metadata or {}).get("Title", "") or ""
+                            pdf_title = meta_title.strip()
+                            if not pdf_title and pdf.pages:
+                                first_page_text = pdf.pages[0].extract_text() or ""
+                                # Heuristic: the title is usually one of the
+                                # first few non-empty lines on the cover/first
+                                # page, before body text kicks in.
+                                for line in first_page_text.split("\n")[:6]:
+                                    line = line.strip()
+                                    if len(line) >= 8:
+                                        pdf_title = line
+                                        break
+                    except Exception:
+                        pdf_title = ""
+
+                    if pdf_title and entry.title:
+                        sim = _title_similarity(entry.title, pdf_title)
+                        if sim >= 0.70:
+                            return VerificationResult(
+                                key=entry.key,
+                                title=entry.title or "",
+                                status="verified",
+                                confidence=round(sim, 4),
+                                matched_title=pdf_title,
+                                open_access_url=resp.url,
+                                note=f"PDF verified: title match {int(sim*100)}% (extracted from document: '{pdf_title[:60]}')",
+                                sources_checked=["url_fetch", "pdf_extract"],
+                            )
+                        return VerificationResult(
+                            key=entry.key,
+                            title=entry.title or "",
+                            status="url_blocked",
+                            confidence=0.0,
+                            open_access_url=resp.url,
+                            note=(
+                                f"PDF reachable (HTTP 200) but extracted title mismatch "
+                                f"(cited: '{(entry.title or '')[:50]}' | PDF: '{pdf_title[:50]}' | sim: {int(sim*100)}%). "
+                                f"Escalating to AI."
+                            ),
+                            sources_checked=["url_fetch", "pdf_extract"],
+                        )
+
+                    # Couldn't extract any usable title from the PDF itself
+                    # (scanned/image-only PDF, no metadata, etc.) — fall back
+                    # to AI/web-search as before.
                     return VerificationResult(
                         key=entry.key,
                         title=entry.title or "",
                         status="url_blocked",
                         confidence=0.0,
                         open_access_url=resp.url,
-                        note="PDF reachable (HTTP 200) but title cannot be verified from content. Escalating to AI.",
+                        note="PDF reachable (HTTP 200) but no extractable title (scanned/image-only or missing metadata). Escalating to AI.",
                         sources_checked=["url_fetch"],
                     )
 
                 soup = BeautifulSoup(resp.text, "html.parser")
-                page_title = ""
+
+                # Collect every title-like candidate rather than committing
+                # to whichever tag happens to be non-empty first. SEO <title>
+                # tags routinely bolt on year/audience keywords ("State of
+                # the Cloud 2026 | Insights von Cloud-Führungskräften") that
+                # the actual on-page heading doesn't have ("State of the
+                # Cloud Report") — comparing only against <title> can fail a
+                # match that the visible H1 would have passed cleanly.
+                candidates = []
                 if soup.find("title"):
-                    page_title = soup.find("title").get_text().strip()
-                if not page_title:
-                    meta = soup.find("meta", property="og:title")
-                    if meta:
-                        page_title = meta.get("content", "")
-                if not page_title:
-                    h1 = soup.find("h1")
-                    if h1:
-                        page_title = h1.get_text().strip()
+                    t = soup.find("title").get_text().strip()
+                    if t:
+                        candidates.append(t)
+                meta = soup.find("meta", property="og:title")
+                if meta and meta.get("content", "").strip():
+                    candidates.append(meta.get("content", "").strip())
+                h1 = soup.find("h1")
+                if h1 and h1.get_text().strip():
+                    candidates.append(h1.get_text().strip())
+
+                page_title = candidates[0] if candidates else ""
 
                 _challenge = {"just a moment", "access denied", "attention required",
                               "403 forbidden", "404 not found", "please wait"}
@@ -798,7 +860,18 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
                     )
 
                 if entry.title:
-                    sim = _title_similarity(entry.title, page_title)
+                    # Try every extracted candidate (title tag, og:title, h1)
+                    # and keep whichever matches best — an SEO title tag can
+                    # legitimately differ from the visible heading, and we
+                    # shouldn't fail a real match just because the first
+                    # candidate we happened to check wasn't the best one.
+                    best_sim, best_candidate = 0.0, page_title
+                    for cand in candidates:
+                        s = _title_similarity(entry.title, cand)
+                        if s > best_sim:
+                            best_sim, best_candidate = s, cand
+                    sim = best_sim
+                    page_title = best_candidate
                     # Require ≥0.80 similarity — title must actually match
                     if sim >= 0.80:
                         return VerificationResult(
@@ -860,6 +933,42 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
         except Exception as e:
             print(f"URL fetch error for {entry.key}: {e}")
             continue
+
+    # ── Last resort: recover hyphens lost during PDF text extraction ─────────
+    # A URL that hard-wrapped across lines in the source PDF with no literal
+    # hyphen character at the break (a soft wrap, not a hard hyphen) leaves
+    # extractor.py nothing to detect/repair — e.g. a real URL segment
+    # "...240703-Bitkom-Charts-CloudReport-2024-final.pdf" comes out as
+    # "...240703Bitkom-ChartsCloudReport-2024final.pdf". The signature is a
+    # lowercase-letter-or-digit immediately followed by an uppercase letter,
+    # exactly where a hyphen would normally separate slug segments. If the
+    # URL we tried 404s and shows this pattern, retry once with hyphens
+    # reinserted at those boundaries before giving up.
+    if last_status in (404, None) and re.search(r'[a-z0-9][A-Z]', url):
+        repaired_url = re.sub(r'([a-z0-9])([A-Z])', r'\1-\2', url)
+        if repaired_url != url:
+            for profile in _profiles:
+                session = requests.Session()
+                session.headers.update(profile)
+                try:
+                    resp = session.get(repaired_url, timeout=15, allow_redirects=True)
+                    if resp.status_code == 200:
+                        # Re-run the same PDF/HTML handling by recursing with
+                        # a corrected entry URL — cheap since this only
+                        # triggers on the rare 404+camelCase-boundary case.
+                        repaired_entry = BibEntry(key=entry.key, raw_text=getattr(entry, "raw_text", ""))
+                        repaired_entry.title = entry.title
+                        repaired_entry.url = repaired_url
+                        result = _fetch_url_strict(repaired_entry)
+                        if result:
+                            result.note = (
+                                f"Original URL 404'd; recovered likely-correct URL "
+                                f"(hyphens lost during PDF text extraction) and retried. "
+                                + (result.note or "")
+                            )
+                            return result
+                except Exception:
+                    continue
 
     status_str = f"HTTP {last_status}" if last_status else "connection failed"
     return VerificationResult(
@@ -1745,9 +1854,23 @@ def compute_score(
     score = 100
     penalties = []
 
+    # NO BIBLIOGRAPHY AT ALL — the paper cites sources in-text but has zero
+    # bibliography entries. This is categorically worse than "a few missing
+    # citations" (which assumes a bibliography exists and is just incomplete),
+    # so it gets its own heavy, uncapped-by-the-missing-citations-cap penalty
+    # instead of being silently absorbed into that 20pt-max bucket.
+    if not bib_list and xcheck.cited_not_in_bib:
+        deduct = 60
+        score -= deduct
+        penalties.append({
+            "category": "No bibliography found",
+            "count": len(xcheck.cited_not_in_bib),
+            "deduction": deduct
+        })
+
     # MISSING CITATIONS
     missing = len(xcheck.cited_not_in_bib)
-    if missing:
+    if missing and bib_list:
         deduct = min(missing * 5, 20)
         score -= deduct
         penalties.append({
@@ -1856,13 +1979,15 @@ def compute_score(
     )
 
     summary_parts = []
+    if not bib_list and xcheck.cited_not_in_bib:
+        summary_parts.append("No bibliography section found at all")
     if professor_confirmed_fakes:
         summary_parts.append(f"{professor_confirmed_fakes} confirmed fake reference(s)")
     if suspicious_count:
         summary_parts.append(f"{suspicious_count} suspicious/unverified reference(s)")
     if retracted_count:
         summary_parts.append(f"{retracted_count} retracted paper(s)")
-    if missing:
+    if missing and bib_list:
         summary_parts.append(f"{missing} missing citation(s)")
     if orphaned:
         summary_parts.append(f"{orphaned} orphaned entry/entries")

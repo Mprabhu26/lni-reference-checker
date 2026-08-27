@@ -81,6 +81,26 @@ def _make_requests_session(timeout: int = 5):
     return session
 
 
+def _url_is_reachable(url: str, timeout: float = 4.0) -> bool:
+    """Quick liveness check before presenting a URL to the user as evidence.
+    Tries HEAD first (cheap), falls back to a small GET since some servers
+    don't support HEAD. Any exception or non-2xx/3xx status counts as dead.
+    """
+    if not url or not url.startswith("http"):
+        return False
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    try:
+        session = _make_requests_session(timeout=timeout)
+        resp = session.head(url, headers=headers, timeout=timeout, allow_redirects=True)
+        if resp.status_code < 400:
+            return True
+        # Some servers reject HEAD but are fine with GET
+        resp = session.get(url, headers=headers, timeout=timeout, allow_redirects=True, stream=True)
+        return resp.status_code < 400
+    except Exception:
+        return False
+
+
 def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
     """Search the web for a paper using DuckDuckGo. Fail fast if DDGS hangs."""
     if DDGS is None:
@@ -417,13 +437,64 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
         # If URL is already known dead, require higher confidence from web search
         min_confidence = 0.70 if url_already_dead else 0.50
         if result.verdict == "REAL" and result.confidence >= min_confidence:
+            found_title = result.found_title or title
+            # Don't just trust the LLM's say-so that a differently-worded
+            # (or "translated") title is the same paper — independently
+            # check title similarity the same way the URL-fetch branch above
+            # does. Without this, the LLM can rationalize a match (e.g. via
+            # an invented translation) between two unrelated documents.
+            title_sim = _title_similarity_simple(title, found_title)
+            if title_sim < 0.55:
+                return {
+                    "status": "suspicious",
+                    "web_verified": False,
+                    "confidence": 0.35,
+                    "matched_title": found_title,
+                    "note": (
+                        dead_url_note +
+                        f"AI claimed a match to \"{found_title}\" but the titles "
+                        f"are only {int(title_sim*100)}% similar — likely a "
+                        f"different document. Manual review required."
+                    ),
+                    "sources_checked": ["web_search", "llm_analysis"],
+                }
+
+            # Ground the "found" URL: the prompt only ever showed the LLM a
+            # handful of {url, title, snippet} search hits, so any found_url
+            # it returns should be one of those — never a URL it invented
+            # itself (e.g. a "plausible-looking" PDF path on the publisher's
+            # site that happens to 404). Anything not verbatim among the
+            # actual search hits is dropped rather than shown as evidence.
+            result_urls = {r.get("url", "") for r in web_results if r.get("url")}
+            candidate_url = result.found_url if result.found_url in result_urls else None
+            hallucinated_url = bool(result.found_url) and candidate_url is None
+
+            # Even a grounded URL can be dead by now — check it resolves
+            # before presenting it as an "Open Source" link.
+            verified_url = None
+            if candidate_url:
+                verified_url = candidate_url if _url_is_reachable(candidate_url) else None
+
+            note_text = dead_url_note + result.explanation
+            if hallucinated_url:
+                note_text += (
+                    " (Note: the AI-suggested source link was not among the "
+                    "actual search results and has been discarded to avoid "
+                    "presenting an unverified/possibly broken URL.)"
+                )
+            elif candidate_url and not verified_url:
+                note_text += (
+                    " (Note: the source link found in search results is "
+                    "currently unreachable and has been omitted.)"
+                )
+
             return {
                 "status": "verified",
                 "web_verified": True,
-                "confidence": max(result.confidence, 0.75),
-                "matched_title": result.found_title or title,
-                "open_access_url": result.found_url or (None if url_already_dead else original_url),
-                "note": dead_url_note + result.explanation,
+                "confidence": max(result.confidence, 0.75) if title_sim >= 0.85 else min(max(result.confidence, 0.75), 0.70),
+                "matched_title": found_title,
+                "open_access_url": verified_url or (None if url_already_dead else original_url),
+                "note": note_text,
                 "sources_checked": ["web_search", "llm_analysis"],
             }
 
@@ -442,10 +513,14 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
             }
 
     # ── NOT VERIFIED ──────────────────────────────────────────────────────────
+    # dead_url_note carries the outcome of the URL check performed above (if
+    # any) — surface it here too, not just on the REAL-verdict path, so the
+    # professor can see a URL attempt actually happened rather than seeing a
+    # bare "Manual review required" with no explanation.
     return {
         "status": "suspicious",
         "web_verified": False,
         "confidence": 0.40,
-        "note": "Manual review required",
+        "note": dead_url_note + "Manual review required" if dead_url_note else "Manual review required — no confirming evidence found via web search.",
         "sources_checked": ["none"],
     }

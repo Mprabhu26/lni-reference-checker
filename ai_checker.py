@@ -352,12 +352,36 @@ def _is_grey_literature(entry: dict) -> tuple:
     Detect industry reports, government docs, blog posts — valid sources
     not indexed in CrossRef/Semantic Scholar.
     Returns (is_grey: bool, reason: str).
+
+    Strategy: rather than relying solely on an exhaustive hardcoded list of
+    known non-academic publishers (which will always miss new ones — e.g. a
+    report from a firm we've never enumerated), we first check a much
+    smaller ALLOWLIST of known academic/publisher domains. Anything with a
+    URL that is *not* on that allowlist, and doesn't otherwise look like a
+    formal published work, is treated as "likely grey literature" even if
+    we don't recognize the specific publisher. The named-list checks below
+    still run first purely so the reason string is more specific when we do
+    recognize the source.
     """
     title     = (entry.get("title") or "").lower()
     url       = (entry.get("url") or "").lower()
     publisher = (entry.get("publisher") or "").lower()
     entry_type = (entry.get("entry_type") or "").lower()
     raw       = (entry.get("raw_text") or entry.get("raw") or "").lower()
+
+    # Domains that ARE legitimate academic/publisher venues — a reference
+    # hosted here should never be treated as grey literature just because
+    # it also has a URL (many real papers cite their DOI/publisher link).
+    academic_allowlist = [
+        "doi.org", "arxiv.org", "dl.acm.org", "ieeexplore.ieee.org",
+        "link.springer.com", "springer.com", "sciencedirect.com",
+        "jstor.org", "ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov",
+        "nature.com", "mdpi.com", "openalex.org", "semanticscholar.org",
+        "researchgate.net", "aclanthology.org", "openreview.net",
+        "dl.gi.de", "gi.de/service", "onlinelibrary.wiley.com",
+        "tandfonline.com", "cambridge.org", "oup.com", "plos.org",
+        "usenix.org", "sciendo.com",
+    ]
 
     # Check domains first - these are the most reliable
     grey_domains = [
@@ -397,6 +421,24 @@ def _is_grey_literature(entry: dict) -> tuple:
     
     if entry_type in ("website", "online", "misc") and url:
         return True, "Grey literature (website citation)"
+
+    # ── Generalized fallback ────────────────────────────────────────────────
+    # A URL that isn't on the academic allowlist and wasn't caught by any of
+    # the specific checks above is still very likely a non-academic source
+    # (industry site, product docs, blog, unlisted consultancy, etc.) — we
+    # just don't have a friendly name for it. Flag it as grey lit anyway
+    # rather than silently skipping straight to a generic "not found"
+    # verdict; the URL-fetch + AI review it then receives is identical
+    # either way, this only affects the labeling/reasoning shown.
+    if url:
+        if not any(dom in url for dom in academic_allowlist):
+            try:
+                domain_guess = re.search(r'https?://(?:www\.)?([^/]+)', url)
+                domain_label = domain_guess.group(1) if domain_guess else "unrecognized domain"
+            except Exception:
+                domain_label = "unrecognized domain"
+            return True, f"Grey literature (unlisted source: {domain_label})"
+
     
     return False, ""
 
