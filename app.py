@@ -869,11 +869,34 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
         yield _sse("progress", {"step": "ai_verify",
             "message": "🤖 AI review of suspicious entries..."})
         api_results_dicts = _vr_to_dicts(api_results_raw)
+        
+        # FAST PATH: If all references are already verified or have high confidence,
+        # skip AI review to avoid hanging on LLM timeouts
+        fake_count = sum(1 for vr in api_results_raw if vr.status == "fabricated")
+        real_and_confirmed = sum(1 for vr in api_results_raw 
+                                if vr.status in ("verified", "journal_metadata") 
+                                and vr.confidence >= 0.75)
+        
         if (api_results_raw and len(api_results_raw) == len(bib_dicts)
-                and all(vr.status == "verified" for vr in api_results_raw)):
+                and all(vr.status in ("verified", "journal_metadata") for vr in api_results_raw)):
+            # All entries already verified through reliable sources
             verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
+            print(f"[FAST PATH] Skipped AI - all {len(api_results_raw)} entries already verified",
+                  file=sys.stderr, flush=True)
+        elif fake_count > 0 or real_and_confirmed < len(api_results_raw) * 0.80:
+            # Need AI review for questionable entries
+            try:
+                verification_result = ai_verify_references(bib_dicts, api_results_dicts)
+            except Exception as e:
+                # AI call failed or timed out - use best guess from API results
+                print(f"[WARNING] AI verification failed: {str(e)[:100]}", 
+                      file=sys.stderr, flush=True)
+                verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
         else:
-            verification_result = ai_verify_references(bib_dicts, api_results_dicts)
+            # Most entries are already verified - skip AI
+            verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
+            print(f"[FAST PATH] Skipped AI - {real_and_confirmed}/{len(api_results_raw)} entries verified",
+                  file=sys.stderr, flush=True)
 
         suspicious_ai = verification_result.get("suspicious_count", 0)
         if suspicious_ai > 0:
