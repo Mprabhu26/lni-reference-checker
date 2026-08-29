@@ -1382,9 +1382,9 @@ def verify_reference(
             if decision in ("rejected", "fake"):
                 return VerificationResult(
                     key=entry.key, title=entry.title or "",
-                    status="suspicious", confidence=1.0,
+                    status="fabricated", confidence=1.0,
                     matched_title=entry.title or "",
-                    note="Rejected by professor review.",
+                    note="Marked as fake by professor review.",
                     sources_checked=["professor_review"],
                 )
 
@@ -1409,8 +1409,8 @@ def verify_reference(
         if not entry.title and not entry.doi:
             return VerificationResult(
                 key=entry.key, title="",
-                status="suspicious", confidence=0.0,
-                note="No title or DOI — cannot verify.",
+                status="manual_review", confidence=0.0,
+                note="No title or DOI — cannot verify. Manual review required.",
                 sources_checked=[],
             )
 
@@ -1550,11 +1550,16 @@ def verify_reference(
                        [_search_crossref, _search_semantic_scholar, _search_openalex]}
 
             max_wait = 50
+            completed_count = 0
+            total_futures = len(futures)
             try:
                 for future in as_completed(futures, timeout=max_wait):
+                    completed_count += 1
                     try:
                         r = future.result(timeout=5)
-                    except (ConcurrentTimeoutError, Exception):
+                    except (ConcurrentTimeoutError, Exception) as e:
+                        fn_name = futures[future].__name__ if future in futures else "unknown"
+                        # Silently skip individual API timeouts; if all timeout we'll fall back to AI
                         r = None
                     
                     if r is None:
@@ -1569,8 +1574,14 @@ def verify_reference(
                             break
                     elif r.status == "partial_match" and (best is None or r.confidence > best.confidence):
                         best = r
+            except ConcurrentTimeoutError:
+                # Timeout waiting for futures to complete
+                print(f"[API LOOKUP] Timeout: {completed_count}/{total_futures} APIs responded for '{entry.key}'", 
+                      file=sys.stderr, flush=True)
+                for f in futures:
+                    f.cancel()
             except Exception as outer_ex:
-                print(f"[API LOOKUP] Unexpected error: {outer_ex}", file=sys.stderr, flush=True)
+                print(f"[API LOOKUP] Error for {entry.key}: {outer_ex}", file=sys.stderr, flush=True)
                 for f in futures:
                     f.cancel()
             finally:
@@ -1625,7 +1636,7 @@ def verify_reference(
                 if entry_has_fake_author:
                     return VerificationResult(
                         key=entry.key, title=entry.title or "",
-                        status="suspicious",
+                        status="manual_review",
                         confidence=0.30,
                         matched_title=api_result.matched_title,
                         note=(

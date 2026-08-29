@@ -647,13 +647,28 @@ function renderResults(data) {
   const orphan = (data.cross_check?.in_bib_not_cited || []).length;
   const fake = (data.verification || []).filter(v => effectiveVerdict(v) === 'FAKE').length;
   const susp = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
+  const manual = (data.verification || []).filter(v => effectiveVerdict(v) === 'MANUAL_REVIEW').length;
   const verTotal = (data.verification || []).length;
   const bib_issues = (data.bibliography || []).filter(e => e.completeness_issues?.length || e.key_consistent === false || e.is_duplicate).length;
+  
+  // Debug logging
+  const verdictCounts = {};
+  const allEntries = (data.verification || []);
+  allEntries.forEach(v => {
+    const verd = effectiveVerdict(v) || 'UNKNOWN';
+    verdictCounts[verd] = (verdictCounts[verd] || 0) + 1;
+    if (manual >= 0 && verd === 'MANUAL_REVIEW') {
+      console.log(`[MANUAL_REVIEW entry] ${v.key}: ai_verdict=${v.ai_verdict} status=${v.status}`);
+    }
+  });
+  console.log('[BADGE DEBUG] Verdict distribution:', verdictCounts, 'manual=', manual, 'susp=', susp, 'fake=', fake, 'total=', verTotal);
+  console.log('[BADGE DEBUG] Sample entries:', allEntries.slice(0, 3).map(v => ({key: v.key, ai_verdict: v.ai_verdict, status: v.status})));
+  
   setBadge('tabBibBadge', bib_issues, bib_issues ? 'orange' : '');
   setBadge('tabXBadge', missing + orphan, (missing + orphan) ? 'red' : '');
   // Show flagged count if any issues; otherwise show total verified so badge isn't 0
-  const verBadgeCount = (fake + susp) > 0 ? (fake + susp) : verTotal;
-  const verBadgeCls = fake ? 'red' : susp ? 'orange' : verTotal > 0 ? 'green' : '';
+  const verBadgeCount = (fake + susp + manual) > 0 ? (fake + susp + manual) : verTotal;
+  const verBadgeCls = fake ? 'red' : (susp + manual) > 0 ? 'orange' : verTotal > 0 ? 'green' : '';
   setBadge('tabVerBadge', verBadgeCount, verBadgeCls);
   document.getElementById('tabsWrap').classList.add('show');
   document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));

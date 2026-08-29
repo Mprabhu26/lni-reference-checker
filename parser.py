@@ -302,13 +302,47 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     if (re.search(r'\b(?:Accessed|Abruf|Stand|abgerufen am|besucht am)\b', raw, re.IGNORECASE)
             and re.search(r'\b(?:[\w-]+\.)+(?:com|org|net|de|eu|io|gov)\b', raw, re.IGNORECASE)):
         entry.entry_type = "website"
+        
+        # ── IMPROVED URL EXTRACTION ─────────────────────────────────────────
+        # PDFs often break URLs with spaces/newlines. Find the domain, then
+        # capture everything after it until clear delimiters (period-space,
+        # dash, "Accessed" keyword).
+        
+        entry.url = None
+        
+        # Find any domain-like pattern (including subdomains and special TLDs)
         domain_match = re.search(
-            r'(?:(?:https?://)?(?:www\.)?)[\w-]+\.(?:com|org|net|de|eu|io|gov)\S*',
+            r'(?:https?://)?(?:[\w-]+\.)+(?:com|org|net|de|eu|io|gov|co\.uk|ac\.uk|europa\.eu)',
             raw, re.IGNORECASE)
+        
         if domain_match:
-            entry.url = domain_match.group(0)
-            if not entry.url.lower().startswith(('http://', 'https://')):
-                entry.url = 'https://' + entry.url
+            start_pos = domain_match.start()
+            # Look for clear delimiters after the domain that signal end of URL
+            delimiter_match = re.search(
+                r'\.\s+(?!/)|\s+–\s|(?:\s+)(?:Accessed|Abruf|Stand|accessed|besucht am)',
+                raw[domain_match.end():], re.IGNORECASE)
+            
+            if delimiter_match:
+                end_pos = domain_match.end() + delimiter_match.start()
+            else:
+                end_pos = len(raw)
+            
+            url_text = raw[start_pos:end_pos].strip().rstrip('.,;:)]}– ')
+            if url_text:
+                entry.url = url_text
+                if not entry.url.lower().startswith(('http://', 'https://')):
+                    entry.url = 'https://' + entry.url
+        
+        # Fallback: if no URL found, do a simple domain search
+        if not entry.url:
+            domain_match = re.search(
+                r'(?:https?://)?(?:www\.)?[\w-]+\.(?:com|org|net|de|eu|io|gov)\S*',
+                raw, re.IGNORECASE)
+            if domain_match:
+                entry.url = domain_match.group(0).rstrip('.,;:)]}')
+                if not entry.url.lower().startswith(('http://', 'https://')):
+                    entry.url = 'https://' + entry.url
+        
         date_match = re.search(
             r'(?:Stand:|Abruf:|abgerufen am|accessed|besucht am|Accessed:)\s*'
             r'(\d{4}-\d{2}-\d{2}|[\d./-]+)', raw, re.IGNORECASE)

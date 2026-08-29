@@ -449,16 +449,34 @@ def _assemble_result(
 
         ai = ai_verdicts_by_key.get(vr.key, {})
         ai_verdict = ai.get("verdict", "SUSPICIOUS")
-        if vr.status == "manual_review" and ai_verdict != "REAL":
+        
+        # Map vr.status to ai_verdict:
+        # - fabricated → FAKE (definitive)
+        # - manual_review → MANUAL_REVIEW (needs review)
+        # - verified + ai says REAL → REAL (verified)
+        # - anything else → use AI verdict or default to SUSPICIOUS
+        if vr.status == "fabricated":
+            ai_verdict = "FAKE"
+        elif vr.status == "manual_review":
             ai_verdict = "MANUAL_REVIEW"
+        elif vr.status == "verified" and ai_verdict != "REAL":
+            ai_verdict = "REAL"
+        elif ai_verdict == "SUSPICIOUS" and vr.status not in ("verified", "fabricated", "manual_review"):
+            # Unverified entries should be MANUAL_REVIEW, not SUSPICIOUS
+            ai_verdict = "MANUAL_REVIEW"
+            
+        # Debug: log verdict assignments for entries that need manual review
+        if ai_verdict in ("MANUAL_REVIEW", "FAKE") or vr.status == "manual_review":
+            print(f"[VERDICT] {vr.key}: vr.status={vr.status} ai_from_checker={ai.get('verdict','none')} → final_ai_verdict={ai_verdict}", file=sys.stderr, flush=True)
         # Map AI verdict to display status
         if ai_verdict == "REAL":
             status = "verified"
         elif ai_verdict == "FAKE":
-            # AI never outputs FAKE directly now; this path is for professor-confirmed fakes
             status = "not_found"
+        elif ai_verdict == "MANUAL_REVIEW":
+            status = "manual_review"
         else:
-            status = "manual_review" if ai_verdict == "MANUAL_REVIEW" else "suspicious"
+            status = "suspicious"
 
         _raw = (bib_dict.get(vr.key) and bib_dict[vr.key].raw_text or "")[:300]
         _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""

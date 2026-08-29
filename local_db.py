@@ -29,6 +29,58 @@ CACHE_DB = DB_DIR / "verified_papers.db"
 _SCHEMA_VERSION = 3
 
 
+def _validate_url(url: str) -> str:
+    """
+    Validate URL and try common fixes. Returns the working URL or empty string.
+    Strategy:
+    1. Try HEAD request to URL as-is
+    2. Try GET if HEAD fails (some servers don't support HEAD)
+    3. If 4xx error and www missing, try adding www.
+    4. If PDF/download URL fails, try without download params
+    5. If all fail, return empty string (skip caching URL, but don't reject paper)
+    """
+    if not url or not url.strip().startswith("http"):
+        return ""
+    
+    import requests
+    
+    original_url = url.strip()
+    attempts = [original_url]
+    
+    # For PDF downloads, also try removing download params
+    if "?download" in original_url or ".pdf" in original_url.lower():
+        base_url = original_url.split("?")[0]
+        if base_url != original_url:
+            attempts.append(base_url)
+    
+    # Variant 2: Add www if missing
+    if "://" in original_url:
+        schema, rest = original_url.split("://", 1)
+        if not rest.startswith("www."):
+            attempts.append(f"{schema}://www.{rest}")
+    
+    for attempt_url in attempts:
+        try:
+            # Try HEAD first (faster, but some servers don't allow it)
+            resp = requests.head(attempt_url, timeout=5, allow_redirects=True, 
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code in (200, 301, 302, 303, 307, 308):
+                return attempt_url  # This URL works
+            
+            # If 4xx, try GET instead (some servers don't support HEAD or block PDFs via HEAD)
+            if 400 <= resp.status_code < 500:
+                resp = requests.get(attempt_url, timeout=5, allow_redirects=True,
+                                   headers={"User-Agent": "Mozilla/5.0"})
+                if resp.status_code in (200, 301, 302, 303, 307, 308):
+                    return attempt_url  # GET works even if HEAD failed
+        except requests.Timeout:
+            pass  # Try next variant
+        except Exception:
+            pass  # Try next variant
+    
+    return ""  # No URL variant worked; skip caching but don't reject paper
+
+
 @dataclass
 class CachedPaper:
     title: str
@@ -196,17 +248,16 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
         if m:
             year_int = int(m.group())
 
-    # Validate URLs before caching (no dead links)
+    # Validate URLs before caching (try to fix incomplete URLs)
     url_to_cache = url
     if url and url.strip().startswith("http"):
-        import requests
-        try:
-            resp = requests.head(url, timeout=5, allow_redirects=True)
-            if resp.status_code not in (200, 301, 302, 303, 307, 308):
-                print(f"[local_db] Rejecting URL cache: HTTP {resp.status_code} for {url[:50]}")
-                url_to_cache = ""
-        except Exception as e:
-            print(f"[local_db] URL validation failed: {e}, skipping cache URL")
+        fixed_url = _validate_url(url)
+        if fixed_url:
+            url_to_cache = fixed_url
+            if fixed_url != url.strip():
+                print(f"[local_db] URL fixed: {url} → {fixed_url}")
+        else:
+            print(f"[local_db] URL validation failed, skipping: {url}")
             url_to_cache = ""
 
     conn = sqlite3.connect(str(CACHE_DB))
