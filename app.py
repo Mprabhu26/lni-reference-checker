@@ -458,7 +458,7 @@ def _assemble_result(
             # AI never outputs FAKE directly now; this path is for professor-confirmed fakes
             status = "not_found"
         else:
-            status = "suspicious"
+            status = "manual_review" if ai_verdict == "MANUAL_REVIEW" else "suspicious"
 
         _raw = (bib_dict.get(vr.key) and bib_dict[vr.key].raw_text or "")[:300]
         _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""
@@ -525,6 +525,8 @@ def _assemble_result(
         if entry["key"] not in api_keys:
             ai = ai_verdicts_by_key.get(entry["key"], {})
             ai_verdict = ai.get("verdict") or "SUSPICIOUS"
+            if ai_verdict != "REAL":
+                ai_verdict = "MANUAL_REVIEW"
             verification_output.append({
                 "key": entry["key"],
                 "title": entry.get("title") or "",
@@ -580,8 +582,8 @@ def _assemble_result(
 
     if suspicious_pending > 0:
         _det_reason = (
-            f"Tentative score {s}/100 — {suspicious_pending} reference(s) are "
-            f"SUSPICIOUS and awaiting professor review. No verdict can be issued "
+            f"Tentative score {s}/100 — {suspicious_pending} reference(s) require "
+            f"manual review because automated sources could not confirm them. No verdict can be issued "
             f"until each is confirmed as real or fake. {_pen_parts}"
         )
     else:
@@ -695,7 +697,8 @@ def _assemble_result(
             "incomplete_entries": sum(1 for e in bib_list if e.completeness_issues),
             "key_inconsistencies": sum(1 for e in bib_list if e.key_consistent is False),
             "fake_candidates": verification_result.get("fake_count", 0),
-            "suspicious": verification_result.get("suspicious_count", 0),
+            "suspicious": sum(1 for v in verification_output if v.get("ai_verdict") == "SUSPICIOUS"),
+            "manual_review": sum(1 for v in verification_output if v.get("ai_verdict") == "MANUAL_REVIEW"),
             "verified": sum(1 for v in verification_output if v["status"] == "verified"),
             "retracted": sum(1 for v in verification_output if v.get("is_retracted")),
             "style_issues": len(style_suggestions),
