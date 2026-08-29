@@ -1081,8 +1081,9 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
         # Promoted partial matches are explicitly flagged in their note
         if "promoted from partial" in note:
             return False
-        # Low-confidence 'verified' results still need AI review
-        if vr.get("confidence", 0) < 0.80:
+        # Lower threshold to 0.75 to skip AI verification for confident API results
+        # (APIs now early-stop at 0.85, so this is safe)
+        if vr.get("confidence", 0) < 0.75:
             return False
         return True
 

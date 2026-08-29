@@ -966,7 +966,7 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                 
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(ai_verify_references, bib_dicts, api_results_dicts)
-                    verification_result = future.result(timeout=60)
+                    verification_result = future.result(timeout=45)  # Reduced from 60s
                 
                 ai_elapsed = time.time() - ai_start
                 print(f"[TIMER] AI verification completed in {ai_elapsed:.1f}s", file=sys.stderr, flush=True)
@@ -1011,7 +1011,7 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                     summary=summary_for_ai, xcheck=xcheck,
                     bib_list=bib_list, verification_result=verification_result,
                 )
-                overall = future.result(timeout=30)  # 30 second timeout
+                overall = future.result(timeout=20)  # Reduced from 30s
                 verdict_elapsed = time.time() - verdict_start
                 print(f"[TIMER] Verdict generated in {verdict_elapsed:.1f}s", file=sys.stderr, flush=True)
                 

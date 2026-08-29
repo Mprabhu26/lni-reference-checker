@@ -1797,7 +1797,7 @@ def verify_reference(
             futures = {ex.submit(fn, entry): fn for fn in
                        [_search_crossref, _search_semantic_scholar, _search_openalex]}
 
-            max_wait = 50
+            max_wait = 30  # Reduced from 50s to 30s (faster timeout)
             completed_count = 0
             total_futures = len(futures)
             try:
@@ -1816,7 +1816,10 @@ def verify_reference(
                     if r.status == "verified" and r.confidence >= 0.75:
                         if best is None or r.confidence > best.confidence:
                             best = r
-                        if best.confidence >= 0.95:
+                        # More aggressive early-stop: 0.85 instead of 0.95 (still high confidence)
+                        if best.confidence >= 0.85:
+                            print(f"[API LOOKUP] Early stop for {entry.key}: got {best.confidence:.2f} confidence from {futures[future].__name__}",
+                                  file=sys.stderr, flush=True)
                             for f in futures:
                                 f.cancel()
                             break
