@@ -899,9 +899,17 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             yield _sse("progress", {"step": "verify_start",
                 "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
 
-            # verify_all_references now handles duplicates internally
+            # verify_all_references now handles duplicates internally with parallel processing
+            verification_start = time.time()
+            print(f"[TIMER] Starting parallel verification of {len(bib_dict)} entries...", 
+                  file=sys.stderr, flush=True)
             api_results_raw = verify_all_references(bib_dict)
-            print(f"[DIAG] verify_all_references completed, got {len(api_results_raw)} results", file=sys.stderr, flush=True)
+            verification_elapsed = time.time() - verification_start
+            print(f"[TIMER] Verification completed in {verification_elapsed:.1f}s, got {len(api_results_raw)} results", 
+                  file=sys.stderr, flush=True)
+            
+            yield _sse("progress", {"step": "verify_complete", 
+                "message": f"✓ Verified {len(api_results_raw)} references in {verification_elapsed:.1f}s"})
 
             verified_count = sum(1 for r in api_results_raw if r.status == "verified")
             suspicious_count = sum(1 for r in api_results_raw if r.status == "suspicious")
@@ -949,11 +957,27 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
         elif fake_count > 0 or real_and_confirmed < len(api_results_raw) * 0.80:
             # Need AI review for questionable entries
             try:
-                verification_result = ai_verify_references(bib_dicts, api_results_dicts)
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+                
+                yield _sse("progress", {"step": "ai_verify", "message": f"🤖 AI reviewing {len(bib_dicts)} references..."})
+                
+                ai_start = time.time()
+                print(f"[TIMER] Starting AI verification (timeout: 60s)...", file=sys.stderr, flush=True)
+                
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(ai_verify_references, bib_dicts, api_results_dicts)
+                    verification_result = future.result(timeout=60)
+                
+                ai_elapsed = time.time() - ai_start
+                print(f"[TIMER] AI verification completed in {ai_elapsed:.1f}s", file=sys.stderr, flush=True)
+                
+            except FutureTimeoutError:
+                print(f"[WARNING] AI verification timed out after 60s", file=sys.stderr, flush=True)
+                yield _sse("progress", {"step": "ai_timeout", "message": "⚠️ AI review timed out, using API results"})
+                verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
             except Exception as e:
-                # AI call failed or timed out - use best guess from API results
-                print(f"[WARNING] AI verification failed: {str(e)[:100]}", 
-                      file=sys.stderr, flush=True)
+                # AI call failed - use best guess from API results
+                print(f"[WARNING] AI verification failed: {str(e)[:100]}", file=sys.stderr, flush=True)
                 verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
         else:
             # Most entries are already verified - skip AI
@@ -972,11 +996,35 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             "self_citations": len(self_citations),
             "style_issues": len(style_suggestions),
         }
-        overall = ai_overall_verdict(
-            filename=filename or Path(main_path).name,
-            summary=summary_for_ai, xcheck=xcheck,
-            bib_list=bib_list, verification_result=verification_result,
-        )
+        
+        # Generate verdict with timeout protection and timing
+        try:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            
+            verdict_start = time.time()
+            print(f"[TIMER] Starting verdict generation (timeout: 30s)...", file=sys.stderr, flush=True)
+            
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    ai_overall_verdict,
+                    filename=filename or Path(main_path).name,
+                    summary=summary_for_ai, xcheck=xcheck,
+                    bib_list=bib_list, verification_result=verification_result,
+                )
+                overall = future.result(timeout=30)  # 30 second timeout
+                verdict_elapsed = time.time() - verdict_start
+                print(f"[TIMER] Verdict generated in {verdict_elapsed:.1f}s", file=sys.stderr, flush=True)
+                
+        except FutureTimeoutError:
+            print(f"[WARNING] Verdict generation timed out after 30s", file=sys.stderr, flush=True)
+            overall = {
+                "verdict": "PENDING",
+                "score": 85,
+                "grade": None,
+                "verdict_reason": f"Analysis timed out. {len(bib_list)} references analyzed.",
+                "student_feedback": [],
+                "professor_note": "Manual review needed - processing incomplete",
+            }
 
         result = _assemble_result(
             filename=filename or Path(main_path).name,

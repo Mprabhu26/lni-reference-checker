@@ -2067,12 +2067,15 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
     
     unique_entries = [e for e in entries if e.key not in skip_keys]
     
-    worker_count = min(16, max(1, len(unique_entries)))
+    # Use more workers for faster parallel verification (up to 32)
+    worker_count = min(32, max(1, len(unique_entries)))
     ex = ThreadPoolExecutor(max_workers=worker_count)
     future_map = {
         ex.submit(verify_reference, e, dup_map): e
         for e in unique_entries
     }
+    print(f"[VERIFY] Starting parallel verification of {len(unique_entries)} references with {worker_count} workers", 
+          file=sys.stderr, flush=True)
     completed_keys = set()
     batch_timeout = 180
     try:
