@@ -55,7 +55,7 @@ REQUIRED_FIELDS = {
     "article":       ["authors", "title", "journal", "year", "pages"],
     "proceedings":   ["authors", "title", "booktitle", "year", "pages"],
     "inproceedings": ["authors", "title", "booktitle", "year", "pages"],
-    "website":       ["title", "url", "urldate"],
+    "website":       ["title", "url"],
     "misc":          ["title", "year"],
     "unknown":       ["authors", "title", "year"],
 }

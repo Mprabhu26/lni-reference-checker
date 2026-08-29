@@ -350,13 +350,14 @@ class TestParserCompletenessChecks:
         assert any("url" in i.lower() for i in e.completeness_issues)
 
     def test_P39_missing_urldate_for_website_flagged(self):
-        """Website entry without urldate gets 'Missing required field: urldate'."""
+        """Website entry without urldate is allowed (urldate is optional)."""
         bib = _load_txt("bib_website_no_urldate.txt")
         entries = parse_bibliography(bib)
         if entries[0].entry_type == "website":
             issues = entries[0].completeness_issues
-            assert any("urldate" in i.lower() for i in issues), \
-                f"Expected urldate issue, got: {issues}"
+            # urldate should NOT be flagged as missing (it's optional)
+            assert not any("urldate" in i.lower() for i in issues), \
+                f"urldate should be optional, but got issue: {issues}"
 
     def test_P40_huge_page_span_flagged(self):
         """Page range spanning >200 pages is flagged as implausible."""

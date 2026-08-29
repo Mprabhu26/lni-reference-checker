@@ -38,6 +38,16 @@ AUTHOR_OVERLAP_THRESHOLD = float(os.getenv("LNI_AUTHOR_OVERLAP_THRESHOLD", "0.70
 AUTHOR_MISMATCH_THRESHOLD = float(os.getenv("LNI_AUTHOR_MISMATCH_THRESHOLD", "0.50"))
 CONFIDENCE_HIGH_THRESHOLD = float(os.getenv("LNI_CONFIDENCE_HIGH", "0.85"))
 
+# TIER 1: Anti-false-positive thresholds (GRADE SAFETY)
+# Only downgrade verdict if we are VERY CONFIDENT the reference is problematic
+MINIMUM_CONFIDENCE_FOR_SUSPICIOUS = float(os.getenv("LNI_MIN_CONF_SUSPICIOUS", "0.68"))
+MINIMUM_CONFIDENCE_FOR_FAKE = float(os.getenv("LNI_MIN_CONF_FAKE", "0.82"))
+
+# Confidence tiers for professor workflow
+CONFIDENCE_HIGH = 0.90          # Auto-pass, professor sees summary only
+CONFIDENCE_MODERATE = 0.65      # Professor should review
+CONFIDENCE_LOW = 0.40           # Must have manual review before grading
+
 # ---------------------------------------------------------------------------
 # In-memory caches
 # ---------------------------------------------------------------------------
@@ -119,18 +129,50 @@ def _title_similarity(title1: str, title2: str) -> float:
 
 
 _SENTENCE_MODEL = None
+_DEFAULT_SENTENCE_MODEL = os.getenv("LNI_SENTENCE_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+_LOCAL_ML_REAL_THRESHOLD = float(os.getenv("LNI_LOCAL_ML_REAL_THRESHOLD", "0.82"))
+_LOCAL_ML_SUSPICIOUS_THRESHOLD = float(os.getenv("LNI_LOCAL_ML_SUSPICIOUS_THRESHOLD", "0.58"))
 
 
 def _get_sentence_model():
-    """Lazy-load the free local semantic model. This keeps token use low and avoids imports on every call."""
+    """Lazy-load the best available free semantic embedding model and fall back safely."""
     global _SENTENCE_MODEL
     if _SENTENCE_MODEL is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            _SENTENCE_MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        except Exception:
-            _SENTENCE_MODEL = False
+        model_candidates = [
+            _DEFAULT_SENTENCE_MODEL,
+            "allenai-specter",
+            "sentence-transformers/allenai-specter",
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "all-MiniLM-L6-v2",
+        ]
+        seen = set()
+        for model_name in model_candidates:
+            model_name = (model_name or "").strip()
+            if not model_name or model_name in seen:
+                continue
+            seen.add(model_name)
+            try:
+                from sentence_transformers import SentenceTransformer
+                _SENTENCE_MODEL = SentenceTransformer(model_name)
+                return _SENTENCE_MODEL
+            except Exception as exc:
+                print(f"[LOCAL ML] Failed to load model '{model_name}': {exc}. Trying fallback.", file=sys.stderr, flush=True)
+        _SENTENCE_MODEL = False
     return _SENTENCE_MODEL
+
+
+def _looks_like_org_author(authors: str) -> bool:
+    """Reject team/org authors before classifying a reference as REAL."""
+    if not authors:
+        return True
+    lowered = authors.lower()
+    org_markers = [
+        "team", "group", "committee", "institute", "department", "lab", "research group",
+        "organization", "community", "staff", "contributors", "authors", "anonymous",
+        "google", "microsoft", "openai", "meta", "ibm", "amazon", "facebook",
+        "github contributors", "stackoverflow community", "systems research",
+    ]
+    return any(marker in lowered for marker in org_markers)
 
 
 def _semantic_similarity(text_a: str, text_b: str) -> Optional[float]:
@@ -162,12 +204,11 @@ def _tfidf_similarity(text_a: str, text_b: str) -> Optional[float]:
 
 def _local_ml_gate(entry: BibEntry) -> dict:
     """
-    Local ML gate used before API calls.
+    Conservative local ML gate used before API calls.
 
-    Cascade policy:
-    - REAL => stop here for that reference
-    - SUSPICIOUS / FAKE / UNCERTAIN => continue to API / URL / AI
-    - This keeps cost low and reduces token waste while improving accuracy.
+    IMPORTANT: This is only a pre-filter. It is not trusted as final truth.
+    A reference should only be marked REAL if the metadata + external checks
+    later confirm it. This avoids false positives from well-fabricated titles.
     """
     title = (getattr(entry, "title", "") or "").strip()
     authors = (getattr(entry, "authors", "") or "").strip()
@@ -186,37 +227,36 @@ def _local_ml_gate(entry: BibEntry) -> dict:
     has_valid_title = len(title_words) >= 3
     has_valid_author = bool(authors) and not re.fullmatch(r'[^A-Za-z]+', authors)
     has_valid_year = bool(re.search(r'\d{4}', year))
+    org_author = _looks_like_org_author(authors)
 
-    # Strong local ML signals (no network calls; runs entirely on-device)
-    semantic_score = None
-    tfidf_score = None
-    composite_score = 0.0
-
+    # The model is only used as a weak plausibility signal. We deliberately do
+    # not let it certify a reference as REAL on its own; the API / URL / DB
+    # checks remain the real authority.
     semantic_text = " ".join(filter(None, [title, authors, year]))
-    semantic_score = _semantic_similarity(semantic_text, semantic_text)
-    tfidf_score = _tfidf_similarity(title, title)
-
-    if semantic_score is not None:
-        composite_score += 0.45 * semantic_score
-    if tfidf_score is not None:
-        composite_score += 0.20 * tfidf_score
+    semantic_score = _semantic_similarity(semantic_text, f"{title} by {authors} in {year}")
+    tfidf_score = _tfidf_similarity(title, f"{title} by {authors} in {year}")
 
     score = 0.0
     if has_valid_title:
-        score += 0.5
-    if has_valid_author:
-        score += 0.2
+        score += 0.45
+    if has_valid_author and not org_author:
+        score += 0.25
     if has_valid_year:
-        score += 0.3
+        score += 0.20
+    if semantic_score is not None:
+        score += 0.20 * max(0.0, min(1.0, semantic_score))
+    if tfidf_score is not None:
+        score += 0.10 * max(0.0, min(1.0, tfidf_score))
 
-    final_score = min(1.0, score + composite_score)
+    final_score = min(1.0, score)
 
-    if final_score >= 0.9 and has_valid_title and has_valid_author and has_valid_year:
+    if (final_score >= _LOCAL_ML_REAL_THRESHOLD and has_valid_title
+            and has_valid_author and has_valid_year and not org_author):
         return {"decision": "REAL", "confidence": round(min(0.96, final_score), 3),
-                "reason": "Local ML + structural metadata strongly indicate a real paper."}
-    if final_score >= 0.6:
+                "reason": "ML plausibility + strong metadata indicate a likely real paper, but external checks are still required for final confirmation."}
+    if final_score >= _LOCAL_ML_SUSPICIOUS_THRESHOLD:
         return {"decision": "UNCERTAIN", "confidence": round(final_score, 3),
-                "reason": "Title/metadata appear plausible but not strong enough to stop early."}
+                "reason": "The title and metadata are plausible, but not strong enough to certify without external verification."}
 
     return {"decision": "SUSPICIOUS", "confidence": round(max(0.35, final_score), 3),
             "reason": "Local ML and metadata checks indicate a weak or inconsistent reference."}
@@ -371,6 +411,7 @@ class VerificationResult:
     author_match_score: Optional[float] = None
     is_duplicate: bool = False
     duplicate_of: Optional[str] = None
+    confidence_tier: str = "moderate"  # "high" | "moderate" | "low" (TIER 1 grade safety)
 
 
 # ---------------------------------------------------------------------------
@@ -1491,6 +1532,47 @@ def _validate_entry_fields(entry: BibEntry) -> Optional[VerificationResult]:
 # MAIN VERIFICATION FUNCTION — FIXED with grey literature AI support
 # ---------------------------------------------------------------------------
 
+def _apply_confidence_thresholds(result: "VerificationResult") -> "VerificationResult":
+    """
+    TIER 1: Apply anti-false-positive confidence checks.
+    
+    Principle: Don't downgrade a reference verdict unless we're VERY confident.
+    - SUSPICIOUS requires 68%+ confidence
+    - FAKE requires 82%+ confidence
+    - Everything else goes to manual_review for professor decision
+    
+    This protects students from auto-failing due to uncertainty.
+    """
+    if result.status == "fabricated":
+        # FAKE verdict - require very high confidence
+        if result.confidence < MINIMUM_CONFIDENCE_FOR_FAKE:
+            result.status = "manual_review"
+            result.note = (
+                f"Potential issue detected (conf: {result.confidence:.0%}) but below "
+                f"threshold for auto-rejection. Professor should review. "
+                f"Original: {result.note}"
+            )
+    elif result.status == "suspicious":
+        # SUSPICIOUS - require moderate confidence
+        if result.confidence < MINIMUM_CONFIDENCE_FOR_SUSPICIOUS:
+            result.status = "manual_review"
+            result.note = (
+                f"Minor issue detected (conf: {result.confidence:.0%}) but below "
+                f"threshold for marking suspicious. Professor review recommended. "
+                f"Original: {result.note}"
+            )
+    
+    # Add confidence tier for UI/workflow
+    if result.confidence >= CONFIDENCE_HIGH:
+        result.confidence_tier = "high"
+    elif result.confidence >= CONFIDENCE_MODERATE:
+        result.confidence_tier = "moderate"
+    else:
+        result.confidence_tier = "low"
+    
+    return result
+
+
 def verify_reference(
     entry: BibEntry,
     dup_map: dict = None,
@@ -1499,6 +1581,7 @@ def verify_reference(
     """
     4-step pipeline with duplicate check FIRST.
     FIXED v8.7: Grey literature now properly uses AI fallback.
+    ENHANCED v8.8: Applies confidence thresholds for grade safety (TIER 1).
     """
     try:
         # Professor decisions are the strongest local evidence and should
@@ -2071,6 +2154,9 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
     # ── STEP 4: Sort results to maintain order ──────────────────────────────
     key_order = list(bib_dict.keys())
     results.sort(key=lambda r: key_order.index(r.key) if r.key in key_order else 999)
+    
+    # ── TIER 1: Apply confidence thresholds (grade safety) ────────────────────
+    results = [_apply_confidence_thresholds(r) for r in results]
     
     return results
 

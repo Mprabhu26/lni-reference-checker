@@ -49,6 +49,18 @@ from ai_checker import (
     ai_overall_verdict,
     get_llm_cache_stats,
 )
+from field_validators import get_lni_compliance_warnings
+from citation_analysis import (
+    extract_citations_with_context,
+    generate_citation_report,
+    detect_orphaned_entries,
+)
+from author_validator import get_author_validation_report
+from professor_workflow import (
+    prioritize_for_review,
+    get_review_summary,
+    detect_batch_patterns,
+)
 
 app = Flask(__name__, static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
@@ -132,15 +144,33 @@ def status():
 # ---------------------------------------------------------------------------
 
 def _bib_to_dicts(bib_list: list) -> list:
-    return [
-        {"key": e.key, "entry_type": e.entry_type or "unknown",
-         "authors": e.authors, "title": e.title, "year": e.year,
-         "publisher": e.publisher, "journal": e.journal, "booktitle": e.booktitle,
-         "pages": e.pages, "url": e.url, "urldate": e.urldate,
-         "doi": e.doi, "isbn": e.isbn, "raw_text": e.raw_text[:300],
-         "needs_ai_parsing": e.needs_ai_parsing, "key_consistent": e.key_consistent}
-        for e in bib_list
-    ]
+    result = []
+    for e in bib_list:
+        # Get field validation warnings for this entry
+        compliance_warnings = get_lni_compliance_warnings(e)
+        all_warnings = compliance_warnings.get('all_warnings', [])
+        
+        result.append({
+            "key": e.key, 
+            "entry_type": e.entry_type or "unknown",
+            "authors": e.authors, 
+            "title": e.title, 
+            "year": e.year,
+            "publisher": e.publisher, 
+            "journal": e.journal, 
+            "booktitle": e.booktitle,
+            "pages": e.pages, 
+            "url": e.url, 
+            "urldate": e.urldate,
+            "doi": e.doi, 
+            "isbn": e.isbn, 
+            "raw_text": e.raw_text[:300],
+            "needs_ai_parsing": e.needs_ai_parsing, 
+            "key_consistent": e.key_consistent,
+            "field_warnings": all_warnings,  # NEW: LNI compliance warnings
+            "has_field_issues": len(all_warnings) > 0,
+        })
+    return result
 
 
 def _vr_to_dicts(api_results_raw: list) -> list:
@@ -482,12 +512,25 @@ def _assemble_result(
         _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""
         ai_reasoning_text = ai.get("reasoning", "")
 
+        # TIER 2: Author validation (ENHANCED)
+        entry_obj = bib_dict.get(vr.key)
+        author_validation = None
+        if entry_obj and entry_obj.authors:
+            try:
+                author_validation = get_author_validation_report(
+                    entry_obj.authors,
+                    vr.correct_authors
+                )
+            except Exception as e:
+                print(f"[AUTHOR_VAL] Error for {vr.key}: {e}", file=sys.stderr, flush=True)
+
         verification_output.append({
             "key": vr.key,
             "title": _vr_title,
             "raw": _raw,
             "status": status,
             "confidence": round(ai.get("confidence", vr.confidence), 2),
+            "confidence_tier": getattr(vr, "confidence_tier", "moderate"),  # TIER 1
             "matched_title": vr.matched_title,
             "doi": vr.doi or ai.get("open_access_url"),
             "open_access_url": ai.get("open_access_url") or vr.open_access_url,
@@ -498,6 +541,7 @@ def _assemble_result(
             "ai_verdict": ai_verdict,
             "ai_reasoning": ai_reasoning_text,
             "ai_risk_factors": ai.get("risk_factors", []),
+            "author_validation": author_validation,  # TIER 2
             "version_note": vr.version_note,
             "is_retracted": getattr(vr, "is_retracted", False),
             "retraction_doi": getattr(vr, "retraction_doi", None),
@@ -682,6 +726,14 @@ def _assemble_result(
             num = k_str.replace('__NUM_', '').replace('__', '')
             real_cited.add(num)
 
+    # Generate citation analysis report (informational, not a verdict)
+    citation_report = generate_citation_report(body, set(bib_dict.keys()), citation_contexts)
+    
+    # TIER 3: Professor Workflow Enhancements
+    review_priorities = prioritize_for_review(verification_output)
+    review_summary = get_review_summary(review_priorities)
+    batch_patterns = detect_batch_patterns(verification_output)
+    
     version_notes = [
         {"key": v["key"], "note": v["version_note"]}
         for v in verification_output if v.get("version_note")
@@ -701,12 +753,23 @@ def _assemble_result(
             "in_bib_not_cited": xcheck.in_bib_not_cited,
         },
         "citation_contexts": citation_contexts,
+        "citation_analysis": citation_report,  # NEW: Citation context analysis
         "style_suggestions": style_suggestions,
         "duplicates": duplicates,
         "self_citations": self_citations,
         "score": final_score,
         "verification": verification_output,
         "verification_ai_summary": verification_result.get("summary", ""),
+        "professor_workflow": {  # TIER 3
+            "review_summary": {
+                "urgent": len(review_summary["urgent"]),
+                "important": len(review_summary["important"]),
+                "optional": len(review_summary["optional"]),
+                "skip": len(review_summary["skip"]),
+                "summary": review_summary["summary"],
+            },
+            "batch_patterns": batch_patterns,
+        },
         "arxiv_version_notes": version_notes,
         "is_scanned": bool(is_scanned),
         "summary": {

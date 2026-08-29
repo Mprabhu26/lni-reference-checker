@@ -423,7 +423,8 @@ class TestCompletenessIssues:
         e.title = "A Website"
         e.url = "https://example.com"
         _check_completeness(e)
-        assert any("urldate" in i.lower() for i in e.completeness_issues)
+        # urldate is now optional, so it should NOT be flagged as missing
+        assert not any("urldate" in i.lower() for i in e.completeness_issues)
 
     def test_R76_missing_url_website_flagged(self):
         e = BibEntry(key="We22", raw_text="")
