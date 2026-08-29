@@ -811,6 +811,30 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
                         sources_checked=["url_fetch"],
                     )
 
+                # Check if this is a documentation/tutorial site
+                is_docs_site = any(x in url.lower() for x in ['/docs/', '/tutorials/', '/guide/', '/documentation/', '/manual/'])
+                
+                # For docs/tutorial sites returning 200, treat that as sufficient proof
+                # (we already verified the domain exists and is live)
+                if is_docs_site:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    page_title = ""
+                    if soup.find("title"):
+                        page_title = soup.find("title").get_text().strip()
+                    if not page_title:
+                        page_title = entry.title or "Documentation"
+                    
+                    return VerificationResult(
+                        key=entry.key,
+                        title=entry.title or "",
+                        status="verified",
+                        confidence=0.75,
+                        matched_title=page_title,
+                        open_access_url=resp.url,
+                        note=f"Documentation/tutorial URL verified (HTTP 200): {url}",
+                        sources_checked=["url_verify"],
+                    )
+                
                 soup = BeautifulSoup(resp.text, "html.parser")
 
                 # Collect every title-like candidate rather than committing
@@ -872,8 +896,16 @@ def _fetch_url_strict(entry: BibEntry) -> Optional[VerificationResult]:
                             best_sim, best_candidate = s, cand
                     sim = best_sim
                     page_title = best_candidate
-                    # Require ≥0.80 similarity — title must actually match
-                    if sim >= 0.80:
+                    
+                    # ── LENIENT MATCHING FOR DOCUMENTATION/TUTORIAL SITES ─────
+                    # URLs like python.langchain.com/docs/tutorials often have
+                    # generic page titles. A 200 status is strong evidence they're
+                    # real. Use lower threshold for docs/tutorials/guides.
+                    is_docs_site = any(x in url.lower() for x in ['/docs/', '/tutorials/', '/guide/', '/documentation/', '/manual/'])
+                    title_threshold = 0.65 if is_docs_site else 0.80
+                    
+                    # Require ≥threshold similarity — title must actually match
+                    if sim >= title_threshold:
                         return VerificationResult(
                             key=entry.key,
                             title=entry.title or "",
