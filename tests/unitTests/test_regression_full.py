@@ -939,6 +939,16 @@ class TestExtractorSplit:
         text = "This paper has no references at all. Plain body text only."
         assert _find_bib_start(text) == -1
 
+    def test_R173b_embedded_bibliography_heading(self):
+        text = (
+            "Body citation [MD00].\n"
+            "Running header Bibliography\n"
+            "[Ar05] Araújo, Miguel: A Paper. Journal, 2005."
+        )
+        pos = _find_bib_start(text)
+        assert pos > text.index("Body citation")
+        assert "[Ar05]" in text[pos:]
+
     def test_R174_body_not_contaminated(self):
         text = "Introduction.\n\nReferences\n[1] Smith: Paper. 2020."
         r = split_body_bib(text)

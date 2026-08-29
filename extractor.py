@@ -120,6 +120,17 @@ def _find_bib_start(full_text: str) -> int:
 
     all_matches = list(BIB_HEADINGS.finditer(full_text))
     if not all_matches:
+        # Some PDF layouts concatenate the running header and section title
+        # onto one extracted line. Recover a distinctive heading when it is
+        # followed shortly by a bibliography key.
+        embedded_heading = re.compile(
+            r'\b(?:Bibliography|References?|Referenzen|Literaturverzeichnis|'
+            r'Quellenverzeichnis|Bibliographie)\b',
+            re.IGNORECASE,
+        )
+        all_matches = [m for m in embedded_heading.finditer(full_text)
+                       if any_bib_key.search(full_text[m.start():m.start() + 500])]
+    if not all_matches:
         # Fallback: look for any line starting with a bib key
         key_pattern = re.compile(r'\n\[(?:[A-Za-z]{2,6}\d{2}[a-z]?|\d{1,3})\]')
         key_match = key_pattern.search(full_text)

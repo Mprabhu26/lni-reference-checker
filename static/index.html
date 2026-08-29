@@ -823,6 +823,7 @@ function renderVerifyTab(data) {
   // moves into Flagged, matching the badge shown on its card.
   const fake = ver.filter(v => effectiveVerdict(v) === 'FAKE');
   const susp = ver.filter(v => effectiveVerdict(v) === 'SUSPICIOUS');
+  const manual = ver.filter(v => effectiveVerdict(v) === 'MANUAL_REVIEW');
   const real = ver.filter(v => effectiveVerdict(v) === 'REAL');
 
   // Sort REAL: metadata warnings first (author/year mismatch), then title differs, then clean
@@ -848,6 +849,7 @@ function renderVerifyTab(data) {
     <div class="stat-box green"><div class="value">${real.length}</div><div class="label">Verified Real</div></div>
     <div class="stat-box ${fake.length ? 'red' : 'green'}"><div class="value">${fake.length}</div><div class="label">Likely Fake</div></div>
     <div class="stat-box ${susp.length ? 'orange' : 'green'}"><div class="value">${susp.length}</div><div class="label">Suspicious</div></div>
+    <div class="stat-box ${manual.length ? 'orange' : 'green'}"><div class="value">${manual.length}</div><div class="label">Manual Review</div></div>
   </div>`;
 
   html += `<div class="explanation-box" style="margin-bottom:14px;">
@@ -860,9 +862,9 @@ function renderVerifyTab(data) {
   html += `<div class="search-bar"><input type="text" placeholder="Search references…" oninput="filterVerify(this.value)"></div>`;
 
   // SECTION 1: Flagged references (SUSPICIOUS + FAKE) - show first
-  if (fake.length + susp.length > 0) {
-    html += `<div class="section-heading">⚠ Flagged references (${fake.length + susp.length})</div>`;
-    html += [...fake, ...susp].map(v => verifyCard(v)).join('');
+  if (fake.length + susp.length + manual.length > 0) {
+    html += `<div class="section-heading">⚠ References requiring review (${fake.length + susp.length + manual.length})</div>`;
+    html += [...fake, ...susp, ...manual].map(v => verifyCard(v)).join('');
   }
 
   // SECTION 2: ALL Verified references (differences first, then exact matches) - ONE section
@@ -899,7 +901,8 @@ function verifyCard(v) {
     : isConfirmedFake ? '✕ FAKE — Confirmed by reviewer'
     : verdict === 'REAL' ? '✓ REAL — Verified'
     : verdict === 'FAKE' ? '✕ FAKE — Likely Fabricated'
-    : '? SUSPICIOUS — Manual Review Needed';
+    : verdict === 'MANUAL_REVIEW' ? '↗ MANUAL REVIEW — Not verified'
+    : '? SUSPICIOUS — Review evidence';
     // ── DUPLICATE BADGE ──
   let isDup = false;
   let dupOf = null;
@@ -1127,6 +1130,7 @@ function renderScoreTab(data) {
   const grade = adj.grade;
   const verificationFakeCount = markedFakeKeys.size;
   const verificationSuspCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS').length;
+  const verificationManualCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'MANUAL_REVIEW').length;
   const verificationRealCount = (data.verification || []).filter(v => effectiveVerdict(v) === 'REAL').length;
   const gradeColor = adj.verdict === 'PENDING' ? 'orange' : actualScore >= 80 ? 'green' : actualScore >= 60 ? 'orange' : 'red';
   const gradeLabel = grade || 'Pending';
@@ -1135,6 +1139,7 @@ function renderScoreTab(data) {
     <div class="stat-box ${gradeColor}"><div class="value">${scorePrefix}${actualScore}/100</div><div class="label">Final Score · ${gradeLabel}</div></div>
     <div class="stat-box ${verificationFakeCount ? 'red' : 'green'}"><div class="value">${verificationFakeCount}</div><div class="label">Confirmed Fake References</div></div>
     <div class="stat-box ${verificationSuspCount ? 'orange' : 'green'}"><div class="value">${verificationSuspCount}</div><div class="label">Suspicious References</div></div>
+    <div class="stat-box ${verificationManualCount ? 'orange' : 'green'}"><div class="value">${verificationManualCount}</div><div class="label">Manual Review</div></div>
     <div class="stat-box green"><div class="value">${verificationRealCount}</div><div class="label">Verified Real</div></div>
     <div class="stat-box ${s.missing_from_bib ? 'red' : 'green'}"><div class="value">${s.missing_from_bib || 0}</div><div class="label">Missing from Bib</div></div>
   </div>`;

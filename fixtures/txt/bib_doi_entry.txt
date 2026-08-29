@@ -1,0 +1,1 @@
+[Va17] Vaswani, Ashish: Attention Is All You Need. In: NeurIPS, 2017. doi: 10.48550/arXiv.1706.03762

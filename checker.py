@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
-from parser import BibEntry
+from parser import BibEntry, _extract_surnames
 from concurrent.futures import TimeoutError as ConcurrentTimeoutError
 from local_db import search_cache, save_to_cache, get_cache_stats, init_cache_db
 from web_search_verifier import verify_with_web_search
@@ -1035,23 +1035,19 @@ def extract_citations_from_body(body: str) -> set:
         normalized = re.sub(r'\s+', '', content)
         return '[' + normalized + ']'
     
-    body_clean = re.sub(r'\[([A-Za-z0-9\s\n,]+)\]', normalize_brackets, body)
-    
-    # Match LNI-format citations with optional suffix for multiple works same year
-    for m in re.finditer(
-        r'\[([A-Z][A-Za-z+]{0,5}\d{2}[a-z]?(?:,\s*[A-Z][A-Za-z+]{0,5}\d{2}[a-z]?)*)\]', body_clean
-    ):
-        for k in re.split(r',\s*', m.group(1)):
-            k = k.strip()
-            if k:
-                keys.add(k)
+    body_clean = re.sub(r'\[([A-Za-z0-9\s\n,;\-]+)\]', normalize_brackets, body)
 
-    for m in re.finditer(
-        r'\[([A-Za-z][A-Za-z0-9+]{0,40})\]', body_clean
-    ):
-        k = m.group(1).strip()
-        if k and not k.isdigit():
-            keys.add(k)
+    for m in re.finditer(r'\[([^\]]+)\]', body_clean):
+        prefix = body_clean[max(0, m.start() - 12):m.start()].lower()
+        if re.search(r'(?:e\.g\.?|z\.b\.?|cf\.?)\s*$', prefix):
+            continue
+        for k in re.split(r'\s*[,;]\s*', m.group(1)):
+            k = k.strip()
+            if re.fullmatch(r'\d+', k):
+                keys.add(f'__NUM_{k}__')
+                keys.add('__numeric_citations__')
+            elif re.fullmatch(r'[A-Z][A-Za-z+]{0,5}\d{2}[a-z]?', k):
+                keys.add(k)
     
     # LaTeX citations
     for m in re.finditer(r'\\(?:cite|citet|citep|Cite)\{([^}]+)\}', body_clean):
@@ -1060,15 +1056,11 @@ def extract_citations_from_body(body: str) -> set:
             if k:
                 keys.add(k)
     
-    # Numeric citations
-    if re.search(r'\[\d[\d,\s\-]*\]', body_clean):
-        keys.add('__numeric_citations__')
-    
     return keys
 
 
-def extract_citation_contexts(body: str) -> List[dict]:
-    contexts = []
+def extract_citation_contexts(body: str) -> dict:
+    contexts = {}
     if not body:
         return contexts
     
@@ -1077,18 +1069,19 @@ def extract_citation_contexts(body: str) -> List[dict]:
         normalized = re.sub(r'\s+', '', content)
         return '[' + normalized + ']'
     
-    body_clean = re.sub(r'\[([A-Za-z0-9\s\n,]+)\]', normalize_brackets, body)
+    body_clean = re.sub(r'\[([A-Za-z0-9\s\n,;\-]+)\]', normalize_brackets, body)
     
     for m in re.finditer(
-        r'(.{0,80})(\[[A-Za-z][A-Za-z0-9+]{0,40}\]|\[\d[\d,\s\-]*\])(.{0,80})',
+        r'(.{0,80})(\[[A-Za-z][A-Za-z0-9+]{0,40}(?:[,;]\s*[A-Za-z][A-Za-z0-9+]{0,40})*\]|\[\d[\d,;\s\-]*\])(.{0,80})',
         body_clean,
     ):
         pre, cite, post = m.group(1), m.group(2), m.group(3)
-        for k in re.split(r',\s*', cite[1:-1]):
+        for k in re.split(r'\s*[,;]\s*', cite[1:-1]):
             k = k.strip()
             if k:
-                contexts.append({"key": k,
-                                  "context": f"...{pre}{cite}{post}...".strip()})
+                contexts.setdefault(k, []).append(
+                    f"...{pre}{cite}{post}...".strip()
+                )
     return contexts
 
 
@@ -1108,13 +1101,22 @@ class CrossCheckResult:
 def cross_check(bib_dict: dict, cited_keys: set) -> CrossCheckResult:
     result = CrossCheckResult()
     bib_keys = set(bib_dict.keys()) if bib_dict else set()
+    bib_key_lookup = {key.lower(): key for key in bib_keys}
     real_cited = {k for k in cited_keys if k and not k.startswith('__')}
-    if '__numeric_citations__' in cited_keys:
-        result.correctly_used = sorted(bib_keys)
-        return result
-    result.correctly_used    = sorted(real_cited & bib_keys)
-    result.cited_not_in_bib  = sorted(real_cited - bib_keys)
-    result.in_bib_not_cited  = sorted(bib_keys - real_cited)
+    numeric_cited = {
+        k[6:-2] for k in cited_keys
+        if k.startswith('__NUM_') and k.endswith('__')
+    }
+    real_cited.update(numeric_cited & bib_keys)
+    real_cited = {bib_key_lookup.get(key.lower(), key) for key in real_cited}
+    missing_numeric = numeric_cited - bib_keys
+    result.correctly_used = sorted(real_cited & bib_keys)
+    numeric_missing = missing_numeric if bib_keys and all(k.isdigit() for k in bib_keys) else set()
+    result.cited_not_in_bib = sorted(
+        key for key in (real_cited - bib_keys) | numeric_missing
+        if key.lower() not in bib_key_lookup
+    )
+    result.in_bib_not_cited = sorted(bib_keys - real_cited)
     return result
 
 
@@ -1122,7 +1124,7 @@ def cross_check(bib_dict: dict, cited_keys: set) -> CrossCheckResult:
 # Duplicate detection
 # ---------------------------------------------------------------------------
 
-def find_duplicates(bib_dict: dict) -> List[dict]:
+def find_duplicates(bib_dict: dict, threshold: float = TITLE_SIMILARITY_THRESHOLD) -> List[dict]:
     entries = list(bib_dict.values())
     duplicates = []
     seen_pairs = set()
@@ -1194,7 +1196,7 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
                 continue
             
             sim = _title_similarity(a.title, b.title)
-            if sim >= TITLE_SIMILARITY_THRESHOLD:
+            if sim >= threshold:
                 if not (a.authors and b.authors):
                     continue
                 
@@ -1214,7 +1216,9 @@ def find_duplicates(bib_dict: dict) -> List[dict]:
                 continue
             
             # Author-year match for flexible keys
-            if a.authors and b.authors and a.year and b.year and a.year == b.year:
+            if (a.authors and b.authors and a.year and b.year
+                    and a.year == b.year
+                    and _title_similarity(a.title or "", b.title or "") >= threshold):
                 def get_surnames(authors_str):
                     surnames = set()
                     for part in re.split(r';|\band\b|\bund\b', authors_str, flags=re.IGNORECASE):
@@ -1317,6 +1321,15 @@ def detect_self_citations(bib_dict: dict, body: str) -> List[dict]:
 
 def _validate_entry_fields(entry: BibEntry) -> Optional[VerificationResult]:
     """Pre-verification validation. Returns error result if fields missing."""
+    if entry.entry_type in ("website", "online"):
+        if not entry.title:
+            return VerificationResult(
+                key=entry.key, title="", status="incomplete", confidence=0.0,
+                note="Missing required fields: title. Cannot verify.",
+                sources_checked=["structural_validation"],
+            )
+        return None
+
     missing_fields = []
     
     if not entry.title or entry.title.strip() == "":
@@ -1352,6 +1365,29 @@ def verify_reference(
     FIXED v8.7: Grey literature now properly uses AI fallback.
     """
     try:
+        # Professor decisions are the strongest local evidence and should
+        # prevent a known real paper from being reclassified by noisy APIs.
+        review = get_review_decision(entry.title or "", entry.authors or "")
+        if review:
+            decision = (review.get("decision") or "").lower()
+            if decision in ("verified", "real", "accepted"):
+                return VerificationResult(
+                    key=entry.key, title=entry.title or "",
+                    status="verified", confidence=1.0,
+                    matched_title=entry.title or "",
+                    correct_authors=entry.authors or "",
+                    note="Confirmed by professor review.",
+                    sources_checked=["professor_review"],
+                )
+            if decision in ("rejected", "fake"):
+                return VerificationResult(
+                    key=entry.key, title=entry.title or "",
+                    status="suspicious", confidence=1.0,
+                    matched_title=entry.title or "",
+                    note="Rejected by professor review.",
+                    sources_checked=["professor_review"],
+                )
+
         # Check if this is a duplicate FIRST
         if dup_map and entry.key in dup_map:
             canonical_key = dup_map[entry.key]
@@ -1473,7 +1509,7 @@ def verify_reference(
                         # AI couldn't verify it either
                         return VerificationResult(
                             key=entry.key, title=entry.title or "",
-                            status="suspicious",
+                            status="manual_review",
                             confidence=web_result.get("confidence", 0.4),
                             note=f"Grey literature ({_grey_reason}). {web_result.get('note', 'Could not be auto-verified.')}",
                             sources_checked=["grey_lit", "ai_attempted"],
@@ -1483,7 +1519,7 @@ def verify_reference(
                     print(f"[grey_lit] AI verification error for {entry.key}: {e}")
                     return VerificationResult(
                         key=entry.key, title=entry.title or "",
-                        status="suspicious",
+                        status="manual_review",
                         confidence=0.4,
                         note=f"Grey literature ({_grey_reason}). AI verification failed: {str(e)[:100]}",
                         sources_checked=["grey_lit", "ai_error"],
@@ -1492,7 +1528,7 @@ def verify_reference(
             # ── No AI available ── return suspicious ──────────────────────────
             return VerificationResult(
                 key=entry.key, title=entry.title or "",
-                status="suspicious",
+                status="manual_review",
                 confidence=0.55,
                 note=f"Grey literature ({_grey_reason}). Manual review required.",
                 sources_checked=["grey_lit"],
@@ -1671,7 +1707,7 @@ def verify_reference(
             return VerificationResult(
                 key=entry.key,
                 title=entry.title or "",
-                status="suspicious",
+                status="manual_review",
                 confidence=api_result.confidence if api_result else 0.0,
                 matched_title=api_matched_title or None,
                 doi=api_result.doi if api_result else None,
@@ -1709,7 +1745,7 @@ def verify_reference(
 
         return VerificationResult(
             key=entry.key, title=entry.title or "",
-            status="suspicious",
+            status="manual_review",
             confidence=web_result.get("confidence", 0.0),
             matched_title=api_result.matched_title if api_result else None,
             note=f"Not confirmed by any source. {web_result.get('note', 'Manual review required.')}",
@@ -1719,7 +1755,7 @@ def verify_reference(
     except Exception as e:
         return VerificationResult(
             key=entry.key, title=entry.title or "",
-            status="suspicious",
+            status="manual_review",
             confidence=0.0,
             note=f"Verification error: {str(e)[:100]}",
             sources_checked=["error"],
@@ -1760,7 +1796,7 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
             except Exception as exc:
                 result = VerificationResult(
                     key=e.key, title=e.title or "",
-                    status="suspicious", confidence=0.0,
+                    status="manual_review", confidence=0.0,
                     note=f"Verification error: {exc}",
                 )
             results.append(result)
@@ -1777,7 +1813,7 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
         if e.key not in completed_keys:
             result = VerificationResult(
                 key=e.key, title=e.title or "",
-                status="suspicious", confidence=0.0,
+                status="manual_review", confidence=0.0,
                 note=f"Verification timed out after {batch_timeout} seconds.",
             )
             results.append(result)
@@ -1820,7 +1856,7 @@ def verify_all_references(bib_dict: dict) -> List[VerificationResult]:
             results.append(VerificationResult(
                 key=dup_key,
                 title=entry.title if entry else "",
-                status="suspicious",
+                status="manual_review",
                 confidence=0.0,
                 note=f"Duplicate of [{canonical_key}] but canonical not found",
                 is_duplicate=True,

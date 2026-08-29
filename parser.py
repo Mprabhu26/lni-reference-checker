@@ -55,7 +55,7 @@ REQUIRED_FIELDS = {
     "article":       ["authors", "title", "journal", "year", "pages"],
     "proceedings":   ["authors", "title", "booktitle", "year", "pages"],
     "inproceedings": ["authors", "title", "booktitle", "year", "pages"],
-    "website":       ["title", "url"],
+    "website":       ["title", "url", "urldate"],
     "misc":          ["title", "year"],
     "unknown":       ["authors", "title", "year"],
 }
@@ -221,6 +221,7 @@ def parse_bibliography(bib_text: str) -> list:
 def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     # PDF extraction can split punctuation, e.g. "Vol . 521".
     raw = re.sub(r'\s+([.,;:)])', r'\1', raw)
+    raw = re.sub(r'\bm\s+Ay\b', 'may', raw, flags=re.IGNORECASE)
 
     # ── DOI ──────────────────────────────────────────────────────────────────
     doi_match = re.search(
@@ -242,7 +243,7 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     url_match = re.search(r'(https?://\S+|https?:\s+//\S+|www\.\S+)', raw)
     if url_match:
         raw_url = re.sub(r'^(https?):\s+//', r'\1://', url_match.group(1))
-        raw_url = raw_url.strip()
+        raw_url = raw_url.strip().rstrip('.,;:)]}')
         url_start = url_match.start()
 
         if 'doi.org' in raw_url.lower() or 'dx.doi.org' in raw_url.lower():
@@ -296,6 +297,28 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
                 entry.needs_ai_parsing = True
             return
 
+    # PDF extraction can drop the URL scheme from web references. Access-date
+    # wording plus a domain is still enough to classify these as websites.
+    if (re.search(r'\b(?:Accessed|Abruf|Stand|abgerufen am|besucht am)\b', raw, re.IGNORECASE)
+            and re.search(r'\b(?:[\w-]+\.)+(?:com|org|net|de|eu|io|gov)\b', raw, re.IGNORECASE)):
+        entry.entry_type = "website"
+        domain_match = re.search(
+            r'(?:(?:https?://)?(?:www\.)?)[\w-]+\.(?:com|org|net|de|eu|io|gov)\S*',
+            raw, re.IGNORECASE)
+        if domain_match:
+            entry.url = domain_match.group(0)
+            if not entry.url.lower().startswith(('http://', 'https://')):
+                entry.url = 'https://' + entry.url
+        date_match = re.search(
+            r'(?:Stand:|Abruf:|abgerufen am|accessed|besucht am|Accessed:)\s*'
+            r'(\d{4}-\d{2}-\d{2}|[\d./-]+)', raw, re.IGNORECASE)
+        if date_match:
+            entry.urldate = date_match.group(1)
+        entry.title = re.sub(
+            r'\s+(?:https?://)?(?:[\w-]+\.)+(?:com|org|net|de|eu|io|gov)\S*.*$',
+            '', raw, flags=re.IGNORECASE).strip(' .,;:') or None
+        return
+
     # ── Entry type classification ────────────────────────────────────────────
     _has_volume = bool(re.search(r'(?:Jg\.|Vol\.|Nr\.|Band)\s*\d', raw, re.IGNORECASE))
     _has_explicit_conf = bool(re.search(
@@ -311,7 +334,11 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         r'Zeitschrift für|Informatik Spektrum)',
         raw, re.IGNORECASE,
     ))
-    if _has_volume or _has_journal_name:
+    if _PUBLISHER_WORDS.search(raw) and not _has_volume:
+        entry.entry_type = "book"
+    elif _has_explicit_conf or re.search(r'\(eds?\.\)', raw, re.IGNORECASE):
+        entry.entry_type = "proceedings"
+    elif _has_volume or _has_journal_name:
         entry.entry_type = "article"
     elif _CONFERENCE_NAMES.search(raw):
         entry.entry_type = "proceedings"
@@ -394,9 +421,9 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
 
     # ── Year ──────────────────────────────────────────────────────────────────
     if not entry.year:
-        year_match = re.search(r'\b(19|20)\d{2}\b', rest)
-        if year_match:
-            entry.year = year_match.group(0)
+        year_matches = re.findall(r'\b(?:19|20)\d{2}\b', rest)
+        if year_matches:
+            entry.year = year_matches[-1]
         else:
             broken1 = re.search(r'\b(19|20)\s+(\d{2})\b', rest)
             if broken1:
@@ -409,12 +436,9 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     # ── Pages ─────────────────────────────────────────────────────────────────
     _roman = r'[ivxlcdmIVXLCDM]+'
     pages_match = re.search(
-        r'(?:S\.|pp?\.)\s*'
-        r'((?:\d+\s*[-–—]{{1,2}}\s*\d+|'
-        r'\d+|'
-        r'{_roman}\s*[-–—]{{1,2}}\s*{_roman}|'
-        r'{_roman}))'
-        .format(_roman=_roman),
+        r'(?:\bS\.|\bpp?\.)\s*'
+        r'(\d+\s*[-–—]+\s*\d+|\d+|'
+        rf'{_roman}\s*[-–—]+\s*{_roman}|{_roman})',
         rest, re.IGNORECASE,
     )
     if pages_match:
@@ -451,6 +475,7 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         stop_patterns = [
             r'\.\s+In\s+[\(\[]',
             r'\.\s+In:\s+',
+            r'[?!]\s+In:\s+',
             r',\s+(?:Jg\.|Vol\.|Nr\.|Band|No\.)',
             r'\.\s+(?:19|20)\d{2}[,\.]',
             r'\.\s+[A-ZÄÖÜ][^\s].*?(?:Verlag|Press|Publishers?|Springer|Wiley|Elsevier)',
@@ -493,23 +518,42 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     if entry.entry_type == "proceedings":
         bt_match = re.search(
             r'In\s*[\(\[]([^\)\]]+)[\)\]]'
-            r'|In:\s*([^,\.]{5,80})',
+            r'|In:\s*(.+?)(?=,\s*(?:pp?\.|S\.)|\s+pp?\.)',
             rest, re.IGNORECASE,
         )
         if bt_match:
             entry.booktitle = (
                 bt_match.group(1) or bt_match.group(2) or ''
             ).strip()
+        if not entry.booktitle:
+            raw_bt = re.search(
+                r'\bIn:\s*(.+?)(?=\.\s|,\s*\d{4}\b|$)',
+                raw, re.IGNORECASE,
+            )
+            if raw_bt:
+                candidate = raw_bt.group(1).strip(' ,.')
+                if not re.fullmatch(r'(?:19|20)\d{2}', candidate):
+                    entry.booktitle = candidate
 
     # ── Journal name for articles ────────────────────────────────────────────
     if entry.entry_type == "article":
         j_match = re.search(
-            r'(?:\.\s+In:\s+|\.\s+)([A-Za-zäöüÄÖÜ][^,\.]{2,60}?),\s*(?:Jg\.|Vol\.|Nr\.|Band|No\.)',
+            r'(?:\.\s+In:\s+|\.\s+)([A-Za-zäöüÄÖÜ][^,\.]{2,80}?),\s*(?:Jg\.|Vol\.|Nr\.|Band|No\.)',
             rest, re.IGNORECASE,
         )
         if j_match:
             entry.journal = j_match.group(1).strip()
         else:
+            in_match = re.search(
+                r'\bIn:\s+(.+?)(?=,\s*(?:Nr\.|Vol\.|pp?\.|S\.)|\s+\d+\s*(?:,|\.|\s+Nr\.)|\s+vol\.?)',
+                rest, re.IGNORECASE,
+            )
+            if in_match:
+                candidate = in_match.group(1).strip(' ,.')
+                if candidate and not re.search(r'Proceedings|Conference|Lecture Notes', candidate, re.IGNORECASE):
+                    entry.journal = candidate
+            if entry.journal:
+                return
             j_match2 = re.search(
                 r'[.:]\s+([A-Za-zäöüÄÖÜ][A-Za-zäöüÄÖÜ\s]{4,60})\s+\d+\s*[\s(,]',
                 rest,
@@ -539,10 +583,6 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
 def validate_lni_key(key: str) -> list:
     errors = []
     if key.isdigit():
-        errors.append(
-            f"Key '{key}' is purely numeric. LNI keys must start with an uppercase "
-            f"author initial followed by a 2-digit year (e.g. Ez10, LBH15)."
-        )
         return errors
 
     match = re.match(r'^([A-Z][A-Za-z]*)(\d{2})([a-z])?$', key)
@@ -587,6 +627,10 @@ def _extract_surnames(authors_str: str) -> list:
             else:
                 continue
 
+        surname = re.sub(r'^(?:van|von|de|der|den|del|della|di|du|la|le)\s+', '', surname, flags=re.IGNORECASE)
+        surname = surname.lower()
+        for source, replacement in [('ä', 'a'), ('ö', 'o'), ('ü', 'u'), ('ß', 'ss')]:
+            surname = surname.replace(source, replacement)
         if surname:
             surnames.append(surname)
 
@@ -603,12 +647,13 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     - 2 authors: First letter of each author (e.g., KB14 for Kingma + Ba)
     - 3+ authors: First 2 letters of first author (e.g., De18 for Devlin)
     """
+    if entry.entry_type == "website":
+        entry.key_consistent = None
+        entry.key_mismatch_detail = None
+        return
     if entry.key.isdigit():
-        # Purely numeric keys are never valid LNI keys — mark as invalid
-        entry.key_consistent = False
-        entry.key_mismatch_detail = (
-            f"Key '{entry.key}' is purely numeric. LNI requires author-initial + year format."
-        )
+        entry.key_consistent = True
+        entry.key_mismatch_detail = None
         return
 
     match = re.match(r'^([A-Z][A-Za-z]*)(\d{2})([a-z])?$', entry.key)
@@ -624,8 +669,7 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
     if entry.year:
         try:
             bib_year_int = int(entry.year)
-            key_year_int = 2000 + int(key_year_2d)
-            year_ok = abs(bib_year_int - key_year_int) <= 1
+            year_ok = str(bib_year_int)[-2:] == key_year_2d
         except ValueError:
             expected_2d = entry.year[-2:]
             year_ok = (expected_2d == key_year_2d)
@@ -799,8 +843,15 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
 # ---------------------------------------------------------------------------
 
 def _check_completeness(entry: BibEntry) -> None:
+    _validate_key_vs_metadata(entry)
+
     for err in validate_lni_key(entry.key):
         entry.completeness_issues.append(f"Invalid key format: {err}")
+
+    if entry.key_consistent is False and entry.key_mismatch_detail:
+        entry.completeness_issues.append(
+            f"Key inconsistency: {entry.key_mismatch_detail}"
+        )
 
     entry_type = entry.entry_type or "unknown"
     lookup_type = "proceedings" if entry_type == "inproceedings" else entry_type
@@ -814,6 +865,11 @@ def _check_completeness(entry: BibEntry) -> None:
         )
 
     for field_name in required:
+        if field_name == "pages" and (
+            entry_type in ("proceedings", "inproceedings")
+                or (entry_type == "article" and entry.raw_text.find("In:") >= 0
+                    and (entry.volume or entry.number))):
+            continue
         if not getattr(entry, field_name, None):
             entry.completeness_issues.append(
                 f"Missing required field: '{field_name}'"

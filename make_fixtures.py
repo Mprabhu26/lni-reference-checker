@@ -1,6 +1,6 @@
 """
 Fixture generator — creates all test PDFs and DOCX files needed by the test suite.
-Run once before running pytest: python tests/make_fixtures.py
+Run once before running pytest: python make_fixtures.py
 """
 
 from pathlib import Path

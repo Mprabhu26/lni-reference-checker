@@ -449,6 +449,8 @@ def _assemble_result(
 
         ai = ai_verdicts_by_key.get(vr.key, {})
         ai_verdict = ai.get("verdict", "SUSPICIOUS")
+        if vr.status == "manual_review" and ai_verdict != "REAL":
+            ai_verdict = "MANUAL_REVIEW"
         # Map AI verdict to display status
         if ai_verdict == "REAL":
             status = "verified"
@@ -527,7 +529,7 @@ def _assemble_result(
                 "key": entry["key"],
                 "title": entry.get("title") or "",
                 "raw": entry.get("raw_text") or "",
-                "status": "verified" if ai_verdict == "REAL" else "suspicious",
+                "status": "verified" if ai_verdict == "REAL" else "manual_review",
                 "confidence": ai.get("confidence", 0.5),
                 "matched_title": None,
                 "doi": entry.get("doi"),
@@ -562,7 +564,8 @@ def _assemble_result(
     # sits in PENDING with only a tentative score shown, since a confirmed
     # fake reference could still swing the outcome.
     suspicious_pending = sum(
-        1 for v in verification_output if v.get("ai_verdict") == "SUSPICIOUS"
+        1 for v in verification_output
+        if v.get("ai_verdict") in ("SUSPICIOUS", "MANUAL_REVIEW")
     )
 
     if suspicious_pending > 0:

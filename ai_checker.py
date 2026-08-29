@@ -49,8 +49,9 @@ def get_llm_cache_stats() -> dict:
         return {"llm_cache_entries": len(_LLM_CACHE)}
 
 
-def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
-    """Call AI backend (OpenAI-compatible) with automatic retry + exponential backoff."""
+def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "",
+             timeout: int = 45, max_retries: int = 3) -> str:
+    """Call AI backend (OpenAI-compatible) with bounded retries and backoff."""
     import time
     
     if not _AI_BASE_URL or not _AI_MODEL or not _AI_API_KEY:
@@ -80,11 +81,10 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
         "temperature": 0.1,
     }
 
-    MAX_RETRIES = 3
-    for attempt in range(MAX_RETRIES + 1):
+    for attempt in range(max_retries + 1):
         result = None
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=45)
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
             
             if resp.status_code == 200:
                 result = resp.json()["choices"][0]["message"]["content"].strip()
@@ -115,18 +115,19 @@ def _call_ai(prompt: str, max_tokens: int = 2000, system: str = "") -> str:
             print(f"AI API exception: {e}")
 
         # Retry with exponential backoff
-        if attempt < MAX_RETRIES:
+        if attempt < max_retries:
             time.sleep(1.5 ** attempt)
 
     # All retries exhausted
     raise RuntimeError(
-        f"AI API call failed after {MAX_RETRIES + 1} attempts. "
+        f"AI API call failed after {max_retries + 1} attempts. "
         f"Check AI_BASE_URL ({_AI_BASE_URL}), AI_MODEL ({_AI_MODEL}), and AI_API_KEY."
     )
 
 
-def _call_ai_json(prompt: str, max_tokens: int = 2000, system: str = "") -> dict:
-    text = _call_ai(prompt, max_tokens, system).strip()
+def _call_ai_json(prompt: str, max_tokens: int = 2000, system: str = "",
+                  timeout: int = 45, max_retries: int = 3) -> dict:
+    text = _call_ai(prompt, max_tokens, system, timeout, max_retries).strip()
     
     # Strip markdown code blocks
     if text.startswith("```"):
@@ -1252,6 +1253,10 @@ References:
                 
                 chunk_result = _call_ai_json(prompt, max_tokens=4000)
                 for v in chunk_result.get("verdicts", []):
+                    # Automatic AI output is evidence for review, not a
+                    # professor-confirmed fake verdict.
+                    if str(v.get("verdict", "")).upper() == "FAKE":
+                        v["verdict"] = "SUSPICIOUS"
                     ai_verdicts_by_key[v["key"]] = v
         except Exception as e:
             ai_failed = True
@@ -1367,26 +1372,6 @@ def ai_overall_verdict(filename: str, summary: dict, xcheck,
         if v.get("verdict") in ("FAKE", "SUSPICIOUS")
     ]
     professor_note = f"Manually review: {' '.join(keys_to_review)}" if keys_to_review else "No issues found"
-
-    if _ai_available():
-        prompt = f"""You are a professor reviewing "{filename}".
-System computed: score={det_score}/100, verdict={det_verdict}.
-Issues: {suspicious} suspicious reference(s), {missing_cit} missing citation(s), {incomplete} incomplete entries, {len(key_issues)} key mismatch(es).
-Note: fake references are NOT yet deducted — professor must confirm manually.
-
-Return ONLY this JSON with exactly these values for verdict/score/grade:
-{{"verdict": "{det_verdict}", "score": {det_score}, "grade": "{det_grade}",
-"verdict_reason": "<one sentence max 25 words summarising main issues>",
-"student_feedback": ["<tip1>", "<tip2>"],
-"professor_note": "<one sentence>"}}"""
-        try:
-            result = _call_ai_json(prompt, max_tokens=300)
-            result["verdict"] = det_verdict
-            result["score"] = det_score
-            result["grade"] = det_grade
-            return result
-        except Exception:
-            pass
 
     return {
         "verdict": det_verdict,

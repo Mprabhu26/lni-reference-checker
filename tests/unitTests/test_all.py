@@ -19,11 +19,11 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 # ── Add project root to path ──────────────────────────────────────────────────
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-FIXTURES_TXT = Path(__file__).parent / "fixtures" / "txt"
-FIXTURES_PDF = Path(__file__).parent / "fixtures" / "pdf"
-FIXTURES_DOCX = Path(__file__).parent / "fixtures" / "docx"
+FIXTURES_TXT = ROOT / "fixtures" / "txt"
+FIXTURES_PDF = ROOT / "fixtures" / "pdf"
+FIXTURES_DOCX = ROOT / "fixtures" / "docx"
 
 # ── Conditional imports ────────────────────────────────────────────────────────
 try:
@@ -936,11 +936,12 @@ class TestLocalDB:
         import local_db
         # Insert an entry with a very old last_seen date
         import sqlite3
+        save_to_cache("Old Paper", "Author", "2010", None, None, "test", 0.5)
         conn = sqlite3.connect(str(local_db.CACHE_DB))
-        conn.execute("""
-            INSERT INTO verified_papers (title, authors, year, source, confidence, last_seen, title_normalized)
-            VALUES ('Old Paper', 'Author', 2010, 'test', 0.5, '2000-01-01T00:00:00', 'old paper')
-        """)
+        conn.execute(
+            "UPDATE verified_papers SET last_seen = ? WHERE title_norm = ?",
+            ("2000-01-01T00:00:00", local_db.normalize_title("Old Paper")),
+        )
         conn.commit()
         conn.close()
         clear_old_entries(days=1)

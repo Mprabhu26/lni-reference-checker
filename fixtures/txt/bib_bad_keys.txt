@@ -1,0 +1,3 @@
+[vaswani2017] Vaswani, Ashish: Attention. In: NeurIPS, 2017; S. 1--10.
+[X] Smith, John: A Book. Springer, 2020.
+[TOOLONGKEY99] Nobody: Test. Springer, 1999.

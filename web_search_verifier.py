@@ -268,10 +268,11 @@ Year: {cited_year}
 ### WEB SEARCH RESULTS:
 {chr(10).join(web_summary) if web_summary else "No web search results found."}
 
-Determine if this reference is REAL or FAKE.
+Determine if this reference is REAL, FAKE, or UNCERTAIN.
 - REAL: Paper exists in academic databases or has verifiable evidence
-- FAKE: No evidence found, suspicious metadata
+- FAKE: Strong positive evidence that the reference is fabricated
 - UNCERTAIN: Partial evidence
+Missing authors or year means UNKNOWN, not FAKE.
 
 Return ONLY valid JSON:
 {{"verdict": "REAL or FAKE or UNCERTAIN", "confidence": 0.0-1.0, "reasoning": "specific explanation", "found_url": null or "url", "found_title": null or "title"}}"""
@@ -434,6 +435,18 @@ def verify_with_web_search(entry: dict, api_status: str) -> dict:
     
     if web_results:
         result = llm_verify_with_web_search(title, authors, year, web_results)
+        if result.explanation.startswith("LLM analysis failed:"):
+            return {
+                "status": "suspicious",
+                "web_verified": False,
+                "confidence": 0.30,
+                "matched_title": None,
+                "note": (
+                    "AI call was attempted but failed. This reference was not "
+                    f"declared fake: {result.explanation}"
+                ),
+                "sources_checked": ["web_search", "llm_analysis_failed"],
+            }
         # If URL is already known dead, require higher confidence from web search
         min_confidence = 0.70 if url_already_dead else 0.50
         if result.verdict == "REAL" and result.confidence >= min_confidence:

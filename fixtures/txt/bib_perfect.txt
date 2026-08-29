@@ -1,0 +1,2 @@
+[LBH15] LeCun, Yann; Bengio, Yoshua; Hinton, Geoffrey: Deep Learning. In: Nature, Vol. 521, 2015; S. 436--444.
+[VSP17] Vaswani, Ashish; Shazeer, Noam: Attention Is All You Need. In: NeurIPS, 2017; S. 5998--6008.
