@@ -42,3 +42,7 @@ lxml>=5.0.0
 #   UNPAYWALL_EMAIL → your email address   required by Unpaywall polite pool
 # ──────────────────────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
+
+# Free local ML for semantic matching. Optional but recommended.
+sentence-transformers>=3.0.0
+scikit-learn>=1.3.0

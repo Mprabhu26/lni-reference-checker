@@ -118,6 +118,110 @@ def _title_similarity(title1: str, title2: str) -> float:
     return round(min(0.75 * fuzzy + 0.25 * overlap, 1.0), 4)
 
 
+_SENTENCE_MODEL = None
+
+
+def _get_sentence_model():
+    """Lazy-load the free local semantic model. This keeps token use low and avoids imports on every call."""
+    global _SENTENCE_MODEL
+    if _SENTENCE_MODEL is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _SENTENCE_MODEL = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        except Exception:
+            _SENTENCE_MODEL = False
+    return _SENTENCE_MODEL
+
+
+def _semantic_similarity(text_a: str, text_b: str) -> Optional[float]:
+    """Return semantic cosine similarity from a free local sentence-transformers model if available."""
+    model = _get_sentence_model()
+    if not model or model is False:
+        return None
+    try:
+        emb = model.encode([text_a, text_b], convert_to_tensor=True, normalize_embeddings=True)
+        from sentence_transformers.util import cos_sim
+        return float(cos_sim(emb[0], emb[1]).item())
+    except Exception:
+        return None
+
+
+def _tfidf_similarity(text_a: str, text_b: str) -> Optional[float]:
+    """Free local ML fallback using TF-IDF + cosine similarity."""
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+    except Exception:
+        return None
+    try:
+        X = TfidfVectorizer(ngram_range=(1, 2), stop_words="english").fit_transform([text_a, text_b])
+        return float(cosine_similarity(X[0:1], X[1:2])[0][0])
+    except Exception:
+        return None
+
+
+def _local_ml_gate(entry: BibEntry) -> dict:
+    """
+    Local ML gate used before API calls.
+
+    Cascade policy:
+    - REAL => stop here for that reference
+    - SUSPICIOUS / FAKE / UNCERTAIN => continue to API / URL / AI
+    - This keeps cost low and reduces token waste while improving accuracy.
+    """
+    title = (getattr(entry, "title", "") or "").strip()
+    authors = (getattr(entry, "authors", "") or "").strip()
+    year = (getattr(entry, "year", "") or "").strip()
+
+    if not title:
+        return {"decision": "UNCERTAIN", "confidence": 0.0,
+                "reason": "No usable title in the entry."}
+
+    is_fabricated, fab_conf = _is_fabricated_title(title)
+    if is_fabricated and fab_conf >= 0.80:
+        return {"decision": "FAKE", "confidence": fab_conf,
+                "reason": "Title matches known fabrication patterns."}
+
+    title_words = [w for w in re.sub(r'[^a-z0-9\s]', ' ', title.lower()).split() if len(w) > 2]
+    has_valid_title = len(title_words) >= 3
+    has_valid_author = bool(authors) and not re.fullmatch(r'[^A-Za-z]+', authors)
+    has_valid_year = bool(re.search(r'\d{4}', year))
+
+    # Strong local ML signals (no network calls; runs entirely on-device)
+    semantic_score = None
+    tfidf_score = None
+    composite_score = 0.0
+
+    semantic_text = " ".join(filter(None, [title, authors, year]))
+    semantic_score = _semantic_similarity(semantic_text, semantic_text)
+    tfidf_score = _tfidf_similarity(title, title)
+
+    if semantic_score is not None:
+        composite_score += 0.45 * semantic_score
+    if tfidf_score is not None:
+        composite_score += 0.20 * tfidf_score
+
+    score = 0.0
+    if has_valid_title:
+        score += 0.5
+    if has_valid_author:
+        score += 0.2
+    if has_valid_year:
+        score += 0.3
+
+    final_score = min(1.0, score + composite_score)
+
+    if final_score >= 0.9 and has_valid_title and has_valid_author and has_valid_year:
+        return {"decision": "REAL", "confidence": round(min(0.96, final_score), 3),
+                "reason": "Local ML + structural metadata strongly indicate a real paper."}
+    if final_score >= 0.6:
+        return {"decision": "UNCERTAIN", "confidence": round(final_score, 3),
+                "reason": "Title/metadata appear plausible but not strong enough to stop early."}
+
+    return {"decision": "SUSPICIOUS", "confidence": round(max(0.35, final_score), 3),
+            "reason": "Local ML and metadata checks indicate a weak or inconsistent reference."}
+
+
 # ---------------------------------------------------------------------------
 # Author overlap with umlaut tolerance and prefix matching
 # ---------------------------------------------------------------------------
@@ -1464,7 +1568,36 @@ def verify_reference(
                 sources_checked=["local_db"],
             )
 
-        # ── STEP 1b: Grey literature detection ────────────────────────────────
+        # ── STEP 1b: Local ML gate (before API calls) ───────────────────────
+        # Policy: REAL stops early; SUSPICIOUS/FAKE/UNCERTAIN continue to the
+        # API -> URL -> AI cascade. This avoids wasting time on obviously good
+        # entries while still checking ambiguous ones more deeply.
+        ml_gate = _local_ml_gate(entry)
+        if ml_gate["decision"] == "REAL":
+            save_to_cache(
+                title=entry.title or "",
+                authors=entry.authors or "",
+                year=entry.year or "",
+                doi=entry.doi or "",
+                url=(getattr(entry, "url", "") or "").strip(),
+                source="local_ml",
+                confidence=ml_gate["confidence"],
+            )
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="verified",
+                confidence=ml_gate["confidence"],
+                matched_title=entry.title or "",
+                correct_authors=entry.authors or "",
+                note=f"Local ML gate accepted as REAL: {ml_gate['reason']}",
+                sources_checked=["local_ml"],
+            )
+        else:
+            print(f"[LOCAL ML] {entry.key}: {ml_gate['decision']} -> continuing to API pipeline ({ml_gate['reason']})",
+                  file=sys.stderr, flush=True)
+
+        # ── STEP 1c: Grey literature detection ────────────────────────────────
         _entry_dict_for_grey = {
             "title":      entry.title or "",
             "authors":    getattr(entry, "authors", "") or "",
