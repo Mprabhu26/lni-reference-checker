@@ -462,6 +462,10 @@ def _assemble_result(
     ai_verdicts_by_key = {v["key"]: v for v in verification_result.get("verdicts", [])}
     vr_by_key = {vr.key: vr for vr in api_results_raw}
 
+    # Fast-path for large PDFs: skip expensive optional features
+    bib_count = len(bib_list)
+    is_large_pdf = bib_count > 40  # 40+ refs = optimization mode
+    
     verification_output = []
     for vr in api_results_raw:
         # ── Check for duplicates for THIS entry ──────────────────────────────────
@@ -512,10 +516,10 @@ def _assemble_result(
         _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""
         ai_reasoning_text = ai.get("reasoning", "")
 
-        # TIER 2: Author validation (ENHANCED)
+        # TIER 2: Author validation (ENHANCED) — SKIP for large PDFs
         entry_obj = bib_dict.get(vr.key)
         author_validation = None
-        if entry_obj and entry_obj.authors:
+        if not is_large_pdf and entry_obj and entry_obj.authors:
             try:
                 author_validation = get_author_validation_report(
                     entry_obj.authors,
@@ -726,13 +730,39 @@ def _assemble_result(
             num = k_str.replace('__NUM_', '').replace('__', '')
             real_cited.add(num)
 
-    # Generate citation analysis report (informational, not a verdict)
-    citation_report = generate_citation_report(body, set(bib_dict.keys()), citation_contexts)
+    # Generate citation analysis report (skip for large PDFs)
+    citation_report = {}
+    if not is_large_pdf:
+        citation_report = generate_citation_report(body, set(bib_dict.keys()), citation_contexts)
     
-    # TIER 3: Professor Workflow Enhancements
-    review_priorities = prioritize_for_review(verification_output)
-    review_summary = get_review_summary(review_priorities)
-    batch_patterns = detect_batch_patterns(verification_output)
+    # TIER 3: Professor Workflow Enhancements (SKIP for large PDFs - optimization)
+    review_priorities = []
+    review_summary = {"urgent": [], "important": [], "optional": [], "skip": [], "summary": ""}
+    batch_patterns = {"patterns": [], "warnings": []}
+    
+    if not is_large_pdf:  # Only run TIER 3 for <40 refs
+        try:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            
+            # Wrap TIER 3 functions with timeout - fail fast if too slow
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                # First get review priorities (fast)
+                pri_future = executor.submit(prioritize_for_review, verification_output)
+                review_priorities = pri_future.result(timeout=10)  # 10s timeout
+                
+                # Then summary (fast)
+                sum_future = executor.submit(get_review_summary, review_priorities)
+                review_summary = sum_future.result(timeout=5)  # 5s timeout
+                
+                # Batch patterns (optional, skip if too slow)
+                try:
+                    pat_future = executor.submit(detect_batch_patterns, verification_output)
+                    batch_patterns = pat_future.result(timeout=5)  # 5s timeout
+                except:
+                    pass  # Skip batch patterns if timeout
+        except Exception as e:
+            # If TIER 3 times out or fails, use defaults - don't block the user
+            print(f"[TIER3] Skipped (timeout/error): {str(e)[:80]}", file=sys.stderr, flush=True)
     
     version_notes = [
         {"key": v["key"], "note": v["version_note"]}
@@ -762,11 +792,11 @@ def _assemble_result(
         "verification_ai_summary": verification_result.get("summary", ""),
         "professor_workflow": {  # TIER 3
             "review_summary": {
-                "urgent": len(review_summary["urgent"]),
-                "important": len(review_summary["important"]),
-                "optional": len(review_summary["optional"]),
-                "skip": len(review_summary["skip"]),
-                "summary": review_summary["summary"],
+                "urgent": len(review_summary.get("urgent", [])),
+                "important": len(review_summary.get("important", [])),
+                "optional": len(review_summary.get("optional", [])),
+                "skip": len(review_summary.get("skip", [])),
+                "summary": review_summary.get("summary", ""),
             },
             "batch_patterns": batch_patterns,
         },
@@ -894,93 +924,125 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
         # causing entries to be verified twice and overwriting results.
         api_results_raw = []
         if verify and bib_dict:
-            total = len(bib_dict)
-            print(f"[DIAG] Starting verify_all_references for {total} entries", file=sys.stderr, flush=True)
-            yield _sse("progress", {"step": "verify_start",
-                "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
+            if len(bib_dict) >= 30:
+                print(f"[FAST PATH] Large streaming document detected ({len(bib_dict)} refs): using fast manual-review verification path",
+                      file=sys.stderr, flush=True)
+                yield _sse("progress", {"step": "verify_start",
+                    "message": f"🔍 Large document detected: using fast verification path for {len(bib_dict)} references..."})
+                for entry in bib_dict.values():
+                    api_results_raw.append(
+                        VerificationResult(
+                            key=entry.key,
+                            title=entry.title or "",
+                            status="manual_review",
+                            confidence=0.55,
+                            note="Large bibliography: remote verification deferred to manual review to avoid hangs.",
+                            sources_checked=["large_document_fast_path"],
+                        )
+                    )
+                yield _sse("progress", {"step": "verify_complete",
+                    "message": f"✓ Fast path complete for {len(api_results_raw)} references"})
+                yield _sse("progress", {"step": "verify_done",
+                    "message": "✓ Verification done: fast-path review enabled for large document"})
+            else:
+                total = len(bib_dict)
+                print(f"[DIAG] Starting verify_all_references for {total} entries", file=sys.stderr, flush=True)
+                yield _sse("progress", {"step": "verify_start",
+                    "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
 
-            # verify_all_references now handles duplicates internally with parallel processing
-            verification_start = time.time()
-            print(f"[TIMER] Starting parallel verification of {len(bib_dict)} entries...", 
-                  file=sys.stderr, flush=True)
-            api_results_raw = verify_all_references(bib_dict)
-            verification_elapsed = time.time() - verification_start
-            print(f"[TIMER] Verification completed in {verification_elapsed:.1f}s, got {len(api_results_raw)} results", 
-                  file=sys.stderr, flush=True)
-            
-            yield _sse("progress", {"step": "verify_complete", 
-                "message": f"✓ Verified {len(api_results_raw)} references in {verification_elapsed:.1f}s"})
+                # verify_all_references now handles duplicates internally with parallel processing
+                verification_start = time.time()
+                print(f"[TIMER] Starting parallel verification of {len(bib_dict)} entries...", 
+                      file=sys.stderr, flush=True)
+                api_results_raw = verify_all_references(bib_dict)
+                verification_elapsed = time.time() - verification_start
+                print(f"[TIMER] Verification completed in {verification_elapsed:.1f}s, got {len(api_results_raw)} results", 
+                      file=sys.stderr, flush=True)
+                
+                yield _sse("progress", {"step": "verify_complete", 
+                    "message": f"✓ Verified {len(api_results_raw)} references in {verification_elapsed:.1f}s"})
 
-            verified_count = sum(1 for r in api_results_raw if r.status == "verified")
-            suspicious_count = sum(1 for r in api_results_raw if r.status == "suspicious")
-            
-            # Send progress updates for each result
-            for i, vr in enumerate(api_results_raw):
-                progress_data = {
-                    "step": "verify",
-                    "message": f"Verifying: {i+1}/{total}",
-                    "key": vr.key,
-                    "status": vr.status,
-                    "confidence": round(vr.confidence, 2),
-                    "done": i+1,
-                    "total": total,
-                    "verified_count": verified_count,
-                    "suspicious_count": suspicious_count,
-                }
-                if vr.version_note:
-                    progress_data["version_note"] = vr.version_note
-                yield _sse("progress", progress_data)
-                time.sleep(0.05)  # Small delay for UI responsiveness
+                verified_count = sum(1 for r in api_results_raw if r.status == "verified")
+                suspicious_count = sum(1 for r in api_results_raw if r.status == "suspicious")
+                
+                # Send progress updates for each result
+                for i, vr in enumerate(api_results_raw):
+                    progress_data = {
+                        "step": "verify",
+                        "message": f"Verifying: {i+1}/{total}",
+                        "key": vr.key,
+                        "status": vr.status,
+                        "confidence": round(vr.confidence, 2),
+                        "done": i+1,
+                        "total": total,
+                        "verified_count": verified_count,
+                        "suspicious_count": suspicious_count,
+                    }
+                    if vr.version_note:
+                        progress_data["version_note"] = vr.version_note
+                    yield _sse("progress", progress_data)
+                    time.sleep(0.05)  # Small delay for UI responsiveness
 
-            yield _sse("progress", {"step": "verify_done",
-                "message": f"✓ Verification done: {verified_count} verified, "
-                           f"{suspicious_count} suspicious"})
+                yield _sse("progress", {"step": "verify_done",
+                    "message": f"✓ Verification done: {verified_count} verified, "
+                               f"{suspicious_count} suspicious"})
 
         # ── AI final verdict pass (only suspicious entries) ───────────────────
+        # Only the unresolved subset should go to AI. The large-document workaround
+        # must not broaden to all references.
+        unresolved_keys = {
+            vr.key for vr in api_results_raw
+            if vr.status not in ("verified", "journal_metadata")
+        }
+        unresolved_bib = [entry for entry in bib_dicts if entry["key"] in unresolved_keys]
+        unresolved_api = [vr for vr in _vr_to_dicts(api_results_raw) if vr["key"] in unresolved_keys]
+
         yield _sse("progress", {"step": "ai_verify",
-            "message": "🤖 AI review of suspicious entries..."})
-        api_results_dicts = _vr_to_dicts(api_results_raw)
-        
+            "message": "🤖 AI review of unresolved references..."})
+
         # FAST PATH: If all references are already verified or have high confidence,
-        # skip AI review to avoid hanging on LLM timeouts
+        # skip AI review to avoid hanging on LLM timeouts.
         fake_count = sum(1 for vr in api_results_raw if vr.status == "fabricated")
         real_and_confirmed = sum(1 for vr in api_results_raw 
                                 if vr.status in ("verified", "journal_metadata") 
                                 and vr.confidence >= 0.75)
-        
+
         if (api_results_raw and len(api_results_raw) == len(bib_dicts)
                 and all(vr.status in ("verified", "journal_metadata") for vr in api_results_raw)):
-            # All entries already verified through reliable sources
             verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
             print(f"[FAST PATH] Skipped AI - all {len(api_results_raw)} entries already verified",
                   file=sys.stderr, flush=True)
+        elif not unresolved_bib:
+            verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
+            print(f"[FAST PATH] No unresolved references for AI review",
+                  file=sys.stderr, flush=True)
         elif fake_count > 0 or real_and_confirmed < len(api_results_raw) * 0.80:
-            # Need AI review for questionable entries
             try:
                 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-                
-                yield _sse("progress", {"step": "ai_verify", "message": f"🤖 AI reviewing {len(bib_dicts)} references..."})
-                
+
+                yield _sse("progress", {"step": "ai_verify", "message": f"🤖 AI reviewing {len(unresolved_bib)} unresolved references..."})
+
                 ai_start = time.time()
-                print(f"[TIMER] Starting AI verification (timeout: 60s)...", file=sys.stderr, flush=True)
-                
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(ai_verify_references, bib_dicts, api_results_dicts)
-                    verification_result = future.result(timeout=45)  # Reduced from 60s
-                
-                ai_elapsed = time.time() - ai_start
-                print(f"[TIMER] AI verification completed in {ai_elapsed:.1f}s", file=sys.stderr, flush=True)
-                
-            except FutureTimeoutError:
-                print(f"[WARNING] AI verification timed out after 60s", file=sys.stderr, flush=True)
-                yield _sse("progress", {"step": "ai_timeout", "message": "⚠️ AI review timed out, using API results"})
-                verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
+                print(f"[TIMER] Starting AI verification for unresolved refs (timeout: 45s)...", file=sys.stderr, flush=True)
+
+                _ai_executor = ThreadPoolExecutor(max_workers=1)
+                try:
+                    future = _ai_executor.submit(ai_verify_references, unresolved_bib, unresolved_api)
+                    verification_result = future.result(timeout=45)
+                    ai_elapsed = time.time() - ai_start
+                    print(f"[TIMER] AI verification completed in {ai_elapsed:.1f}s", file=sys.stderr, flush=True)
+                except FutureTimeoutError:
+                    future.cancel()
+                    print(f"[WARNING] AI verification timed out after 45s", file=sys.stderr, flush=True)
+                    yield _sse("progress", {"step": "ai_timeout", "message": "⚠️ AI review timed out, using verification-only results"})
+                    verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
+                finally:
+                    _ai_executor.shutdown(wait=False, cancel_futures=True)
+
             except Exception as e:
-                # AI call failed - use best guess from API results
                 print(f"[WARNING] AI verification failed: {str(e)[:100]}", file=sys.stderr, flush=True)
                 verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
         else:
-            # Most entries are already verified - skip AI
             verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
             print(f"[FAST PATH] Skipped AI - {real_and_confirmed}/{len(api_results_raw)} entries verified",
                   file=sys.stderr, flush=True)
@@ -996,52 +1058,102 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             "self_citations": len(self_citations),
             "style_issues": len(style_suggestions),
         }
-        
-        # Generate verdict with timeout protection and timing
+
+        # Generate verdict with timeout protection and timing. This is kept
+        # separate from the AI review subset, so the AI call only applies to the
+        # unresolved references instead of all references in the bibliography.
         try:
             from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-            
+
             verdict_start = time.time()
-            print(f"[TIMER] Starting verdict generation (timeout: 30s)...", file=sys.stderr, flush=True)
-            
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
+            print(f"[TIMER] Starting verdict generation (timeout: 20s)...", file=sys.stderr, flush=True)
+
+            _verdict_executor = ThreadPoolExecutor(max_workers=1)
+            try:
+                future = _verdict_executor.submit(
                     ai_overall_verdict,
                     filename=filename or Path(main_path).name,
                     summary=summary_for_ai, xcheck=xcheck,
                     bib_list=bib_list, verification_result=verification_result,
                 )
-                overall = future.result(timeout=20)  # Reduced from 30s
+                overall = future.result(timeout=20)
                 verdict_elapsed = time.time() - verdict_start
                 print(f"[TIMER] Verdict generated in {verdict_elapsed:.1f}s", file=sys.stderr, flush=True)
-                
-        except FutureTimeoutError:
-            print(f"[WARNING] Verdict generation timed out after 30s", file=sys.stderr, flush=True)
+            except FutureTimeoutError:
+                future.cancel()
+                print(f"[WARNING] Verdict generation timed out after 20s", file=sys.stderr, flush=True)
+                overall = {
+                    "verdict": "PENDING",
+                    "score": 85,
+                    "grade": None,
+                    "verdict_reason": f"Analysis timed out. {len(bib_list)} references analyzed.",
+                    "student_feedback": [],
+                    "professor_note": "Manual review needed - processing incomplete",
+                }
+            finally:
+                _verdict_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as _verdict_err:
+            print(f"[WARNING] Verdict block error: {str(_verdict_err)[:100]}", file=sys.stderr, flush=True)
             overall = {
                 "verdict": "PENDING",
                 "score": 85,
                 "grade": None,
-                "verdict_reason": f"Analysis timed out. {len(bib_list)} references analyzed.",
+                "verdict_reason": f"Verdict generation failed: {str(_verdict_err)[:80]}",
                 "student_feedback": [],
-                "professor_note": "Manual review needed - processing incomplete",
+                "professor_note": "Manual review needed",
             }
 
-        result = _assemble_result(
-            filename=filename or Path(main_path).name,
-            fmt=fmt, body=body, bib_text=bib_text,
-            bib_list=bib_list, bib_dict=bib_dict,
-            cited_keys=cited_keys, has_numeric=has_numeric,
-            xcheck=xcheck, citation_contexts=citation_contexts,
-            duplicates=duplicates, self_citations=self_citations,
-            style_suggestions=style_suggestions,
-            api_results_raw=api_results_raw,
-            verification_result=verification_result,
-            overall=overall,
-            ai_parse_improvements=ai_parse_improvements,
-            is_scanned=bool(sections.get("is_scanned")),
-        )
+        yield _sse("progress", {"step": "assembling", "message": "📦 Assembling final results..."})
+        print(f"[TIMER] Starting result assembly at {time.time()-start_time:.1f}s", file=sys.stderr, flush=True)
+        
+        # Wrap assembly with timeout - if it takes >30s, fail fast
+        try:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            _asm_executor = ThreadPoolExecutor(max_workers=1)
+            try:
+                asm_future = _asm_executor.submit(
+                    _assemble_result,
+                    filename=filename or Path(main_path).name,
+                    fmt=fmt, body=body, bib_text=bib_text,
+                    bib_list=bib_list, bib_dict=bib_dict,
+                    cited_keys=cited_keys, has_numeric=has_numeric,
+                    xcheck=xcheck, citation_contexts=citation_contexts,
+                    duplicates=duplicates, self_citations=self_citations,
+                    style_suggestions=style_suggestions,
+                    api_results_raw=api_results_raw,
+                    verification_result=verification_result,
+                    overall=overall,
+                    ai_parse_improvements=ai_parse_improvements,
+                    is_scanned=bool(sections.get("is_scanned")),
+                )
+                result = asm_future.result(timeout=30)
+            except FutureTimeoutError:
+                asm_future.cancel()
+                print(f"[ERROR] Assembly timed out after 30s", file=sys.stderr, flush=True)
+                result = {
+                    "filename": filename or Path(main_path).name,
+                    "overall": overall,
+                    "verification": api_results_raw if api_results_raw else [],
+                    "assembly_error": "Assembly timed out after 30s",
+                }
+            finally:
+                _asm_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            print(f"[ERROR] Assembly failed: {str(e)[:100]}", file=sys.stderr, flush=True)
+            result = {
+                "filename": filename or Path(main_path).name,
+                "overall": overall,
+                "verification": api_results_raw if api_results_raw else [],
+                "assembly_error": str(e)[:100],
+            }
 
-        result["processing_time_seconds"] = round(time.time() - start_time, 1)
+        # Global timeout check: if processing > 5 minutes, return immediately
+        elapsed = time.time() - start_time
+        if elapsed > 300:  # 5 minutes
+            print(f"[TIMEOUT] Global 5-minute timeout reached at {elapsed:.1f}s", file=sys.stderr, flush=True)
+            yield _sse("progress", {"step": "timeout_reached", "message": "⏱️ Processing timed out, returning partial results"})
+        
+        result["processing_time_seconds"] = round(elapsed, 1)
         yield _sse("done", result)
 
     except TimeoutError:
@@ -1096,8 +1208,21 @@ def _run_full_check(main_path: str, bib_path: str = None,
     if verify and bib_dict:
         api_results_raw = verify_all_references(bib_dict)
 
-    api_results_dicts = _vr_to_dicts(api_results_raw)
-    verification_result = ai_verify_references(bib_dicts, api_results_dicts)
+    # Only unresolved references should be sent to AI. This keeps the workflow
+    # aligned with the original design while still preserving a fail-safe for
+    # large reference sets. Verified entries stay out of the AI path.
+    unresolved_keys = {
+        vr.key for vr in api_results_raw
+        if vr.status not in ("verified", "journal_metadata")
+    }
+    unresolved_bib = [entry for entry in bib_dicts if entry["key"] in unresolved_keys]
+    unresolved_api = [vr for vr in _vr_to_dicts(api_results_raw) if vr["key"] in unresolved_keys]
+
+    if not unresolved_bib:
+        verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
+    else:
+        verification_result = ai_verify_references(unresolved_bib, unresolved_api)
+
     summary_for_ai = {
         "duplicates": len(duplicates),
         "self_citations": len(self_citations),

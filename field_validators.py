@@ -296,24 +296,27 @@ def validate_conference_abbreviation(venue: str, year: str) -> List[Dict]:
             except ValueError:
                 pass
     else:
-        # Unknown conference — could be legitimate or fabricated
-        if len(venue) > 80:
-            warnings.append({
-                "type": "unusual_venue_name",
-                "severity": "warn",
-                "message": "Conference name suspiciously long (may be fabricated)"
-            })
-        
-        # Check for common fake conference patterns
+        # Unknown conference — could be legitimate or fabricated.
+        # Long, legitimate journal/venue names are common (IEEE, ACM, and many
+        # domain-specific journals routinely exceed 80 chars), so length alone
+        # is not a useful signal and is dropped as a standalone warning.
+
+        # Check for common fake conference/predatory-journal patterns. These
+        # patterns are aimed at recognizable *fabrication* templates (vague
+        # hype terms combined with grandiose framing), not at any journal
+        # whose title happens to contain words like "International" or
+        # "Digital" — real venues (e.g. "International Journal of Digital
+        # Earth") should not match. Patterns are anchored to whole venue
+        # names and require multiple red-flag terms together, not a single
+        # generic word.
         fake_patterns = [
-            r"(?:International|World|Global)\s+(?:Conference|Workshop|Symposium|Forum)\s+on\s+(?:Advanced\s+)?(?:AI|Machine Learning|Deep Learning|Quantum|Blockchain|Metaverse)",
-            r"(?:International\s+)?(?:Journal|Review)\s+of\s+(?:Advanced\s+)?(?:Computational|Digital|Cyber)",
-            r"Proceedings\s+of\s+(?:the\s+)?(?:Annual|International)\s+(?:Conference|Workshop|Symposium)",
-            r"(?:The\s+)?(?:Great|Premier|Elite|Prestigious|Top-Tier)\s+(?:Conference|Workshop|Summit)\s+on",
+            r"^(?:The\s+)?(?:Great|Premier|Elite|Prestigious|Top-Tier)\s+(?:International\s+)?(?:Conference|Workshop|Summit)\s+on\b",
+            r"^World\s+(?:Congress|Conference|Summit)\s+on\s+(?:Advanced\s+)?(?:AI|Artificial Intelligence|Blockchain|Metaverse)\b",
+            r"^International\s+Conference\s+on\s+(?:Advanced\s+)?(?:AI|Artificial Intelligence|Machine Learning|Deep Learning|Quantum|Blockchain|Metaverse)\s+(?:Innovations|Breakthroughs|Excellence)\b",
         ]
-        
+
         for pattern in fake_patterns:
-            if re.search(pattern, venue, re.IGNORECASE):
+            if re.search(pattern, venue.strip(), re.IGNORECASE):
                 warnings.append({
                     "type": "suspicious_venue_name",
                     "severity": "warn",
@@ -360,8 +363,11 @@ def check_volume_issue_consistency(entry: BibEntry) -> List[Dict]:
                     "message": f"Volume number {vol_int} is outside typical range (1-1000)"
                 })
             
-            # Check for obviously fake volumes (repeating digits)
-            if entry.volume in {"1", "11", "111", "222", "333", "444", "555", "666", "777", "888", "999"}:
+            # Check for obviously fake volumes (repeating digits, 3+ digits only).
+            # Real journals routinely have volume 1, 11, 22, etc. (e.g. vol. 11 of a
+            # journal founded ~11 years ago) — only long, uniform-digit strings like
+            # "111", "222", "999" are actually suspicious.
+            if len(entry.volume) >= 3 and len(set(entry.volume)) == 1:
                 warnings.append({
                     "type": "suspicious_repeating_volume",
                     "severity": "warn",

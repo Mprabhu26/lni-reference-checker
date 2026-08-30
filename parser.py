@@ -63,17 +63,24 @@ REQUIRED_FIELDS = {
 # Known publishers / venues for quick type sniffing
 _PUBLISHER_WORDS = re.compile(
     r'(?:Verlag|Press|Publishers?|Sons|GmbH|Books?|'
-    r'Springer|Wiley|Elsevier|ACM|IEEE|MIT|O\'Reilly|Pearson|'
-    r'Hanser|dpunkt|Addison[- ]Wesley|Cambridge|Oxford|'
-    r'McGraw|Macmillan|Routledge|Sage|Taylor|Francis|CRC|'
+    r'Springer|Wiley|Elsevier|ACM|IEEE|MIT|O\'Reilly|'
+    r'Prentice\s*Hall|Addison[- ]Wesley|Cambridge|Oxford|'
+    r'Hanser|dpunkt|McGraw|Macmillan|Routledge|Sage|Taylor|Francis|CRC|'
     r'De Gruyter|Nomos|Beck|Mohr|Kohlhammer|Juventa|UTB)',
     re.IGNORECASE,
 )
 
 _PROCEEDINGS_WORDS = re.compile(
     r'\bIn:\s*|\bProc\.|\bProceedings\b|\bConference\b|\bWorkshop\b|\bSymposium\b|'
-    r'\bTagung\b|\bKonferenz\b|\bHrsg\b|\bEds?\.\B|\beditors?\b',
+    r'\bTagung\b|\bKonferenz\b|\bHrsg\b',
     re.IGNORECASE,
+)
+
+# "In (Editor, ed.): Book/Encyclopedia Title" is a book-chapter / reference-work
+# citation (incollection), not conference proceedings — distinct from "In:
+# Proceedings of ..." which IS a proceedings signal handled above.
+_INCOLLECTION_PATTERN = re.compile(
+    r'\bIn\s*\([^)]*\bed\.?s?\.?\s*\)\s*:', re.IGNORECASE,
 )
 
 _JOURNAL_WORDS = re.compile(
@@ -355,9 +362,24 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
 
     # ── Entry type classification ────────────────────────────────────────────
     _has_volume = bool(re.search(r'(?:Jg\.|Vol\.|Nr\.|Band)\s*\d', raw, re.IGNORECASE))
+
+    # LNI uses "Journal Name, Vol(No): Pages, Year" — detect parenthetical format.
+    # Also handles: hyphenated issue numbers "14(1-4):", volume-only "107: 118–128"
+    _has_lni_volume = bool(re.search(
+        r',\s*\d{1,4}\s*(?:\([\d\-]+\))?\s*:\s*\d', raw
+    ))
+    if _has_lni_volume:
+        _has_volume = True
+
+    # NOTE: "eds." alone is deliberately excluded here — encyclopedia entries
+    # ("In (Zalta, ed.): The Stanford Encyclopedia...") and edited reports
+    # ("... Gebru, Timnit, eds. Model Cards for Model Reporting") both credit
+    # an editor without being conference proceedings. Only explicit
+    # conference/workshop vocabulary or the German "Hrsg." (used for LNI
+    # conference volumes specifically) counts as a real proceedings signal.
     _has_explicit_conf = bool(re.search(
         r'\bProc\.|\bProceedings\b|\bConference\b|\bWorkshop\b|\bSymposium\b'
-        r'|\bTagung\b|\bKonferenz\b|\bHrsg\b|\bEds?\.\B',
+        r'|\bTagung\b|\bKonferenz\b|\bHrsg\b',
         raw, re.IGNORECASE))
 
     # Volume/journal indicators take highest priority — "In: Nature, Vol. 521"
@@ -368,14 +390,29 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         r'Zeitschrift für|Informatik Spektrum)',
         raw, re.IGNORECASE,
     ))
-    if _PUBLISHER_WORDS.search(raw) and not _has_volume:
-        entry.entry_type = "book"
-    elif _has_explicit_conf or re.search(r'\(eds?\.\)', raw, re.IGNORECASE):
+    # LNI parenthetical "Vol(No): Pages" is a definitive article indicator —
+    # it overrides even a false publisher-word hit (e.g. "Pearson" as author name).
+    if _has_lni_volume:
+        entry.entry_type = "article"
+    # "eds." suffix or explicit conference names are strong proceedings signals —
+    # they beat a false publisher-word hit (e.g. "beck" inside "Abecker").
+    elif _has_explicit_conf:
         entry.entry_type = "proceedings"
+    elif _CONFERENCE_NAMES.search(raw) and not (_PUBLISHER_WORDS.search(raw) and _has_volume):
+        entry.entry_type = "proceedings"
+    # A publisher name (Springer, Prentice Hall, MIT Press, etc.) with no
+    # volume/journal indicator is a book, not conference proceedings — a
+    # "Publisher, Year." tail is exactly how LNI/APA cite standalone books.
+    elif _PUBLISHER_WORDS.search(raw) and not _has_volume:
+        entry.entry_type = "book"
     elif _has_volume or _has_journal_name:
         entry.entry_type = "article"
     elif _CONFERENCE_NAMES.search(raw):
         entry.entry_type = "proceedings"
+    elif _INCOLLECTION_PATTERN.search(raw):
+        # e.g. "In (Zalta, ed.): The Stanford Encyclopedia of Philosophy" —
+        # a chapter/entry in an edited reference work, not a conference paper.
+        entry.entry_type = "misc"
     elif _PROCEEDINGS_WORDS.search(raw) and (_has_explicit_conf or not _has_volume):
         entry.entry_type = "proceedings"
     elif _JOURNAL_WORDS.search(raw) or _JOURNAL_NAME_HINTS.search(raw):
@@ -383,12 +420,27 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     elif _PUBLISHER_WORDS.search(raw):
         entry.entry_type = "book"
     else:
-        if re.search(r'MIT Press|Springer|Elsevier|Wiley|O\'Reilly|Pearson|Cambridge|Oxford|McGraw|Macmillan', raw, re.IGNORECASE):
+        if re.search(r'MIT Press|Springer|Elsevier|Wiley|O\'Reilly|Pearson|Cambridge|Oxford|McGraw|Macmillan|Prentice\s*Hall', raw, re.IGNORECASE):
             entry.entry_type = "book"
         elif re.search(r'Journal|Transactions|Letters|Magazine|Review|IEEE|ACM', raw, re.IGNORECASE):
             entry.entry_type = "article"
         elif re.search(r'In:\s*[A-Z][a-zA-Z0-9\s]+', raw, re.IGNORECASE):
             entry.entry_type = "proceedings"
+        # arXiv preprints (possibly with PDF extraction spaces: "ar Xiv")
+        elif re.search(r'ar\s*[Xx]iv', raw, re.IGNORECASE):
+            entry.entry_type = "misc"
+        # PhD / Master thesis
+        elif re.search(r'\b(?:Ph\.?\s*D\.?|PhD|Master|Diploma|Dissertation)\s+[Tt]hes', raw, re.IGNORECASE):
+            entry.entry_type = "misc"
+        # Government / official reports (Bundesamt, Ministerium, etc.)
+        elif re.search(r'\b(?:Bundesamt|Bundesministerium|Ministerium|Umweltbundesamt|Bundesbeh|agency|Authority|Institute|Institut|Commission)\b', raw, re.IGNORECASE):
+            entry.entry_type = "misc"
+        # Book chapters / edited volumes: has "pp." (page range with pp.) but no journal
+        elif re.search(r'\bpp\.\s*\d', raw, re.IGNORECASE):
+            entry.entry_type = "misc"
+        # UN/SDG-style minimal entries
+        elif re.search(r'\b(?:UN|SDG|UNESCO|WHO|FAO|IPCC|ISO)\b', raw):
+            entry.entry_type = "misc"
         else:
             entry.entry_type = "unknown"
             entry.needs_ai_parsing = True
@@ -429,8 +481,27 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         rest = raw
 
     # ── Author extraction ────────────────────────────────────────────────────
-    author_pattern = None if quote_m else re.match(
-        r'^((?:[A-ZÄÖÜ][a-zäöüß\-]+(?:,\s*[A-Za-zÄÖÜäöüß\.\s\-]+)?'
+    # Special case: "Surname, Given; ..., eds. Title" (no colon separator)
+    # e.g. "[Za19] Zaldivar, Andrew; ...; Gebru, Timnit, eds. Model Cards..."
+    if not quote_m:
+        eds_sep = re.search(r',\s*eds?\.\s+(?=[A-Z])', raw, re.IGNORECASE)
+        if eds_sep:
+            authors_cand = raw[:eds_sep.start()].strip()
+            title_cand = raw[eds_sep.end():].strip()
+            # Validate: authors part must look like a name list
+            if re.match(r'^[A-Z\u00c0-\u00de]', authors_cand) and not re.search(r'\b(19|20)\d{2}\b', authors_cand):
+                entry.authors = authors_cand
+                # An "eds." author-list credit (e.g. a report or edited
+                # collection: "..., Gebru, Timnit, eds. Model Cards...")
+                # means these people edited the work, not that it's
+                # conference proceedings — leave entry_type unset here so
+                # the normal misc/book/article classification still applies.
+                rest = title_cand
+
+    # Unicode-aware: covers accented given names like "Désirée", "Désirée".
+    author_pattern = None if (quote_m or entry.authors) else re.match(
+        r'^((?:[A-ZÄÖÜ\u00c0-\u00d6\u00d8-\u00de][a-zA-Z\u00c0-\u00ff\-]+'
+        r'(?:,\s*[A-Za-z\u00c0-\u00ff\.\s\-]+)?'
         r'(?:;\s*)?)+):\s*(.*)',
         raw,
     )
@@ -438,20 +509,50 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         pass  # authors/rest already resolved above
     elif author_pattern:
         candidate = author_pattern.group(1).strip()
-        if len(candidate) < 180 and ':' not in candidate:
+        # Strip trailing "eds." / ", eds" that can appear at end of author list
+        candidate = re.sub(r'[\s,;]+eds?\.?\s*$', '', candidate, flags=re.IGNORECASE).strip()
+        if len(candidate) < 300 and ':' not in candidate:
             entry.authors = candidate
             rest = author_pattern.group(2).strip()
     if not quote_m and not entry.authors:
-        colon_idx = raw.find(':')
-        if 0 < colon_idx < 120:
-            candidate = raw[:colon_idx].strip()
-            if re.match(r'^[A-ZÄÖÜ][a-zäöüß\-]+', candidate):
-                entry.authors = candidate
-                rest = raw[colon_idx + 1:].strip()
+        # For long author lists (>120 chars) find the first colon that separates
+        # authors from title: preceded by "Surname, Firstname" pattern and
+        # followed by a capital letter (start of title).
+        colon_positions = [m.start() for m in re.finditer(r':', raw)]
+        author_colon = None
+        for pos in colon_positions:
+            before = raw[:pos].strip()
+            after = raw[pos + 1:].strip()
+            # Must be followed by a non-empty title-like string
+            if not after or not after[0].isupper():
+                continue
+            # Before must look like an author list (contains ", " or ";" separators)
+            # and must not contain year or obvious non-author content
+            if re.search(r'\b(19|20)\d{2}\b', before):
+                continue
+            if re.search(r'\b(?:In:|Vol\.|Jg\.|doi:)\b', before, re.IGNORECASE):
+                continue
+            # Must end with a name-like token (Surname, Firstname or similar)
+            if re.search(r'[A-Z\u00c0-\u00de][a-z\u00e0-\u00ff]{1,}\s*$', before):
+                author_colon = pos
+                break
+        if author_colon is not None and 0 < author_colon:
+            candidate = raw[:author_colon].strip()
+            candidate = re.sub(r'[\s,;]+eds?\.?\s*$', '', candidate, flags=re.IGNORECASE).strip()
+            entry.authors = candidate
+            rest = raw[author_colon + 1:].strip()
+        else:
+            colon_idx = raw.find(':')
+            if 0 < colon_idx < 120:
+                candidate = raw[:colon_idx].strip()
+                if re.match(r'^[A-Z\u00c0-\u00de]', candidate):
+                    candidate = re.sub(r'[\s,;]+eds?\.?\s*$', '', candidate, flags=re.IGNORECASE).strip()
+                    entry.authors = candidate
+                    rest = raw[colon_idx + 1:].strip()
+                else:
+                    entry.needs_ai_parsing = True
             else:
                 entry.needs_ai_parsing = True
-        else:
-            entry.needs_ai_parsing = True
 
     # ── Year ──────────────────────────────────────────────────────────────────
     if not entry.year:
@@ -497,6 +598,35 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
     )
     if nr_match:
         entry.number = nr_match.group(1)
+
+    # ── LNI parenthetical format: "Journal, Vol(No): Pages, Year" ────────────
+    # Handles the standard LNI journal citation format where volume and issue
+    # are given as "11(9):" rather than "Vol. 11, No. 9".
+    # Also handles: hyphenated issues "14(1-4):", volume-only "107: 118–128".
+    if not entry.volume or not entry.number:
+        # With parenthetical issue (possibly hyphenated): "14(1-4): 179–184"
+        lni_vol_match = re.search(
+            r',\s*(\d{1,4})\s*\(([\d\-]+)\)\s*:\s*(\d+\s*[–—\-]+\s*\d+|\d+)',
+            rest,
+        )
+        if lni_vol_match:
+            if not entry.volume:
+                entry.volume = lni_vol_match.group(1)
+            if not entry.number:
+                entry.number = lni_vol_match.group(2)
+            if not entry.pages:
+                entry.pages = lni_vol_match.group(3).replace(' ', '')
+        else:
+            # Volume-only format: "107: 118–128" (no issue number)
+            lni_vol_only = re.search(
+                r',\s*(\d{1,4})\s*:\s*(\d+\s*[–—\-]+\s*\d+|\d+)',
+                rest,
+            )
+            if lni_vol_only:
+                if not entry.volume:
+                    entry.volume = lni_vol_only.group(1)
+                if not entry.pages:
+                    entry.pages = lni_vol_only.group(2).replace(' ', '')
 
     # ── Title extraction ─────────────────────────────────────────────────────
     if quote_m:
@@ -571,11 +701,34 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
 
     # ── Journal name for articles ────────────────────────────────────────────
     if entry.entry_type == "article":
+        # First: try the LNI parenthetical format "Journal Name, Vol(No): Pages"
+        # e.g. "Global change biology, 11(9): 1504–1513, 2005"
+        # Also handles: hyphenated issue "14(1-4):" and volume-only "107: 118–128"
+        if not entry.journal:
+            lni_j_match = re.search(
+                r'([A-Za-z][A-Za-z0-9 &\-]+?),\s*\d{1,4}\s*(?:\([\d\-]+\))?\s*:',
+                rest,
+            )
+            if lni_j_match:
+                candidate = lni_j_match.group(1).strip().rstrip('.,;: ')
+                # Exclude the title itself (it ends in a period before the journal)
+                # The journal name follows the LAST period in the text before the Vol pattern
+                last_period_pos = rest.rfind('.', 0, lni_j_match.start())
+                if last_period_pos >= 0:
+                    candidate = rest[last_period_pos + 1:lni_j_match.end() - 1]
+                    candidate = candidate.strip().rstrip(',').strip()
+                    # Re-check: should end just before the ", Vol(No):" pattern
+                    comma_vol = re.search(r',\s*\d{1,4}\s*(?:\([\d\-]+\))?\s*:', candidate)
+                    if comma_vol:
+                        candidate = candidate[:comma_vol.start()].strip()
+                if candidate and len(candidate) >= 3 and not re.match(r'^\d', candidate):
+                    entry.journal = candidate
+
         j_match = re.search(
             r'(?:\.\s+In:\s+|\.\s+)([A-Za-zäöüÄÖÜ][^,\.]{2,80}?),\s*(?:Jg\.|Vol\.|Nr\.|Band|No\.)',
             rest, re.IGNORECASE,
         )
-        if j_match:
+        if j_match and not entry.journal:
             entry.journal = j_match.group(1).strip()
         else:
             in_match = re.search(
@@ -728,6 +881,33 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
 
             normed = [_norm_surname(s) for s in surnames]
 
+            # ── Collect ALL initials from compound/hyphenated/particle surnames ──
+            # "Van Eck" -> {v, e}; "Abdul-Wahab" -> {a, w}; "Al-Alawi" -> {a}
+            # This pool is used as a fallback: if every char in the key is in
+            # this pool, we treat the key as plausibly valid rather than flagging
+            # it as inconsistent (handles keys like VEW13, AWBAA05).
+            def _compound_initials(authors_str: str) -> set:
+                initials = set()
+                for author in re.split(r';\s*', authors_str):
+                    author = author.strip()
+                    if not author:
+                        continue
+                    if ',' in author:
+                        surname = author.split(',')[0].strip()
+                    else:
+                        parts = author.split()
+                        surname = parts[-1] if parts else author
+                    # First initial of full surname (including particle: "Van" -> v)
+                    if surname:
+                        initials.add(surname[0].lower())
+                    # Also initial of each component separated by hyphen or space
+                    for part in re.split(r'[-\s]+', surname):
+                        if part:
+                            initials.add(part[0].lower())
+                return initials
+
+            compound_initial_pool = _compound_initials(entry.authors)
+
             # ── Build ALL valid LNI key forms ──────────────────────────────
             valid_forms = set()
 
@@ -826,6 +1006,17 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
                     # author count — otherwise keep as False (missing initials)
                     if len(key_initials) >= n or len(key_initials) <= 2:
                         initials_ok = None
+
+            # ── Compound-name fallback ────────────────────────────────────────
+            # For hyphenated and particle surnames (e.g. "Van Eck", "Abdul-Wahab",
+            # "Al-Alawi"), the key may legitimately use initials from each word
+            # component rather than just the leading letter of the stripped surname.
+            # If every character in key_initials is found in the compound initial
+            # pool, treat the key as consistent (not a mismatch).
+            # Example: VEW13 for "Van Eck; Waltman" — V, E, W are all valid.
+            # Example: AWBAA05 for "Abdul-Wahab; Bakheit; Al-Alawi" — A, W, B all valid.
+            if initials_ok is False and set(key_initials) <= compound_initial_pool:
+                initials_ok = None  # Ambiguous — not a confirmed mismatch
 
     # ── Combine ──────────────────────────────────────────────────────────────
     checks = [c for c in [year_ok, initials_ok] if c is not None]

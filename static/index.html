@@ -548,19 +548,19 @@ async function runCheck() {
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
+    let event = '', dataStr = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
       let lines = buf.split('\n');
       buf = lines.pop();
-      let event = '', dataStr = '';
       for (const line of lines) {
         if (line.startsWith('event: ')) event = line.slice(7).trim();
-        else if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
+        else if (line.startsWith('data: ')) dataStr += line.slice(6).trim();
         else if (line === '') {
           if (event && dataStr) handleSSE(event, dataStr);
-          event = dataStr = '';
+          event = ''; dataStr = '';
         }
       }
     }
@@ -1052,7 +1052,7 @@ function verifyCard(v) {
         ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-title">⚠ Red Flags</div><ul class="risk-list">${v.ai_risk_factors.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
         ${links.length ? `<div class="detail-section"><div class="detail-title">🔗 Links & Resources</div><div class="sources-row">${links.join('')}</div></div>` : ''}
         ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s => { const label = s === 'url_check' ? 'URL Check (direct fetch)' : s === 'content_title_match' ? 'Title Match (page content)' : s; return `<span class="source-chip" title="${s === 'url_check' ? 'The cited URL was fetched and the page title was compared to the cited title' : s === 'content_title_match' ? 'The page content title matched the cited title' : ''}">${escapeHtml(label)}</span>`; }).join('')}</div></div>` : ''}
-        ${(verdict === 'SUSPICIOUS' || verdict === 'FAKE') && !markedFakeKeys.has(v.key) && !confirmedRealKeys.has(v.key) ? `<div class="detail-section"><div class="detail-title">➕ Professor Actions</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, save it to the local database. If it is fabricated, mark it as fake to deduct points.</div>
+        ${(verdict === 'SUSPICIOUS' || verdict === 'FAKE' || verdict === 'MANUAL_REVIEW') && !markedFakeKeys.has(v.key) && !confirmedRealKeys.has(v.key) ? `<div class="detail-section"><div class="detail-title">➕ Professor Actions</div><div class="explanation-box" style="margin-bottom:8px;">If you have confirmed this reference is real, save it to the local database. If it is fabricated, mark it as fake to deduct points.</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
             <button onclick="saveToDb('${escapeHtml(v.key)}')" style="padding:6px 14px;background:var(--success);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✓ Confirm as Real — Save to DB</button>
             ${markedFakeKeys.has(v.key) ? '<button disabled style="padding:6px 14px;background:var(--error);color:white;border:none;border-radius:var(--radius-sm);font-size:11px;font-weight:600;cursor:default;">✕ Confirmed Fake</button>' : '<button onclick="markAsFake(\'' + escapeHtml(v.key) + '\', this)" style="padding:6px 14px;background:var(--error-bg);color:var(--error);border:1px solid var(--error);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;font-weight:600;">✕ Mark as Fake</button>'}
