@@ -420,25 +420,32 @@ def _is_grey_literature(entry: dict) -> tuple:
         if pub in publisher or pub in raw:
             return True, f"Grey literature (published by {pub.title()})"
     
+    # FIXED v8.9: Don't treat conference proceedings as grey literature
+    # Conference papers (inproceedings) from academic conferences are NOT grey lit
+    if entry_type in ("inproceedings", "proceedings", "conference"):
+        return False, ""
+    
     if entry_type in ("website", "online", "misc") and url:
         return True, "Grey literature (website citation)"
-
-    # ── Generalized fallback ────────────────────────────────────────────────
-    # A URL that isn't on the academic allowlist and wasn't caught by any of
-    # the specific checks above is still very likely a non-academic source
-    # (industry site, product docs, blog, unlisted consultancy, etc.) — we
-    # just don't have a friendly name for it. Flag it as grey lit anyway
-    # rather than silently skipping straight to a generic "not found"
-    # verdict; the URL-fetch + AI review it then receives is identical
-    # either way, this only affects the labeling/reasoning shown.
-    if url:
+    
+    # FIXED v8.9: Be more conservative with the generic fallback
+    # Many papers from PDFs will have non-standard URLs but are still real
+    # Only flag as grey if it's clearly NOT an academic/publisher URL
+    # AND the entry doesn't have enough metadata to be a real paper
+    if url and entry_type not in ("article", "book", "inproceedings"):
         if not any(dom in url for dom in academic_allowlist):
-            try:
-                domain_guess = re.search(r'https?://(?:www\.)?([^/]+)', url)
-                domain_label = domain_guess.group(1) if domain_guess else "unrecognized domain"
-            except Exception:
-                domain_label = "unrecognized domain"
-            return True, f"Grey literature (unlisted source: {domain_label})"
+            # Only flag as grey if title/authors are missing or look like grey lit
+            title_has_report_word = any(word in title for word in 
+                                       ['report', 'whitepaper', 'white paper', 'survey'])
+            authors_missing = not (entry.get("authors") or "").strip()
+            
+            if title_has_report_word or (authors_missing and "publisher" not in entry.get("publisher", "").lower()):
+                try:
+                    domain_guess = re.search(r'https?://(?:www\.)?([^/]+)', url)
+                    domain_label = domain_guess.group(1) if domain_guess else "unrecognized domain"
+                except Exception:
+                    domain_label = "unrecognized domain"
+                return True, f"Grey literature (unlisted source: {domain_label})"
 
     
     return False, ""

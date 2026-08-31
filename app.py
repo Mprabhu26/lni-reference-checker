@@ -34,6 +34,7 @@ from flask import Flask, request, jsonify, send_from_directory, Response, stream
 from extractor import extract
 from parser import parse_bibliography, entries_to_dict, _validate_key_vs_metadata
 from checker import (
+    VerificationResult,
     extract_citations_from_body,
     extract_citation_contexts,
     detect_self_citations,
@@ -920,72 +921,51 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                 "message": f"⚠️ {len(xcheck.in_bib_not_cited)} bibliography entry(s) never cited"})
 
         # ── Verification: SINGLE call to verify_all_references ────────────────
-        # FIXED: Removed the duplicate manual verification loop that was
-        # causing entries to be verified twice and overwriting results.
+        # FIXED v9.0: Removed large bibliography fast-path that was marking
+        # all refs as manual_review. Now verifies all references regardless of count.
         api_results_raw = []
         if verify and bib_dict:
-            if len(bib_dict) >= 30:
-                print(f"[FAST PATH] Large streaming document detected ({len(bib_dict)} refs): using fast manual-review verification path",
-                      file=sys.stderr, flush=True)
-                yield _sse("progress", {"step": "verify_start",
-                    "message": f"🔍 Large document detected: using fast verification path for {len(bib_dict)} references..."})
-                for entry in bib_dict.values():
-                    api_results_raw.append(
-                        VerificationResult(
-                            key=entry.key,
-                            title=entry.title or "",
-                            status="manual_review",
-                            confidence=0.55,
-                            note="Large bibliography: remote verification deferred to manual review to avoid hangs.",
-                            sources_checked=["large_document_fast_path"],
-                        )
-                    )
-                yield _sse("progress", {"step": "verify_complete",
-                    "message": f"✓ Fast path complete for {len(api_results_raw)} references"})
-                yield _sse("progress", {"step": "verify_done",
-                    "message": "✓ Verification done: fast-path review enabled for large document"})
-            else:
-                total = len(bib_dict)
-                print(f"[DIAG] Starting verify_all_references for {total} entries", file=sys.stderr, flush=True)
-                yield _sse("progress", {"step": "verify_start",
-                    "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
+            total = len(bib_dict)
+            print(f"[DIAG] Starting verify_all_references for {total} entries", file=sys.stderr, flush=True)
+            yield _sse("progress", {"step": "verify_start",
+                "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
 
-                # verify_all_references now handles duplicates internally with parallel processing
-                verification_start = time.time()
-                print(f"[TIMER] Starting parallel verification of {len(bib_dict)} entries...", 
-                      file=sys.stderr, flush=True)
-                api_results_raw = verify_all_references(bib_dict)
-                verification_elapsed = time.time() - verification_start
-                print(f"[TIMER] Verification completed in {verification_elapsed:.1f}s, got {len(api_results_raw)} results", 
-                      file=sys.stderr, flush=True)
-                
-                yield _sse("progress", {"step": "verify_complete", 
-                    "message": f"✓ Verified {len(api_results_raw)} references in {verification_elapsed:.1f}s"})
+            # verify_all_references now handles duplicates internally with parallel processing
+            verification_start = time.time()
+            print(f"[TIMER] Starting parallel verification of {len(bib_dict)} entries...", 
+                  file=sys.stderr, flush=True)
+            api_results_raw = verify_all_references(bib_dict)
+            verification_elapsed = time.time() - verification_start
+            print(f"[TIMER] Verification completed in {verification_elapsed:.1f}s, got {len(api_results_raw)} results", 
+                  file=sys.stderr, flush=True)
+            
+            yield _sse("progress", {"step": "verify_complete", 
+                "message": f"✓ Verified {len(api_results_raw)} references in {verification_elapsed:.1f}s"})
 
-                verified_count = sum(1 for r in api_results_raw if r.status == "verified")
-                suspicious_count = sum(1 for r in api_results_raw if r.status == "suspicious")
-                
-                # Send progress updates for each result
-                for i, vr in enumerate(api_results_raw):
-                    progress_data = {
-                        "step": "verify",
-                        "message": f"Verifying: {i+1}/{total}",
-                        "key": vr.key,
-                        "status": vr.status,
-                        "confidence": round(vr.confidence, 2),
-                        "done": i+1,
-                        "total": total,
-                        "verified_count": verified_count,
-                        "suspicious_count": suspicious_count,
-                    }
-                    if vr.version_note:
-                        progress_data["version_note"] = vr.version_note
-                    yield _sse("progress", progress_data)
-                    time.sleep(0.05)  # Small delay for UI responsiveness
+            verified_count = sum(1 for r in api_results_raw if r.status == "verified")
+            suspicious_count = sum(1 for r in api_results_raw if r.status == "suspicious")
+            
+            # Send progress updates for each result
+            for i, vr in enumerate(api_results_raw):
+                progress_data = {
+                    "step": "verify",
+                    "message": f"Verifying: {i+1}/{total}",
+                    "key": vr.key,
+                    "status": vr.status,
+                    "confidence": round(vr.confidence, 2),
+                    "done": i+1,
+                    "total": total,
+                    "verified_count": verified_count,
+                    "suspicious_count": suspicious_count,
+                }
+                if vr.version_note:
+                    progress_data["version_note"] = vr.version_note
+                yield _sse("progress", progress_data)
+                time.sleep(0.05)  # Small delay for UI responsiveness
 
-                yield _sse("progress", {"step": "verify_done",
-                    "message": f"✓ Verification done: {verified_count} verified, "
-                               f"{suspicious_count} suspicious"})
+            yield _sse("progress", {"step": "verify_done",
+                "message": f"✓ Verification done: {verified_count} verified, "
+                           f"{suspicious_count} suspicious"})
 
         # ── AI final verdict pass (only suspicious entries) ───────────────────
         # Only the unresolved subset should go to AI. The large-document workaround

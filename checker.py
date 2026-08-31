@@ -16,6 +16,7 @@ import sys
 import time
 import threading
 import requests
+import sys  # Already imported, ensure it's there
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from ai_checker import _ai_available
@@ -1733,7 +1734,9 @@ def verify_reference(
                 try:
                     web_result = verify_with_web_search(grey_dict, "not_found")
                     
-                    if web_result.get("status") == "verified" and web_result.get("confidence", 0) >= 0.55:
+                    # FIXED v8.9: Lower confidence threshold for grey lit (0.45 instead of 0.55)
+                    # Grey literature from academic conferences is often still legit
+                    if web_result.get("status") == "verified" and web_result.get("confidence", 0) >= 0.45:
                         matched = web_result.get("matched_title") or entry.title
                         save_to_cache(
                             title=matched,
@@ -1754,33 +1757,35 @@ def verify_reference(
                             sources_checked=["grey_lit", "ai_verified"],
                         )
                     else:
-                        # AI couldn't verify it either
+                        # AI couldn't verify it either - confidence too low
+                        # FIXED: Return status from web_result instead of forcing manual_review
+                        result_status = web_result.get("status", "suspicious")
                         return VerificationResult(
                             key=entry.key, title=entry.title or "",
-                            status="manual_review",
+                            status=result_status,
                             confidence=web_result.get("confidence", 0.4),
                             note=f"Grey literature ({_grey_reason}). {web_result.get('note', 'Could not be auto-verified.')}",
                             sources_checked=["grey_lit", "ai_attempted"],
                         )
                 except Exception as e:
-                    # AI call failed — log and return suspicious
-                    print(f"[grey_lit] AI verification error for {entry.key}: {e}")
+                    # AI call failed — log and return suspicious (not manual_review)
+                    print(f"[grey_lit] AI verification error for {entry.key}: {e}", file=sys.stderr)
                     return VerificationResult(
                         key=entry.key, title=entry.title or "",
-                        status="manual_review",
+                        status="suspicious",
                         confidence=0.4,
                         note=f"Grey literature ({_grey_reason}). AI verification failed: {str(e)[:100]}",
                         sources_checked=["grey_lit", "ai_error"],
                     )
             
-            # ── No AI available ── return suspicious ──────────────────────────
-            return VerificationResult(
-                key=entry.key, title=entry.title or "",
-                status="manual_review",
-                confidence=0.55,
-                note=f"Grey literature ({_grey_reason}). Manual review required.",
-                sources_checked=["grey_lit"],
-            )
+            # ── No AI available ── continue to API pipeline instead of manual_review ──
+            # Don't give up on grey lit entries just because no AI is available;
+            # they might be in CrossRef or other academic DBs
+            print(f"[grey_lit] No AI available for {entry.key}, falling back to API pipeline", 
+                  file=sys.stderr)
+        
+        # After grey literature processing (whether via AI or not), 
+        # continue to API pipeline - don't return manual_review early
 
         # ── STEP 2: Academic APIs ─────────────────────────────────────────────────
         api_result: Optional[VerificationResult] = None
