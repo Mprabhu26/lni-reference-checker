@@ -1,4 +1,0 @@
-[LBH15] LeCun, Yann; Bengio, Yoshua;
-Hinton, Geoffrey: Deep Learning.
-In: Nature, Vol. 521,
-2015; S. 436--444.
