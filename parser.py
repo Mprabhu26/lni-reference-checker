@@ -1101,12 +1101,12 @@ def _check_completeness(entry: BibEntry) -> None:
             )
 
     # LNI page-range dash: must be double dash "--"
-    if entry.pages:
-        if re.search(r'\d-\d', entry.pages) and '--' not in (entry.pages or ''):
-            entry.completeness_issues.append(
-                "Page range uses single dash '-' — LNI requires '--' "
-                "(e.g. S. 12--34)."
-            )
+    #if entry.pages:
+    #    if re.search(r'\d-\d', entry.pages) and '--' not in (entry.pages or ''):
+    #        entry.completeness_issues.append(
+    #            "Page range uses single dash '-' — LNI requires '--' "
+    #            "(e.g. S. 12--34)."
+    #        )
 
     # LNI author order: must be "Lastname, Firstname"
     if entry.authors and entry.entry_type not in ("website", "misc", "online"):

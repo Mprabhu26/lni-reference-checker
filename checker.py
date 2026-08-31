@@ -2229,15 +2229,15 @@ def compute_score(
         })
 
     # STYLE/FORMAT ISSUES
-    style_count = len(style_suggestions)
-    if style_count:
-        deduct = min(style_count * 2, 15)
-        score -= deduct
-        penalties.append({
-            "category": "Style issues",
-            "count": style_count,
-            "deduction": deduct
-        })
+    #style_count = len(style_suggestions)
+    #if style_count:
+    #    deduct = min(style_count * 2, 15)
+    #    score -= deduct
+    #    penalties.append({
+    #        "category": "Style issues",
+    #        "count": style_count,
+    #        "deduction": deduct
+    #    })
 
     # DUPLICATE ENTRIES
     dup_count = len(duplicates)
@@ -2329,8 +2329,8 @@ def compute_score(
         summary_parts.append(f"{missing} missing citation(s)")
     if orphaned:
         summary_parts.append(f"{orphaned} orphaned entry/entries")
-    if style_count:
-        summary_parts.append(f"{style_count} formatting issue(s)")
+    #if style_count:
+    #    summary_parts.append(f"{style_count} formatting issue(s)")
 
     summary = "; ".join(summary_parts) if summary_parts else "No issues detected."
 
