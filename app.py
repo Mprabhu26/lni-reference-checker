@@ -213,7 +213,14 @@ def _verified_result_without_ai(bib_dicts: list, api_results_raw: list) -> dict:
             "key": entry["key"],
             "verdict": "REAL",
             "confidence": vr.confidence,
-            "reasoning": "Confirmed by the reference verification stage.",
+            "reasoning": (
+                f"Found in {', '.join(vr.sources_checked[:2]) if vr.sources_checked else 'academic database'}"
+                + (f" — title match {int(vr.title_match_score * 100)}%"
+                   if getattr(vr, 'title_match_score', None) else "")
+                + (f", author match {int(vr.author_match_score * 100)}%"
+                   if getattr(vr, 'author_match_score', None) else "")
+                + (f". DOI confirmed." if getattr(vr, 'doi', None) else ".")
+            ),
             "risk_factors": [],
         })
     return {
@@ -515,7 +522,15 @@ def _assemble_result(
 
         _raw = (bib_dict.get(vr.key) and bib_dict[vr.key].raw_text or "")[:300]
         _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""
-        ai_reasoning_text = ai.get("reasoning", "")
+        _raw_ai_reasoning = ai.get("reasoning", "")
+        # If AI returned no reasoning or a trivial stub, use the verification note directly.
+        # vr.note always has the real detail (e.g. web search result, why manual review needed).
+        _is_stub = (
+            not _raw_ai_reasoning
+            or len(_raw_ai_reasoning) < 25
+            or _raw_ai_reasoning.startswith("Found in ")
+        )
+        ai_reasoning_text = vr.note if _is_stub else _raw_ai_reasoning
 
         # TIER 2: Author validation (ENHANCED) — SKIP for large PDFs
         entry_obj = bib_dict.get(vr.key)

@@ -1048,7 +1048,13 @@ function verifyCard(v) {
           const borderColor = warns.some(w=>w.severity==='error') ? 'var(--error)' : 'var(--warning)';
           return `<div class="detail-section"><div class="detail-title">⚠ Metadata Issues</div><div class="explanation-box" style="border-left-color:${borderColor};">The reference was found in the database but contains metadata discrepancies that should be corrected.</div>${rows}</div>`;
         })()}
-        ${v.ai_reasoning ? `<div class="detail-section"><div class="detail-title">🤖 AI Reasoning</div><div class="explanation-box">${escapeHtml(v.ai_reasoning)}</div></div>` : ''}
+        ${(()=>{
+          const text = (v.ai_reasoning || '').trim();
+          if (!text) return '';
+          const isManual = v.status === 'manual_review' || v.ai_verdict === 'MANUAL_REVIEW';
+          const label = isManual ? '❓ Why manual review?' : '🔍 Verification Note';
+          return `<div class="detail-section"><div class="detail-title">${label}</div><div class="explanation-box">${escapeHtml(text)}</div></div>`;
+        })()}
         ${v.ai_risk_factors?.length ? `<div class="detail-section"><div class="detail-title">⚠ Red Flags</div><ul class="risk-list">${v.ai_risk_factors.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></div>` : ''}
         ${links.length ? `<div class="detail-section"><div class="detail-title">🔗 Links & Resources</div><div class="sources-row">${links.join('')}</div></div>` : ''}
         ${v.sources_checked?.length ? `<div class="detail-section"><div class="detail-title">📚 Databases Checked</div><div class="sources-row">${v.sources_checked.map(s => { const label = s === 'url_check' ? 'URL Check (direct fetch)' : s === 'content_title_match' ? 'Title Match (page content)' : s; return `<span class="source-chip" title="${s === 'url_check' ? 'The cited URL was fetched and the page title was compared to the cited title' : s === 'content_title_match' ? 'The page content title matched the cited title' : ''}">${escapeHtml(label)}</span>`; }).join('')}</div></div>` : ''}

@@ -1101,7 +1101,14 @@ def ai_verify_references(bib_entries: list, api_results: list) -> dict:
                 "key": entry["key"],
                 "verdict": "REAL",
                 "confidence": vr_by_key[entry["key"]].get("confidence", 0.95),
-                "reasoning": "Confirmed by the reference verification stage.",
+                "reasoning": (
+                    f"Found in {vr_by_key[entry['key']].get('sources_checked', ['academic database'])[0]}"
+                    + (f" — title match {int(vr_by_key[entry['key']].get('title_match_score', 0) * 100)}%"
+                       if vr_by_key[entry['key']].get('title_match_score') else "")
+                    + (f", author match {int(vr_by_key[entry['key']].get('author_match_score', 0) * 100)}%"
+                       if vr_by_key[entry['key']].get('author_match_score') else "")
+                    + ". No further AI analysis needed."
+                ),
                 "risk_factors": [],
             }
             for entry in bib_entries
