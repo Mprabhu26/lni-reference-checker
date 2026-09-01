@@ -68,6 +68,26 @@ def _title_similarity_simple(title1: str, title2: str) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def _safe_re_sub(pattern, replacement, text: str, flags: int = 0) -> str:
+    """Handle either string or compiled regex patterns safely."""
+    if hasattr(pattern, "sub"):
+        try:
+            return pattern.sub(replacement, text)
+        except TypeError:
+            return re.sub(pattern.pattern, replacement, text, flags=flags)
+    return re.sub(pattern, replacement, text, flags=flags)
+
+
+def _safe_re_search(pattern, text: str, flags: int = 0):
+    """Handle either string or compiled regex patterns safely."""
+    if hasattr(pattern, "search"):
+        try:
+            return pattern.search(text)
+        except TypeError:
+            return re.search(pattern.pattern, text, flags=flags)
+    return re.search(pattern, text, flags=flags)
+
+
 def _make_requests_session(timeout: int = 5):
     """Create requests session with aggressive timeout & retry strategy."""
     session = requests.Session()
@@ -118,12 +138,12 @@ def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
         r'Stand:\s*[\d./-]+', r'accessed\s+[\d./-]+',
         r'\.\s*[A-Z][a-z]+\.\s*\d{4}',
     ]:
-        clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
+        clean_title = _safe_re_sub(pattern, '', clean_title, flags=re.IGNORECASE)
     
-    clean_title = re.sub(r'pre train ing', 'pretraining', clean_title, flags=re.IGNORECASE)
-    clean_title = re.sub(r'net work', 'network', clean_title, flags=re.IGNORECASE)
-    clean_title = re.sub(r'over fit ting', 'overfitting', clean_title, flags=re.IGNORECASE)
-    clean_title = re.sub(r'image net', 'imagenet', clean_title, flags=re.IGNORECASE)
+    clean_title = _safe_re_sub(r'pre train ing', 'pretraining', clean_title, flags=re.IGNORECASE)
+    clean_title = _safe_re_sub(r'net work', 'network', clean_title, flags=re.IGNORECASE)
+    clean_title = _safe_re_sub(r'over fit ting', 'overfitting', clean_title, flags=re.IGNORECASE)
+    clean_title = _safe_re_sub(r'image net', 'imagenet', clean_title, flags=re.IGNORECASE)
     clean_title = re.sub(r'[ ]{2,}', ' ', clean_title)
     clean_title = clean_title.strip().strip('.,;:')
     

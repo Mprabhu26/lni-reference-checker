@@ -41,6 +41,7 @@ class BibEntry:
     needs_ai_parsing: bool = False
     key_consistent: Optional[bool] = None
     key_mismatch_detail: Optional[str] = None
+    original_key: Optional[str] = None
 
 
 # Required fields per entry type (LNI standard)
@@ -240,14 +241,14 @@ def _extract_journal_smart(raw: str) -> Optional[str]:
     match = re.search(in_pattern, raw, re.IGNORECASE)
     if match:
         journal = match.group(1).strip()
-        if len(journal) > 3 and re.search(_JOURNAL_NAME_HINTS, journal, re.IGNORECASE):
+        if len(journal) > 3 and _JOURNAL_NAME_HINTS.search(journal):
             return journal
     
     # Strategy 5: Comma-separated segments
     comma_segments = raw.split(',')
     for segment in comma_segments:
         segment = segment.strip()
-        if (re.search(_JOURNAL_NAME_HINTS, segment, re.IGNORECASE) and
+        if (_JOURNAL_NAME_HINTS.search(segment) and
             len(segment) > 5 and len(segment) < 100 and
             not re.search(r'[A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+(?:and|&|\b\w+\b))', segment)):
             return segment
@@ -304,17 +305,31 @@ def parse_bibliography(bib_text: str) -> list:
     key_positions = []
     for m in re.finditer(r'\[([^\]\n]{1,40})\]', bib_text):
         candidate = m.group(1).strip()
+        original_key = candidate  # Keep original before normalization
         normalized = _normalize_extracted_key(candidate)
+        
+        # BUG 1 FIX: Do NOT silently drop malformed keys.
+        # Always add valid key format OR use original raw key and flag as format error.
         if not normalized:
-            continue
+            # Normalization completely failed — use raw key but mark for format checking
+            normalized = original_key if original_key else candidate
+        
         if re.fullmatch(r'\d{1,3}', normalized):
             valid = True
         elif re.fullmatch(r'[A-Za-zÀ-ÿ]{1,6}\d{2}[a-z]?', normalized, re.UNICODE):
             valid = True
         else:
-            valid = False
+            # Try semantic normalization before rejecting (e.g., Smith2020 -> Sm20)
+            semantically_normalized = _normalize_key_semantically(normalized)
+            if semantically_normalized and re.fullmatch(r'[A-Za-zÀ-ÿ]{1,6}\d{2}[a-z]?', semantically_normalized, re.UNICODE):
+                valid = True
+                normalized = semantically_normalized
+            else:
+                # Key is malformed, but we KEEP it anyway for the user to see
+                valid = True  # Allow it through; completeness check will flag it
+        
         if valid:
-            key_positions.append((m.start(), normalized, m.end()))
+            key_positions.append((m.start(), normalized, m.end(), original_key))
 
     # Fallback: if the PDF broke the key as 'Wa14 b', the above regex still catches
     # it via the bracketed text; if not, accept direct key-like strings with spaces.
@@ -322,13 +337,20 @@ def parse_bibliography(bib_text: str) -> list:
         for m in re.finditer(r'\b([A-Za-zÀ-ÿ]{1,6}\s*\d{2}\s*[a-z]?)\b', bib_text, re.UNICODE):
             normalized = _normalize_extracted_key(m.group(1))
             if normalized and re.fullmatch(r'[A-Za-zÀ-ÿ]{1,6}\d{2}[a-z]?', normalized, re.UNICODE):
-                key_positions.append((m.start(), normalized, m.end()))
+                key_positions.append((m.start(), normalized, m.end(), normalized))
 
     if not key_positions:
         return []
 
     entries = []
-    for i, (start, key, end) in enumerate(key_positions):
+    for i, pos_tuple in enumerate(key_positions):
+        # BUG 1 FIX: Handle both 3-tuple (fallback) and 4-tuple (with original_key)
+        if len(pos_tuple) == 4:
+            start, key, end, original_key = pos_tuple
+        else:
+            start, key, end = pos_tuple
+            original_key = key
+        
         next_start = key_positions[i + 1][0] if i + 1 < len(key_positions) else len(bib_text)
         raw = bib_text[end:next_start].strip()
         if not raw:
@@ -336,11 +358,17 @@ def parse_bibliography(bib_text: str) -> list:
         raw = re.sub(r'\s+', ' ', raw).strip()
         if len(raw) < 15 and not re.search(r'[A-Z]', raw):
             continue
-
+        
         entry = BibEntry(key=key, raw_text=raw)
         _classify_and_parse(entry, raw)
         _check_completeness(entry)
         _validate_key_vs_metadata(entry)
+        
+        # BUG 1 FIX: Flag malformed keys as completeness issues so they appear in UI
+        if original_key and original_key != key:
+            if not re.fullmatch(r'\d{1,3}', key) and not re.fullmatch(r'[A-Za-zÀ-ÿ]{1,6}\d{2}[a-z]?', key, re.UNICODE):
+                entry.completeness_issues.insert(0, f"Malformed citation key: '[{original_key}]' does not follow LNI format (expected e.g. [Sm20], [ABC15], or [1-999]).")
+        
         entries.append(entry)
 
     return entries
@@ -1114,8 +1142,20 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
 def _check_completeness(entry: BibEntry) -> None:
     _validate_key_vs_metadata(entry)
 
-    for err in validate_lni_key(entry.key):
+    # BUG 5 FIX: Check if key was originally malformed but auto-normalized
+    # This ensures the UI is aware of LNI format violations
+    errors = validate_lni_key(entry.key)
+    for err in errors:
         entry.completeness_issues.append(f"Invalid key format: {err}")
+    
+    # If key was auto-normalized from a long form, flag it as a format violation
+    if entry.original_key and entry.original_key != entry.key:
+        if not re.fullmatch(r'[A-Za-zÀ-ÿ]{1,6}\d{2}[a-z]?', entry.original_key, re.UNICODE):
+            entry.completeness_issues.append(
+                f"Citation key '[{entry.original_key}]' violates LNI format "
+                f"(expected [Ab00] format, got [{entry.original_key}]). "
+                f"Auto-normalized to [{entry.key}]."
+            )
 
     if entry.key_consistent is False and entry.key_mismatch_detail:
         entry.completeness_issues.append(

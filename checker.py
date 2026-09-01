@@ -25,7 +25,7 @@ from typing import Optional, List, Dict, Tuple
 
 from parser import BibEntry, _extract_surnames
 from local_db import search_cache, save_to_cache, get_cache_stats, init_cache_db
-from web_search_verifier import verify_with_web_search
+from web_search_verifier import verify_with_web_search, _safe_re_sub
 from review_queue import is_venue_whitelisted, get_review_decision, get_false_positive
 from ai_checker import _is_grey_literature, _is_fabricated_title, _ai_available
 from author_journal_verifier import verify_reference_comprehensive_cached, AuthorVerificationResult
@@ -480,7 +480,7 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
     
     clean_title = entry.title
     for pattern in [r'\.\s*In:\s*.*$', r'\.\s*doi:\s*.*$', r'\.\s*https?://\S+$']:
-        clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
+        clean_title = _safe_re_sub(pattern, '', clean_title, flags=re.IGNORECASE)
     clean_title = clean_title.strip().strip('.,;:')
     
     if not clean_title:
@@ -604,7 +604,7 @@ def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
     
     clean_title = entry.title
     for pattern in [r'\.\s*In:\s*.*$', r'\.\s*doi:\s*.*$']:
-        clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE)
+        clean_title = _safe_re_sub(pattern, '', clean_title, flags=re.IGNORECASE)
     clean_title = clean_title.strip().strip('.,;:')
     
     if not clean_title:

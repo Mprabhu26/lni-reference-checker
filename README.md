@@ -44,7 +44,6 @@ Four-stage pipeline with automatic caching:
    ├─ CrossRef (journal DOIs)
    ├─ Semantic Scholar (CS papers + preprints)
    ├─ OpenAlex (multidisciplinary coverage)
-   ├─ DBLP (CS conferences)
    └─ arXiv (physics/CS preprints)
 
 3. URL VALIDATION (suspicious only) → HTTP 200 + title match → REAL ✓
@@ -100,12 +99,10 @@ lni_tool/
 ├── web_search_verifier.py   URL validation, web search, bot detection (414 L)
 ├── local_db.py              SQLite caching with zlib compression (521 L)
 ├── review_queue.py          Professor decisions, override persistence (391 L)
-├── make_fixtures.py         Test PDF generator for coverage (336 L)
-├── fix_db.py                One-time DB schema migration helper
 ├── download_db.py           Optional: full Semantic Scholar snapshot instructions
 ├── index.html               Complete single-page UI (1356 L)
 ├── requirements.txt         All free/open-source dependencies
-└── conftest.py              pytest fixtures
+
 ```
 
 > **Note**: `pytest.ini` and `Procfile` are not included in the repository by default. Add them as needed (see Testing and Deployment sections below).
@@ -190,7 +187,8 @@ Create a `.env` file in the project root:
 ```bash
 # AI backends — pick at least one for full AI-fallback verification
 AI_API_KEY=your_groq_api_key              # https://console.groq.com (free, llama-3.3-70b)
-AI_API_KEY_GEMINI=your_gemini_api_key     # https://aistudio.google.com (free, Gemini 1.5 Flash)
+AI_BASE_URL=https://api.groq.com/openai/v1   # or https://generativelanguage.googleapis.com/v1beta/openai/
+AI_MODEL=llama-3.3-70b-versatile             # or gemini-1.5-flash
 
 # Optional: higher rate limits for academic APIs
 SEMANTIC_SCHOLAR_API_KEY=your_s2_key     # https://semanticscholar.org/product/api

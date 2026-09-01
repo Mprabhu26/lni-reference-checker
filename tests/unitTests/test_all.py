@@ -60,12 +60,30 @@ try:
 except ImportError:
     LOCALDB_AVAILABLE = False
 
+try:
+    from web_search_verifier import _safe_re_sub, _safe_re_search
+    WEB_SEARCH_AVAILABLE = True
+except ImportError:
+    WEB_SEARCH_AVAILABLE = False
+
 
 def _load_txt(name: str) -> str:
     path = FIXTURES_TXT / name
     if path.exists():
         return path.read_text(encoding="utf-8")
     return ""
+
+
+# =============================================================================
+# SECTION REGRESSION — SAFE REGEX HANDLING
+# =============================================================================
+
+@pytest.mark.skipif(not WEB_SEARCH_AVAILABLE, reason="web_search_verifier.py unavailable")
+def test_compiled_regex_works_with_safe_wrapper():
+    compiled = re.compile(r'\.\s*In:\s*.*$', re.IGNORECASE)
+    text = "Attention is all you need. In: Proceedings of NeurIPS, 2017"
+    assert _safe_re_sub(compiled, "", text).strip() == "Attention is all you need"
+    assert _safe_re_search(compiled, text) is not None
 
 
 # =============================================================================
@@ -452,6 +470,31 @@ class TestParserCompletenessChecks:
             assert not any("key" in i.lower() and "format" in i.lower()
                            for i in e.completeness_issues), \
                 f"Unexpected key format issue in {e.key}: {e.completeness_issues}"
+
+    def test_P51_proceedings_venue_in_text_does_not_require_booktitle(self):
+        """Proceedings entries with 'In: ...' venue remain valid even if booktitle is not extracted separately."""
+        bib = "[Wa14a] Wagner, K.: Paper A. In: IEEE, 2014; S. 1--10."
+        entries = parse_bibliography(bib)
+        assert entries[0].entry_type in ("proceedings", "inproceedings")
+        assert not any("booktitle" in i.lower() and "missing" in i.lower()
+                       for i in entries[0].completeness_issues), entries[0].completeness_issues
+
+    def test_B1_malformed_key_not_silently_dropped(self):
+        """Bug 1 regression: Entries with malformed keys must not be silently dropped.
+        Instead, they should be preserved and the key flagged as a format violation."""
+        # Case 1: Long-form key that doesn't match LNI format
+        bib = "[Smith2020] Smith, John: A Paper. Springer, 2020."
+        entries = parse_bibliography(bib)
+        assert len(entries) >= 1, "Entry with malformed key [Smith2020] was silently dropped!"
+        # The entry should be present but the key should be flagged
+        assert any("malformed" in i.lower() or ("key" in i.lower() and "format" in i.lower())
+                   for i in entries[0].completeness_issues), \
+            f"Expected key format issue for [Smith2020], got: {entries[0].completeness_issues}"
+        
+        # Case 2: Key with special characters
+        bib2 = "[A-B2020] Anonymous: Another paper. ACM, 2020."
+        entries2 = parse_bibliography(bib2)
+        assert len(entries2) >= 1, "Entry with malformed key [A-B2020] was silently dropped!"
 
 
 # =============================================================================
