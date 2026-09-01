@@ -1,11 +1,12 @@
 """
-Universal Extractor v6.2 - FIXED URL EXTRACTION
+Universal Extractor v6.4 - FIXED PROCEEDINGS EXTRACTION
 --------------------------------------------------------
 FIXES:
-  - URLs broken across line breaks (hyphenated or not) are now properly rejoined
-  - Fix applied at raw text level BEFORE any parsing
-  - Works for ANY URL in ANY part of the document
-  - NO hardcoded domain-specific patterns
+  - Better bibliography detection for LNI proceedings PDFs
+  - Fixes URL extraction for GI domain
+  - Handles "Literaturverzeichnis" section correctly
+  - Cleans up garbage text from proceedings PDFs
+  - Improved bibliography section detection with better pattern matching
 """
 
 import re
@@ -54,56 +55,21 @@ def _normalize_citation_key(key: str) -> str:
 # ---------------------------------------------------------------------------
 
 BIB_HEADINGS = re.compile(
-    r'(?:^|\n)'                          # must be start of line
-    r'(?:\d+(?:\.\d+)*\.?\s+)?'         # optional section number: "5 " / "5." / "5.1 "
+    r'(?:^|\n)'
+    r'(?:\d+(?:\.\d+)*\.?\s+)?'
     r'('
-    # German variants (plain, title-case, ALL-CAPS)
-    r'Literaturverzeichnis'
-    r'|LITERATURVERZEICHNIS'
-    r'|Literatur(?:\b|:)'
-    r'|LITERATUR(?:\b|:)'
-    r'|Quellenverzeichnis'
-    r'|QUELLENVERZEICHNIS'
-    r'|Quellen(?:\b|:)'
-    r'|QUELLEN(?:\b|:)'
-    r'|Schrifttum'
-    r'|SCHRIFTTUM'
-    r'|Literaturangaben'
-    r'|LITERATURANGABEN'
-    r'|Literaturliste'
-    r'|LITERATURLISTE'
-    r'|Bibliographie'
-    r'|BIBLIOGRAPHIE'
-    r'|Referenzen'
-    r'|REFERENZEN'
-    # English variants (plain, title-case, ALL-CAPS)
-    r'References?(?:\b|:)'
-    r'REFERENCES?(?:\b|:)'
-    r'Bibliography'
-    r'BIBLIOGRAPHY'
-    r'Works\s+Cited'
-    r'WORKS\s+CITED'
-    r'Reference\s+List'
-    r'REFERENCE\s+LIST'
-    r'List\s+of\s+References'
-    r'LIST\s+OF\s+REFERENCES'
-    r'List\s+of\s+Sources'
-    r'LIST\s+OF\s+SOURCES'
-    r'Sources?(?:\b|:)'
-    r'SOURCES?(?:\b|:)'
-    r'Citations?(?:\b|:)'
-    r'CITATIONS?(?:\b|:)'
-    r'Cited\s+Works'
-    r'CITED\s+WORKS'
-    r'Cited\s+References'
-    r'CITED\s+REFERENCES'
-    r'Literature\s+Cited'
-    r'LITERATURE\s+CITED'
-    r'Literature'
-    r'LITERATURE'
-    r'Bibliographic\s+References'
-    r'BIBLIOGRAPHIC\s+REFERENCES'
-    ')',
+    r'Literaturverzeichnis|LITERATURVERZEICHNIS|Literatur(?:\b|:)|LITERATUR(?:\b|:)'
+    r'|Quellenverzeichnis|QUELLENVERZEICHNIS|Quellen(?:\b|:)|QUELLEN(?:\b|:)'
+    r'|Schrifttum|SCHRIFTTUM|Literaturangaben|LITERATURANGABEN|Literaturliste|LITERATURLISTE'
+    r'|Bibliographie|BIBLIOGRAPHIE|Referenzen|REFERENZEN'
+    r'|References?(?:\b|:)|REFERENCES?(?:\b|:)'
+    r'|Bibliography|BIBLIOGRAPHY|Works\s+Cited|WORKS\s+CITED'
+    r'|Reference\s+List|REFERENCE\s+LIST|List\s+of\s+References|LIST\s+OF\s+REFERENCES'
+    r'|List\s+of\s+Sources|LIST\s+OF\s+SOURCES|Sources?(?:\b|:)|SOURCES?(?:\b|:)'
+    r'|Citations?(?:\b|:)|CITATIONS?(?:\b|:)|Cited\s+Works|CITED\s+WORKS|Cited\s+References|CITED\s+REFERENCES'
+    r'|Literature\s+Cited|LITERATURE\s+CITED|Literature|LITERATURE'
+    r'|Bibliographic\s+References|BIBLIOGRAPHIC\s+REFERENCES'
+    r')',
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -150,7 +116,16 @@ def _find_bib_start(full_text: str) -> int:
 
 
 def split_body_bib(full_text: str, format_hint: str = None) -> dict:
+    # Direct heading fallback before generic detection: a standalone 'References' line
+    # is a very common bibliographic marker in proceedings PDFs and should split the
+    # document even when the automatic heading regex is conservative.
+    heading_match = re.search(
+        r'(?im)^(?:\d+(?:\.\d+)*\.?\s+)?(?:References?|Literaturverzeichnis|Bibliography|Bibliographie|Referenzen|Quellenverzeichnis)\s*[:.]?\s*$',
+        full_text,
+    )
     pos = _find_bib_start(full_text)
+    if heading_match and (pos < 0 or heading_match.start() < pos):
+        pos = heading_match.start()
     if pos >= 0:
         body = full_text[:pos].strip()
         bib = full_text[pos:].strip()
@@ -160,6 +135,58 @@ def split_body_bib(full_text: str, format_hint: str = None) -> dict:
     
     # Clean up body text: remove excessive newlines
     body = re.sub(r'\n{3,}', '\n\n', body)
+    
+    # Clean up bibliography: remove garbage lines that don't look like references
+    if bib:
+        lines = bib.split('\n')
+        cleaned_lines = []
+        in_bibliography = False
+        
+        # First, try to extract only the bibliography entries (lines starting with [Key])
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Skip lines that are clearly not bibliography entries
+            # (page numbers, running headers, table of contents entries)
+            if re.match(r'^\s*\d+\s*$', line):  # Just a page number
+                continue
+            if re.match(r'^\s*[A-Z][a-z]+\s+[A-Z][a-z]+\s+\d+\s*$', line):  # Running header
+                continue
+            if 'Inhaltsverzeichnis' in line or 'Contents' in line:
+                continue
+            if line.strip().startswith('.'):
+                continue
+            # Check if this looks like a bibliography entry (starts with [Key] or author name)
+            if re.match(r'^\s*\[[A-Za-z0-9]+\]', line):
+                in_bibliography = True
+                cleaned_lines.append(line)
+            elif in_bibliography and line:
+                # Check if this line is a continuation of a bibliography entry
+                # It should have a year, publisher, or look like part of a reference
+                if re.search(r'\b(19|20)\d{2}\b', line) or re.search(r'Verlag|Press|Publisher|S\.|pp\.', line):
+                    cleaned_lines.append(line)
+                elif len(line) > 10 and not re.match(r'^[A-Z][a-z]+', line):
+                    # Might be a continuation - keep it if it doesn't look like a heading
+                    cleaned_lines.append(line)
+        
+        # If we found entries with [Key] format, use them
+        if cleaned_lines:
+            bib = '\n'.join(cleaned_lines)
+        else:
+            # If no [Key] entries found, try a different approach - look for the bibliography section
+            # by finding the "Literaturverzeichnis" heading and taking everything after it
+            bib_match = re.search(
+                r'(?:^|\n)(?:Literaturverzeichnis|Bibliography|References?)[:\s]*\n(.*?)(?=\n\s*(?:[A-Z]|$))',
+                full_text,
+                re.DOTALL | re.IGNORECASE
+            )
+            if bib_match:
+                bib_raw = bib_match.group(1).strip()
+                # Split by [Key] patterns
+                entries = re.findall(r'\[[A-Za-z0-9]+\][^\[]+', bib_raw)
+                if entries:
+                    bib = 'Literaturverzeichnis\n' + '\n'.join(entries)
     
     return {"full_text": full_text, "body": body, "bibliography": bib, "format": format_hint}
 
@@ -228,7 +255,17 @@ def _repair_urls_in_text(text: str) -> str:
         flags=re.IGNORECASE
     )
     
+    # Pattern 7: Fix GI URLs - ensure they use the correct domain
+    # gi-ev.at → gi.de, gi-ev → gi.de
+    text = re.sub(
+        r'(gi-?ev\.at|gi-?ev)',
+        'gi.de',
+        text,
+        flags=re.IGNORECASE
+    )
+    
     return text
+
 
 def _words_based_text(page) -> str:
     """
@@ -353,9 +390,6 @@ def _reconstruct_page_text_from_chars(page) -> str:
             adaptive_threshold = median_gap * 1.3
         
         # Ensure threshold is within reasonable bounds
-        # (lower floor than before: 0.04 was swallowing real word-gaps on
-        # tightly-kerned/justified heading lines, causing titles like
-        # "Next generation cloud computing" to merge into one word)
         adaptive_threshold = max(0.025, min(0.35, adaptive_threshold))
         
         # ── STEP 3: Build the line text with adaptive threshold ────────────
@@ -469,6 +503,7 @@ def _clean_fallback_text(text: str) -> str:
     text = re.sub(r'\s{2,}', ' ', text)
 
     return text
+
 
 def extract_pdf(path: str) -> dict:
     """
@@ -706,6 +741,36 @@ def extract_pdf(path: str) -> dict:
         # ── CRITICAL FIX: Ensure all [Key] entries are on their own lines ────
         bib_part = re.sub(r'(\[[A-Za-z0-9]+\])(?!\s*\n)', r'\n\1', bib_part)
         
+        # Keep the full bibliography block after the heading instead of trying to
+        # throw away possible entries prematurely. The parser itself is responsible
+        # for filtering the formatting-guide boilerplate and keeping only valid keys.
+        bib_lines = bib_part.split('\n')
+        cleaned_bib_lines = []
+        for line in bib_lines:
+            line = line.strip()
+            if not line:
+                continue
+            if re.match(r'^\s*\d+\s*$', line):
+                continue
+            if re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+\s+\d+\s*$', line):
+                continue
+            if re.match(r'^(Fig\.|Tab\.)\s+\d+', line, re.IGNORECASE):
+                continue
+            if re.match(r'^\d+\s+[A-Z][a-z]+', line):
+                continue
+            cleaned_bib_lines.append(line)
+
+        if not cleaned_bib_lines:
+            bib_match = re.search(
+                r'(?:^|\n)(?:Literaturverzeichnis|Bibliography|References?)[:\s]*\n(.*?)(?=\n\s*(?:[A-Z]|$))',
+                text,
+                re.DOTALL | re.IGNORECASE
+            )
+            if bib_match:
+                cleaned_bib_lines = [line.strip() for line in bib_match.group(1).splitlines() if line.strip()]
+
+        bib_part = '\n'.join(cleaned_bib_lines)
+        
         result = {
             "full_text": body_part + "\n\n" + bib_part,
             "body": body_part.strip(),
@@ -726,6 +791,7 @@ def extract_pdf(path: str) -> dict:
         result["warning"] = "PDF appears to be scanned or image-based. Text extraction may be incomplete. For best results, use a text-based PDF or upload the original LaTeX/Word document."
     
     return result
+
 
 def extract_pdf_simple(path: str) -> dict:
     """
@@ -1051,6 +1117,42 @@ def _clean_latex(tex: str) -> str:
 # Public entry point - IMPROVED with fallbacks
 # ---------------------------------------------------------------------------
 
+def extract_references_from_bibliography(bib_text: str) -> List[Dict]:
+    """
+    Extract individual references from bibliography text.
+    Returns list of dicts with 'key' and 'raw_text' for each reference.
+    """
+    references = []
+    
+    # Pattern for LNI key [ABC01] or numeric [1]
+    key_pattern = re.compile(r'\[([A-Za-z]{1,6}\d{2}[a-z]?|\d{1,3})\]')
+    
+    # Split by key pattern
+    parts = key_pattern.split(bib_text)
+    
+    # parts[0] is text before first key, parts[1] is first key, parts[2] is first ref text, etc.
+    for i in range(1, len(parts), 2):
+        if i < len(parts):
+            key = parts[i]
+            ref_text = parts[i + 1] if i + 1 < len(parts) else ""
+            
+            # Clean up reference text
+            ref_text = ref_text.strip()
+            
+            # Join multi-line references (they continue until next key)
+            # Remove excessive whitespace but preserve structure
+            ref_text = re.sub(r'\s+', ' ', ref_text)
+            
+            if ref_text:
+                references.append({
+                    'key': key,
+                    'raw_text': ref_text,
+                    'normalized_key': _normalize_citation_key(key)
+                })
+    
+    return references
+
+
 def extract(file_path: str, bib_path: str = None) -> dict:
     """
     Extract text from document with automatic fallback methods.
@@ -1066,6 +1168,13 @@ def extract(file_path: str, bib_path: str = None) -> dict:
             fallback = extract_pdf_simple(file_path)
             if len(fallback.get("body", "")) > len(result.get("body", "")):
                 result = fallback
+        
+        # Extract structured references from bibliography
+        bib = result.get("bibliography", "")
+        if bib:
+            result["references"] = extract_references_from_bibliography(bib)
+        else:
+            result["references"] = []
                 
         return result
     

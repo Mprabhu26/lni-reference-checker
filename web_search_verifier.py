@@ -1,6 +1,6 @@
 """
 Web Search Verifier - RefChecker-style hallucination detection
-FIXED v7.4: Better landmark paper detection, fixed confidence thresholds
+FIXED v7.6: Better landmark paper detection, fixed confidence thresholds, GI domain correction with DB save
 """
 
 import json
@@ -95,6 +95,15 @@ def _url_is_reachable(url: str, timeout: float = 4.0) -> bool:
         return resp.status_code < 400
     except Exception:
         return False
+
+
+def _save_to_cache(title: str, authors: str, year: str, doi: str, url: str, source: str, confidence: float):
+    """Helper to save to local DB - imported here to avoid circular import."""
+    try:
+        from local_db import save_to_cache as db_save
+        db_save(title, authors, year, doi, url, source, confidence)
+    except Exception as e:
+        print(f"[web_search] Failed to save to cache: {e}")
 
 
 def search_web_for_paper(title: str, authors: str = "") -> List[Dict]:
@@ -296,8 +305,9 @@ LANDMARK_PAPERS = {
 
 def verify_with_web_search(entry: dict, api_status: str) -> Dict:
     """
-    FIXED v7.4: Better handling of real papers from PDFs
+    FIXED v7.6: Better handling of real papers from PDFs
     Improved landmark detection and confidence scoring
+    Added GI domain URL correction with DB save
     """
     title = entry.get("title", "").strip()
     authors = entry.get("authors", "").strip()
@@ -306,6 +316,36 @@ def verify_with_web_search(entry: dict, api_status: str) -> Dict:
     api_matched_title = entry.get("api_matched_title", "")
     api_status_check = entry.get("api_status", "not_found")
     open_access_url = entry.get("open_access_url")
+
+    # ── FIX: Handle GI domain URL verification ──────────────────────────────
+    # If the URL is gi.de or gi-ev.at, verify it's the correct domain
+    if original_url and ('gi.de' in original_url.lower() or 'gi-ev.at' in original_url.lower()):
+        # Normalize to gi.de
+        correct_url = re.sub(r'gi-?ev\.at', 'gi.de', original_url.lower())
+        # Ensure it has https://
+        if not correct_url.startswith('http'):
+            correct_url = 'https://' + correct_url
+        # If the URL was corrected, use the correct one
+        if correct_url != original_url.lower():
+            # ✅ FIX: Save GI URL-corrected paper to local DB
+            _save_to_cache(
+                title=title or "GI - Gesellschaft für Informatik e.V.",
+                authors=authors or "Gesellschaft für Informatik e.V.",
+                year=year or "",
+                doi="",
+                url=correct_url,
+                source="url_correction_gi",
+                confidence=0.92,
+            )
+            return {
+                "status": "verified",
+                "web_verified": True,
+                "confidence": 0.92,
+                "matched_title": "GI - Gesellschaft für Informatik e.V.",
+                "open_access_url": correct_url,
+                "note": f"URL corrected from {original_url} to {correct_url}",
+                "sources_checked": ["url_correction"],
+            }
 
     if not title:
         return {
@@ -325,6 +365,17 @@ def verify_with_web_search(entry: dict, api_status: str) -> Dict:
             year_match = "likely " + landmark_info.get("year", "")
             if year and landmark_info.get("year") in year:
                 year_match = landmark_info.get("year")
+            
+            # ✅ FIX: Save landmark paper to local DB
+            _save_to_cache(
+                title=landmark_title,
+                authors=landmark_info.get("authors", ""),
+                year=landmark_info.get("year", ""),
+                doi="",
+                url=landmark_info.get("url", ""),
+                source="landmark_paper",
+                confidence=0.98,
+            )
             
             # This is a landmark paper - mark as REAL with high confidence
             return {
@@ -355,6 +406,16 @@ def verify_with_web_search(entry: dict, api_status: str) -> Dict:
                     sim = _title_similarity_simple(title, page_title)
                     # FIXED: Lowered threshold to 0.65 (was 0.70) for better sensitivity
                     if sim >= 0.65:
+                        # ✅ FIX: Save URL-verified paper to local DB
+                        _save_to_cache(
+                            title=page_title,
+                            authors=authors,
+                            year=year,
+                            doi="",
+                            url=original_url,
+                            source="url_verify",
+                            confidence=0.85,
+                        )
                         return {
                             "status": "verified",
                             "web_verified": True,
@@ -467,6 +528,17 @@ def verify_with_web_search(entry: dict, api_status: str) -> Dict:
             else:
                 final_confidence = min(0.80, result.confidence)
 
+            # ✅ FIX: Save web-search verified paper to local DB
+            _save_to_cache(
+                title=found_title,
+                authors=authors,
+                year=year,
+                doi="",
+                url=verified_url or (None if url_already_dead else original_url),
+                source="web_search_verified",
+                confidence=final_confidence,
+            )
+
             return {
                 "status": "verified",
                 "web_verified": True,
@@ -481,6 +553,16 @@ def verify_with_web_search(entry: dict, api_status: str) -> Dict:
     if api_status_check == "verified" and api_matched_title:
         sim = _title_similarity_simple(title, api_matched_title)
         if sim >= 0.50:
+            # ✅ FIX: Save API-fallback verified paper to local DB
+            _save_to_cache(
+                title=api_matched_title,
+                authors=authors,
+                year=year,
+                doi="",
+                url=open_access_url or original_url,
+                source="api_fallback",
+                confidence=0.70 + sim * 0.20,
+            )
             return {
                 "status": "verified",
                 "web_verified": True,

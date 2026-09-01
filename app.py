@@ -29,7 +29,11 @@ import shutil
 import time
 import signal
 from functools import wraps
-from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
+
+try:
+    from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context  # type: ignore[import-not-found]
+except ImportError as exc:
+    raise RuntimeError("Flask is required. Install it with: pip install flask") from exc
 
 from extractor import extract
 from parser import parse_bibliography, entries_to_dict, _validate_key_vs_metadata

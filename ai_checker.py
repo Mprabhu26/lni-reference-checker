@@ -170,6 +170,70 @@ def _ai_available() -> bool:
     return bool(_AI_BASE_URL and _AI_MODEL and _AI_API_KEY)
 
 
+def _local_ml_gate(entry: dict) -> dict:
+    """Deterministic fallback heuristic for entries that have no external confirmation.
+
+    This is intentionally conservative: it does not prove a paper exists; it only
+    checks whether the bibliography metadata is plausible enough for a professor to
+    review manually. A structurally plausible entry stays in the review queue rather
+    than being auto-dismissed as fake.
+    """
+    title = (entry.get("title") or "").strip()
+    authors = (entry.get("authors") or "").strip()
+    year = (entry.get("year") or "").strip()
+    raw = (entry.get("raw_text") or "").strip()
+
+    placeholder_surnames = {
+        "ghost", "fake", "test", "example", "placeholder", "unknown",
+        "anonymous", "nobody", "someone", "author", "dummy", "sample",
+        "demo", "null", "none", "community", "staff"
+    }
+
+    if authors:
+        first = authors.split(";")[0].strip()
+        surname = first.split(",")[0].strip().lower() if "," in first else (first.split()[-1].lower() if first.split() else "")
+        if surname in placeholder_surnames:
+            return {
+                "decision": "FAKE",
+                "confidence": 0.82,
+                "reason": "Placeholder or non-person author name detected.",
+            }
+
+    if not title and not authors:
+        return {
+            "decision": "FAKE",
+            "confidence": 0.65,
+            "reason": "No usable title or author information found.",
+        }
+
+    if not year:
+        return {
+            "decision": "SUSPICIOUS",
+            "confidence": 0.57,
+            "reason": "Year missing; cannot confirm the work confidently.",
+        }
+
+    venue_present = bool(re.search(
+        r'\bIn\s*:?\s*|\bProceedings\b|\bConference\b|\bWorkshop\b|\bSymposium\b|\bTagung\b|\bKonferenz\b',
+        raw,
+        flags=re.IGNORECASE,
+    ))
+
+    title_has_words = len(re.findall(r"\b\w+\b", title)) >= 2
+    if title_has_words and authors and year:
+        return {
+            "decision": "REAL",
+            "confidence": 0.68,
+            "reason": "Metadata is structurally plausible and author/year/title are present." + (" Venue is explicitly stated." if venue_present else ""),
+        }
+
+    return {
+        "decision": "SUSPICIOUS",
+        "confidence": 0.60,
+        "reason": "Found some metadata, but not enough external evidence to confirm the reference.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # German venue detection helper (for INFORMATION only, not used for leniency)
 # ---------------------------------------------------------------------------
@@ -692,6 +756,14 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     # STEP 2: If API confirmed it, return REAL immediately (LOWERED THRESHOLD)
     # ─────────────────────────────────────────────────────────────────────────
     if api_status == "verified" and api_confidence >= 0.75 and matched_title:
+        if title_sim is not None and title_sim < 0.55:
+            return {
+                "verdict": "SUSPICIOUS",
+                "confidence": 0.74,
+                "composite_risk": 0.62,
+                "risk_factors": ["Title differs substantially from the matched paper"],
+                "reasoning": f"Database verification exists but the title does not match closely enough to confirm this reference: '{matched_title[:60]}'",
+            }
         return {
             "verdict": "REAL",
             "confidence": max(api_confidence, 0.85),
@@ -700,8 +772,18 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
             "reasoning": f"Confirmed in {', '.join(sources[:2])}: '{matched_title[:60]}'",
         }
 
-    # Partial match that was promoted to verified confidence via author overlap
+    # Partial matches are only promoted to REAL when the title is materially similar.
+    # A fuzzy match to a different paper must stay suspicious instead of being treated
+    # as a verified real publication.
     if api_status == "partial_match" and api_confidence >= 0.80 and matched_title:
+        if title_sim is not None and title_sim < 0.60:
+            return {
+                "verdict": "SUSPICIOUS",
+                "confidence": min(api_confidence, 0.75),
+                "composite_risk": 0.60,
+                "risk_factors": ["Title differs substantially from the matched paper"],
+                "reasoning": f"Partial match in {', '.join(sources[:2])} but title similarity is too low to confirm identity: '{matched_title[:60]}'",
+            }
         return {
             "verdict": "REAL",
             "confidence": api_confidence,
@@ -712,6 +794,14 @@ def _compute_verdict_with_confidence(entry: dict, api_result: dict, title_sim: f
     
     # DOI match is strongest evidence
     if has_doi and api_status == "verified" and api_confidence >= 0.75:
+        if title_sim is not None and title_sim < 0.50:
+            return {
+                "verdict": "SUSPICIOUS",
+                "confidence": 0.74,
+                "composite_risk": 0.60,
+                "risk_factors": ["Title differs substantially from the matched paper"],
+                "reasoning": "DOI is present but the title similarity is too low to confirm it is the same publication.",
+            }
         return {
             "verdict": "REAL",
             "confidence": 0.92,
@@ -965,11 +1055,19 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
                 "risk_factors": ["RETRACTED"]}
     
     if has_doi and api_status == "verified" and confidence >= 0.75 and matched_title:
+        if title_sim is not None and title_sim < 0.55:
+            return {"verdict": "SUSPICIOUS", "confidence": 0.74,
+                    "reasoning": "DOI matches but title similarity is insufficient to confirm the same paper.",
+                    "risk_factors": ["Title differs substantially from the matched paper"]}
         return {"verdict": "REAL", "confidence": 0.95,
                 "reasoning": f"DOI confirmed + title match",
                 "risk_factors": []}
     
     if has_oa_url and confidence >= 0.70 and matched_title:
+        if title_sim is not None and title_sim < 0.55:
+            return {"verdict": "SUSPICIOUS", "confidence": 0.74,
+                    "reasoning": "Open-access copy exists but the title is too different to confirm the same publication.",
+                    "risk_factors": ["Title differs substantially from the matched paper"]}
         return {"verdict": "REAL", "confidence": 0.91,
                 "reasoning": "Open-access copy retrieved and verified",
                 "risk_factors": []}
@@ -980,6 +1078,10 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
                 "risk_factors": []}
     
     if api_status == "verified" and confidence >= 0.80 and n_sources >= 2 and matched_title:
+        if title_sim is not None and title_sim < 0.50:
+            return {"verdict": "SUSPICIOUS", "confidence": 0.74,
+                    "reasoning": "Database confirms a different work with too little title similarity to accept as the same reference.",
+                    "risk_factors": ["Title differs substantially from the matched paper"]}
         return {"verdict": "REAL", "confidence": confidence,
                 "reasoning": f"Confirmed by {n_sources} independent databases",
                 "risk_factors": []}
@@ -1006,12 +1108,20 @@ def _pre_screen_by_author_overlap(entry: dict, api_result: dict, title_sim: floa
                 "risk_factors": [f"Author mismatch ({pct}%)"]}
     
     if overlap >= 0.50 and api_status in ("verified", "partial_match") and confidence >= 0.60:
+        if title_sim is not None and title_sim < 0.60:
+            return {"verdict": "SUSPICIOUS", "confidence": 0.74,
+                    "reasoning": f"Author overlap {pct}% is not enough without a title match strong enough to confirm identity.",
+                    "risk_factors": ["Title differs substantially from the matched paper"]}
         return {"verdict": "REAL", "confidence": round(min(0.80 + overlap * 0.18, 0.97), 2),
                 "reasoning": f"Author overlap {pct}% + title/API match",
                 "risk_factors": []}
 
     # Strong author match alone (even with low title sim due to bad formatting)
     if overlap >= 0.80 and api_status in ("verified", "partial_match", "suspicious") and matched_title:
+        if title_sim is not None and title_sim < 0.55:
+            return {"verdict": "SUSPICIOUS", "confidence": 0.74,
+                    "reasoning": f"Strong author overlap ({pct}%) without enough title similarity to confirm identity.",
+                    "risk_factors": ["Title differs substantially from the matched paper"]}
         return {"verdict": "REAL", "confidence": round(min(0.75 + overlap * 0.20, 0.95), 2),
                 "reasoning": f"Strong author overlap ({pct}%) confirms identity despite format issues",
                 "risk_factors": []}
