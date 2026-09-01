@@ -642,14 +642,14 @@ def _assemble_result(
     )
     s = det_score["score"]
 
-    # References the AI could not resolve one way or the other still need a
-    # professor's manual call (real vs. fake). Until every one of them has
-    # been resolved, no PASS/FLAG/FAIL verdict is issued — the submission
-    # sits in PENDING with only a tentative score shown, since a confirmed
-    # fake reference could still swing the outcome.
+    # Count entries needing manual review:
+    # - SUSPICIOUS: unclear evidence
+    # - MANUAL_REVIEW: plausible but unconfirmed (ML gate) or flagged by systems
+    # - FAKE: detected as fabricated but needs professor confirmation
+    # Until professor resolves each, submission stays PENDING with tentative score
     suspicious_pending = sum(
         1 for v in verification_output
-        if v.get("ai_verdict") in ("SUSPICIOUS", "MANUAL_REVIEW")
+        if v.get("ai_verdict") in ("SUSPICIOUS", "MANUAL_REVIEW", "FAKE")
     )
 
     if suspicious_pending > 0:
@@ -663,10 +663,23 @@ def _assemble_result(
     ) or "No issues detected."
 
     if suspicious_pending > 0:
+        fake_count = sum(1 for v in verification_output if v.get("ai_verdict") == "FAKE")
+        review_count = sum(1 for v in verification_output if v.get("ai_verdict") == "MANUAL_REVIEW")
+        susp_count = sum(1 for v in verification_output if v.get("ai_verdict") == "SUSPICIOUS")
+        
+        reasons = []
+        if fake_count > 0:
+            reasons.append(f"{fake_count} reference(s) flagged as fabricated")
+        if review_count > 0:
+            reasons.append(f"{review_count} reference(s) require manual verification")
+        if susp_count > 0:
+            reasons.append(f"{susp_count} reference(s) are suspicious/uncertain")
+        
+        reason_text = " and ".join(reasons) if reasons else f"{suspicious_pending} reference(s) need review"
+        
         _det_reason = (
-            f"Tentative score {s}/100 — {suspicious_pending} reference(s) require "
-            f"manual review because automated sources could not confirm them. No verdict can be issued "
-            f"until each is confirmed as real or fake. {_pen_parts}"
+            f"Tentative score {s}/100 — {reason_text}. "
+            f"No verdict can be issued until professor confirms each entry. {_pen_parts}"
         )
     else:
         _det_reason = f"Score {s}/100. {_pen_parts}"
@@ -1399,7 +1412,7 @@ def ai_review():
     sc = data.get("score", {})
     flagged = [v for v in data.get("verification", [])
                if v.get("status") == "suspicious"
-               or v.get("ai_verdict") in ("FAKE", "SUSPICIOUS")]
+               or v.get("ai_verdict") in ("FAKE", "SUSPICIOUS", "MANUAL_REVIEW")]
     incomplete = [e for e in data.get("bibliography", []) if e.get("completeness_issues")]
     key_issues = [e for e in data.get("bibliography", []) if e.get("key_consistent") is False]
     dupes = data.get("duplicates", [])

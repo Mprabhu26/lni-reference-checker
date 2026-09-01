@@ -1166,11 +1166,28 @@ function renderScoreTab(data) {
   </div>`;
   if (sc.verdict_reason) html += `<div class="explanation-box" style="margin-bottom:14px;">🤖 <strong>AI Verdict:</strong> ${escapeHtml(sc.verdict_reason)}</div>`;
   const suspiciousRefs = (data.verification || []).filter(v => effectiveVerdict(v) === 'SUSPICIOUS');
-  if (suspiciousRefs.length > 0) {
+  const manualReviewRefs = (data.verification || []).filter(v => effectiveVerdict(v) === 'MANUAL_REVIEW');
+  const flaggedRefs = [...suspiciousRefs, ...manualReviewRefs];
+  if (flaggedRefs.length > 0) {
+    const suspCount = suspiciousRefs.length;
+    const manualCount = manualReviewRefs.length;
+    let flagTitle = '';
+    if (suspCount > 0 && manualCount > 0) {
+      flagTitle = `⚠ ${suspCount} Suspicious + ${manualCount} Manual Review Reference(s) — Pending Professor Review`;
+    } else if (manualCount > 0) {
+      flagTitle = `⚠ ${manualCount} Reference(s) Require Manual Review`;
+    } else {
+      flagTitle = `⚠ ${suspCount} Suspicious Reference(s) — Pending Professor Review`;
+    }
+    
     html += `<div style="background:var(--warning-bg);border:1px solid #fed7aa;border-radius:var(--radius);padding:12px 14px;margin-bottom:14px;">
-      <div style="font-weight:700;font-size:12px;color:var(--warning);margin-bottom:8px;">⚠ ${suspiciousRefs.length} Suspicious Reference(s) — Pending Professor Review</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">These references are flagged as suspicious. If you confirm them as fake, <strong>-10 points each</strong> will be deducted. Go to the <strong>Reference Verification</strong> tab and click <em>Mark as Fake</em> to confirm.</div>
-      <table class="penalty-table" style="background:transparent;"><thead><tr><th>Key</th><th>Title</th><th>Deduction if confirmed fake</th></tr></thead><tbody>${suspiciousRefs.map(v => `<tr><td><code style="font-family:JetBrains Mono,monospace;font-size:11px;">[${escapeHtml(v.key)}]</code></td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml((v.title||'').slice(0,60))}</td><td class="deduct-cell">–</td></tr>`).join('')}</tbody></table>
+      <div style="font-weight:700;font-size:12px;color:var(--warning);margin-bottom:8px;">${flagTitle}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">These references need professor review. Suspicious entries (if confirmed fake) will have <strong>-10 points each</strong> deducted. Manual review entries are unconfirmed but look plausible. Go to the <strong>Reference Verification</strong> tab to mark or verify each one.</div>
+      <table class="penalty-table" style="background:transparent;"><thead><tr><th>Key</th><th>Title</th><th>Status</th><th>Deduction if fake</th></tr></thead><tbody>${flaggedRefs.map(v => {
+        let statusLabel = effectiveVerdict(v) === 'SUSPICIOUS' ? 'Suspicious' : 'Manual Review';
+        let deductLabel = effectiveVerdict(v) === 'SUSPICIOUS' ? '-10' : '-';
+        return `<tr><td><code style="font-family:JetBrains Mono,monospace;font-size:11px;">[${escapeHtml(v.key)}]</code></td><td style="color:var(--text-muted);font-size:11px;">${escapeHtml((v.title||'').slice(0,50))}</td><td style="font-size:11px;color:var(--warning);font-weight:500;">${statusLabel}</td><td class="deduct-cell">${deductLabel}</td></tr>`;
+      }).join('')}</tbody></table>
     </div>`;
   }
   html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:14px;">
@@ -1182,7 +1199,7 @@ function renderScoreTab(data) {
     </tbody></table>
   </div>`;
   if (sc.professor_note) { let cleanNote = sc.professor_note; cleanNote = cleanNote.replace(/^I will manually review\s+/, ''); html += `<div class="explanation-box"><strong>📝 Note:</strong> ${escapeHtml(cleanNote)}</div>`; }
-  if (suspiciousRefs.length > 0) { const keys = suspiciousRefs.map(v => `[${v.key}]`).join(', '); html += `<div class="explanation-box" style="margin-top:10px;border-left-color:var(--warning);background:var(--warning-bg);">📝 <strong>Note:</strong> Manually review the suspicious references ${escapeHtml(keys)} to determine their legitimacy.</div>`; }
+  if (flaggedRefs.length > 0) { const keys = flaggedRefs.map(v => `[${v.key}]`).join(', '); html += `<div class="explanation-box" style="margin-top:10px;border-left-color:var(--warning);background:var(--warning-bg);">📝 <strong>Note:</strong> Manually review the flagged references ${escapeHtml(keys)} (suspicious or manual review) to determine their legitimacy and confirm final score.</div>`; }
   document.getElementById('scoreContent').innerHTML = html;
 }
 

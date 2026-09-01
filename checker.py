@@ -30,6 +30,7 @@ from local_db import search_cache, save_to_cache, get_cache_stats, init_cache_db
 from web_search_verifier import verify_with_web_search
 from review_queue import is_venue_whitelisted, get_review_decision, get_false_positive
 from ai_checker import _is_grey_literature, _is_fabricated_title
+from author_journal_verifier import verify_reference_comprehensive
 
 # ---------------------------------------------------------------------------
 # Configurable verification thresholds (can be overridden via environment)
@@ -2045,15 +2046,7 @@ Respond ONLY with JSON:
                 
                 # Only accept AI if high confidence
                 if ai_verdict == "FABRICATED" and ai_confidence >= 0.80:
-                    save_to_cache(
-                        title=entry.title or "",
-                        authors=entry.authors or "",
-                        year=entry.year or "",
-                        doi=entry.doi or "",
-                        url=entry_url,
-                        source="ai_fabricated",
-                        confidence=ai_confidence,
-                    )
+                    # NEVER cache fabricated papers - let professor confirm first
                     return VerificationResult(
                         key=entry.key, title=entry.title or "",
                         status="fabricated",
@@ -2089,18 +2082,11 @@ Respond ONLY with JSON:
         # ── STEP 6: ML GATE (final resort - scores plausibility, never marks as VERIFIED) ─────
         ml_gate = _local_ml_gate(entry)
         
-        # ML only filters - never marks as verified
+        # ML only filters - never marks as verified, and NEVER caches
+        # ML is a score, not verification - only external sources verify
         if ml_gate["decision"] == "REAL":
             # High score - plausible but unconfirmed, needs human check
-            save_to_cache(
-                title=entry.title or "",
-                authors=entry.authors or "",
-                year=entry.year or "",
-                doi=entry.doi or "",
-                url=entry_url,
-                source="ml_gate_plausible",
-                confidence=ml_gate["confidence"],
-            )
+            # DO NOT CACHE - let professor confirm first
             return VerificationResult(
                 key=entry.key,
                 title=entry.title or "",
