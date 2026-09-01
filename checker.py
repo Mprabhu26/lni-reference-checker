@@ -44,7 +44,10 @@ AUTHOR_JOURNAL_VERIFY_THRESHOLD = float(os.getenv("LNI_AUTHOR_JOURNAL_VERIFY_THR
 AUTHOR_JOURNAL_SUSPICIOUS_THRESHOLD = float(os.getenv("LNI_AUTHOR_JOURNAL_SUSPICIOUS_THRESHOLD", "0.45"))
 
 # Metadata consistency: number of mismatches to downgrade verdict
-METADATA_MISMATCH_FAKE_THRESHOLD = 3   # 3+ mismatches → FAKE
+METADATA_MISMATCH_FAKE_THRESHOLD = 4   # 4+ mismatches → FAKE (raised from 3 — CrossRef
+                                       # often returns fewer authors via "et al." which
+                                       # triggers both "overlap" and "extra authors" checks
+                                       # simultaneously on a real paper, causing false FAKEs)
 METADATA_MISMATCH_SUSPICIOUS_THRESHOLD = 2  # 2 mismatches → SUSPICIOUS
 
 # Confidence tiers for professor workflow
@@ -1424,18 +1427,24 @@ def _check_metadata_consistency(entry: BibEntry, api_result: Optional[Verificati
                 issues.append(f"Year mismatch: cited {entry_year} vs {api_year}")
     
     # Check author mismatch (using overlap score)
+    # NOTE: Only emit ONE author issue even if multiple sub-checks fire —
+    # "overlap < 0.4" and "extra authors" are the same root cause (CrossRef
+    # returning truncated "et al." lists) and should not double-count toward
+    # the FAKE threshold.
     if entry.authors and api_result.correct_authors:
         overlap = author_overlap_score(entry.authors, api_result.correct_authors)
+        cited_authors = [a.strip() for a in entry.authors.split(';') if a.strip()]
+        api_authors = [a.strip() for a in api_result.correct_authors.split(';') if a.strip()]
+        api_truncated = len(api_authors) <= 3 and len(cited_authors) > len(api_authors)
         if overlap is not None:
-            if overlap < 0.4:
+            if overlap < 0.4 and not api_truncated:
+                # Only flag as mismatch when API is NOT simply truncating via et al.
                 issues.append(f"Author mismatch (overlap: {int(overlap*100)}%)")
-            elif overlap < 0.7:
+            elif overlap < 0.7 and not api_truncated:
                 issues.append(f"Partial author match ({int(overlap*100)}%)")
-            
-            # Check for extra authors
-            cited_authors = [a.strip() for a in entry.authors.split(';') if a.strip()]
-            api_authors = [a.strip() for a in api_result.correct_authors.split(';') if a.strip()]
-            if len(cited_authors) > len(api_authors) + 1:
+            elif len(cited_authors) > len(api_authors) + 2 and not api_truncated:
+                # Extra-authors only when API returned a substantial list and we still
+                # have many more — genuine discrepancy, not a truncated et al.
                 issues.append(f"Extra authors: cited {len(cited_authors)} vs API {len(api_authors)}")
     
     # Check journal mismatch
@@ -1503,17 +1512,16 @@ def _is_landmark_paper_local(title: str, key: str = "") -> Optional[Dict]:
 
 def _apply_confidence_thresholds(result: "VerificationResult") -> "VerificationResult":
     """Apply anti-false-positive confidence checks."""
-    # Don't downgrade author-journal verified entries with good consistency
+    # Don't downgrade author-journal verified entries with good consistency.
+    # Previously, 2 consistency issues (e.g. partial author overlap + journal
+    # abbreviation) were enough to flip a REAL to SUSPICIOUS or FAKE — but
+    # those are normal CrossRef partial-match artifacts, not fabrication signals.
+    # Only downgrade when there are 4+ distinct consistency issues AND the
+    # author-journal confidence is below the verify threshold (not a strong match).
     if result.author_journal_verification and result.author_journal_verification.get("overall_confidence", 0) >= 0.8:
-        # Only downgrade if there are consistency issues
-        if result.consistency_issues and len(result.consistency_issues) >= 2:
-            # If there are consistency issues, downgrade despite author-journal
-            if len(result.consistency_issues) >= 3:
-                result.status = "fabricated"
-                result.confidence = 0.85
-            else:
-                result.status = "suspicious"
-                result.confidence = 0.65
+        if result.consistency_issues and len(result.consistency_issues) >= 4:
+            result.status = "suspicious"
+            result.confidence = 0.65
         return result
     
     if result.status == "fabricated":
@@ -1986,7 +1994,18 @@ def verify_reference(
 
         # ── STEP 9: ML gate (final resort) ─────────────────────────────────────
         from ai_checker import _local_ml_gate
-        ml_gate = _local_ml_gate(entry)
+        entry_dict_for_ml = {
+            "title":      entry.title or "",
+            "authors":    entry.authors or "",
+            "year":       entry.year or "",
+            "url":        entry_url,
+            "journal":    getattr(entry, "journal", "") or "",
+            "booktitle":  getattr(entry, "booktitle", "") or "",
+            "publisher":  getattr(entry, "publisher", "") or "",
+            "entry_type": getattr(entry, "entry_type", "") or "",
+            "raw_text":   getattr(entry, "raw_text", "") or "",
+        }
+        ml_gate = _local_ml_gate(entry_dict_for_ml)
         
         if ml_gate["decision"] == "REAL":
             # ✅ Save ML-gate verified paper to DB

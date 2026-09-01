@@ -12,7 +12,7 @@
 5. [Scoring & Grading System](#scoring--grading-system)
 6. [How to Use (Web Interface)](#how-to-use-web-interface)
 7. [Understanding Results](#understanding-results)
-8. [Customization Guide](#customization-guide)
+8. [Customization Guide](#customization-guide)  
 9. [Troubleshooting](#troubleshooting)
 10. [FAQ](#faq)
 11. [Tips & Best Practices](#tips--best-practices)

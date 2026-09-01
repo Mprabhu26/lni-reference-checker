@@ -4,18 +4,17 @@
 
 A production-grade Python/Flask application for validating bibliographic references in academic submissions. Detects fabricated, hallucinated, and incomplete citations through intelligent multi-stage verification combining local caching, academic APIs, URL validation, and AI-powered semantic analysis.
 
-**Designed for**: LNI (Lecture Notes in Informatics) submissions, but works for any academic bibliography format.
+Designed for: LNI (Lecture Notes in Informatics) submissions.
+
 
 ---
 
-## 🎯 Key Features
+## Key Features
 
-### Multi-Format Document Processing
-- **PDF** (text-based; image/scanned PDFs not supported)
-- **Microsoft Word** (.docx)
-- **LaTeX** (.tex + .bib files)
-- **Auto-detection** of format and encoding issues
-- **Robust text extraction** handling ligatures, special characters, and footnotes
+### PDF Document Processing
+- PDF (text-based; image/scanned PDFs not supported)
+- Robust text extraction handling ligatures, special characters, and footnotes
+- Auto-detection of encoding issues
 
 ### Bibliography Parsing & Validation
 - **LNI key validation** — verifies [AuthorInitial][Year] pattern consistency
@@ -51,9 +50,8 @@ Four-stage pipeline with automatic caching:
    └─ Safe page content verification
 
 4. AI + WEB SEARCH (final fallback) → Confidence ≥70% → REAL ✓
-   ├─ Groq LLaMA 3.3 70B or Google Gemini
+   ├─ OpenAI-compatible LLM (Groq/Gemini/OpenAI)
    ├─ DuckDuckGo web search with fallback
-   └─ Semantic analysis of search results
 ```
 
 **Verdicts**: `REAL`, `SUSPICIOUS`, or `FAKE`
@@ -105,8 +103,6 @@ lni_tool/
 
 ```
 
-> **Note**: `pytest.ini` and `Procfile` are not included in the repository by default. Add them as needed (see Testing and Deployment sections below).
-
 ### Verification Pipeline Flow
 
 ```
@@ -117,7 +113,7 @@ lni_tool/
        ▼
 ┌──────────────────────────────────────────────────────┐
 │ [Extractor]                                          │
-│ PDF/DOCX/LaTeX → raw text + metadata                │
+│ PDF→ raw text + metadata                │
 └──────┬───────────────────────────────────────────────┘
        │
        ▼
@@ -173,26 +169,36 @@ lni_tool/
 ### 1. Installation
 
 ```bash
-git clone <repo_url>
+git clone https://github.com/Mprabhu26/lni-reference-checker.git
 cd lni-reference-checker
 
 # Python 3.9+ required
 pip install -r requirements.txt
 ```
 
-### 2. Configuration (Optional but Recommended)
+### 2. Configuration
 
-Create a `.env` file in the project root:
+Create a .env file in the project root:
 
-```bash
-# AI backends — pick at least one for full AI-fallback verification
-AI_API_KEY=your_groq_api_key              # https://console.groq.com (free, llama-3.3-70b)
-AI_BASE_URL=https://api.groq.com/openai/v1   # or https://generativelanguage.googleapis.com/v1beta/openai/
-AI_MODEL=llama-3.3-70b-versatile             # or gemini-1.5-flash
+# AI backend - OpenAI-compatible endpoint (pick one)
+# Option 1: Groq (free, 14,400 req/day)
+AI_BASE_URL=https://api.groq.com/openai/v1
+AI_MODEL=llama-3.3-70b-versatile
+AI_API_KEY=your_groq_api_key
+
+# Option 2: Google Gemini (free, 1,500 req/day)
+# AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+# AI_MODEL=gemini-1.5-flash
+# AI_API_KEY=your_gemini_api_key
+
+# Option 3: OpenAI
+# AI_BASE_URL=https://api.openai.com/v1
+# AI_MODEL=gpt-4o-mini
+# AI_API_KEY=your_openai_api_key
 
 # Optional: higher rate limits for academic APIs
-SEMANTIC_SCHOLAR_API_KEY=your_s2_key     # https://semanticscholar.org/product/api
-GITHUB_TOKEN=your_github_token           # https://github.com/settings/tokens
+SEMANTIC_SCHOLAR_API_KEY=your_s2_key
+GITHUB_TOKEN=your_github_token
 
 # Cache/database directories (defaults: .lni_cache, .lni_db)
 LNI_CACHE_DIR=/path/to/cache
@@ -200,12 +206,11 @@ LNI_DB_DIR=/path/to/db
 
 # Open-access link discovery via Unpaywall (optional)
 UNPAYWALL_EMAIL=your_email@university.edu
-```
 
-**All APIs listed have free tiers adequate for academic use:**
-- **Groq**: 14,400 req/day free
-- **Google Gemini**: 1,500 req/day free
-- **Semantic Scholar / CrossRef**: Free, no payment required
+All APIs listed have free tiers adequate for academic use:
+- Groq: 14,400 req/day free
+- Google Gemini: 1,500 req/day free
+- Semantic Scholar / CrossRef / OpenAlex / arXiv: Free, no payment required
 
 ### 3. Initialize Databases
 
@@ -225,7 +230,7 @@ python fix_db.py
 
 ```bash
 python app.py
-# Navigate to http://localhost:5000
+# Navigate to http://192.168.178.22:5000
 ```
 
 ---
@@ -236,8 +241,7 @@ python app.py
 
 ```
 1. UPLOAD document (PDF, DOCX, or TEX)
-   └─ Optionally attach .bib sidecar for LaTeX
-
+   
 2. RUN CHECK (deep_check=true for full online verification)
    └─ Progress panel shows API calls, cache hits, AI reasoning
 
@@ -293,9 +297,6 @@ Streaming SSE variant — returns newline-delimited JSON events during analysis,
 
 ### POST `/check-sync`
 Synchronous fallback — blocks until analysis completes, then returns full JSON.
-
-### POST `/batch`
-Analyze multiple documents in one request (multipart, multiple `file` fields).
 
 ### POST `/ai-review`
 Run the AI reviewer pass on already-parsed entries (POST JSON with `entries` array).
@@ -559,46 +560,6 @@ Automatically detects and adapts for:
 
 ---
 
-## 🧪 Testing
-
-### Run Test Suite
-
-```bash
-# Full suite
-pytest
-
-# Verbose output
-pytest -v
-
-# Skip network tests (fast, local-only)
-pytest -m "not network"
-
-# Single test module
-pytest tests/test_parser.py -v
-
-# With coverage
-pytest --cov=. --cov-report=html
-```
-
-### Generate Test Fixtures
-
-```bash
-# Creates structured test PDFs covering verification scenarios
-python make_fixtures.py
-```
-
-Generates PDFs covering: perfect bibliography, hallucinated references, incomplete entries, near-duplicates, grey literature, non-Latin scripts, and author name variations.
-
-### Shared Fixtures (`conftest.py`)
-
-| Fixture | Purpose |
-|---------|---------|
-| `make_bib_entry()` | Factory for `BibEntry` objects |
-| `perfect_bib_text()` | Golden reference bibliography string |
-| `perfect_body_text()` | Golden body text with citation keys |
-| `redirect_disk_cache` | Auto-redirects disk cache to temp dir for all tests |
-
----
 
 ## ⚡ Performance & Scalability
 
@@ -619,17 +580,6 @@ MAX_FILE_SIZE    = 30 MB       # Supports large dissertations
 TIMEOUT          = 180 seconds  # Per-request timeout (SIGALRM on Linux/macOS)
 MAX_WORKERS      = 5            # API concurrency
 ```
-
-### Benchmarks (MacBook Pro M2, 16 GB RAM)
-
-| Task | Time |
-|------|------|
-| Extract 50-page PDF | ~1.2s |
-| Parse 50 bibliography entries | ~0.3s |
-| Cross-check citations | ~0.8s |
-| Verify 50 entries (cached) | ~0.5s |
-| Verify 50 entries (APIs) | 8–15s |
-| Full analysis (end-to-end) | 12–20s |
 
 ---
 
@@ -654,47 +604,12 @@ MAX_WORKERS      = 5            # API concurrency
 
 ---
 
-## 🚢 Deployment
-
-### Docker
-
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "2", "-t", "180", "app:app"]
-```
-
-```bash
-docker build -t lni-checker .
-docker run -p 5000:5000 \
-  -e AI_API_KEY=$GROQ_KEY \
-  -e AI_API_KEY_GEMINI=$GEMINI_KEY \
-  lni-checker
-```
-
-### Gunicorn (Direct)
-
-```bash
-gunicorn -b 0.0.0.0:5000 -w 2 -t 180 app:app
-```
-
-### Environment-Specific Notes
-
-- **Linux/macOS**: SIGALRM-based timeouts enforce the 180s request limit
-- **Windows**: Signal-based timeouts are disabled; use `--timeout 120` in gunicorn
-- **Cloud (AWS/GCP)**: Ensure sufficient `/tmp` space; temp files are auto-cleaned after each request
-
----
 
 ## 📋 Configuration Reference
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `AI_API_KEY` | (none) | Groq API key (llama-3.3-70b, primary LLM) |
-| `AI_API_KEY_GEMINI` | (none) | Google Gemini API key (fallback LLM) |
 | `SEMANTIC_SCHOLAR_API_KEY` | (none) | Higher rate limits for Semantic Scholar |
 | `GITHUB_TOKEN` | (none) | GitHub API token for repo citation verification |
 | `UNPAYWALL_EMAIL` | (none) | Email for Unpaywall polite pool (open-access links) |
@@ -702,7 +617,7 @@ gunicorn -b 0.0.0.0:5000 -w 2 -t 180 app:app
 | `LNI_DB_DIR` | `.lni_db` | SQLite database directory |
 | `FLASK_ENV` | `production` | Flask environment (development/production) |
 
-At least one of `AI_API_KEY` or `AI_API_KEY_GEMINI` is required for the AI-fallback stage. All other keys are optional.
+At least one of `AI_API_KEY`  is required for the AI-fallback stage. All other keys are optional.
 
 ---
 
@@ -743,7 +658,7 @@ At least one of `AI_API_KEY` or `AI_API_KEY_GEMINI` is required for the AI-fallb
 ```bash
 # 1. Verify API keys are loaded
 echo $AI_API_KEY
-echo $AI_API_KEY_GEMINI
+
 
 # 2. Test Groq connectivity
 curl -X POST https://api.groq.com/openai/v1/chat/completions \
@@ -797,33 +712,6 @@ curl -I "https://api.crossref.org/works?query.title=test"
 
 ---
 
-## 🤝 Contributing
-
-### Code Style
-- PEP 8 compliant (max 100 chars per line)
-- Type hints on all functions
-- Docstrings for modules and public functions
-- Single responsibility per module
-
-### Adding a Verification Source
-
-```python
-# 1. Create new_api_verifier.py
-def verify_with_new_api(entry: BibEntry, max_retries=3) -> VerificationResult:
-    """Query NewAPI for reference verification."""
-    # Return VerificationResult(verdict="REAL"/"SUSPICIOUS", confidence=0.85, source="newapi")
-
-# 2. Integrate into checker.py — add to VERIFICATION_SOURCES list
-
-# 3. Add tests in tests/test_new_api.py with mocked responses
-
-# 4. Tune thresholds in checker.py:
-REAL_THRESHOLD_NORMAL = 0.85   # Academic papers
-REAL_THRESHOLD_GREY   = 0.75   # Industry/grey literature
-SUSPICIOUS_THRESHOLD  = 0.70   # AI fallback
-```
-
----
 
 ## 📚 Further Reading
 
@@ -850,11 +738,6 @@ SUSPICIOUS_THRESHOLD  = 0.70   # AI fallback
 
 ---
 
-## 📝 License
-
-**MIT License** — Free for academic and commercial use. All dependencies are free/open-source. No paid subscriptions required.
-
----
 
 **Maintainer**: Mithila Prabhu (Frankfurt University of Applied Sciences)  
 **Status**: Production-ready ✓

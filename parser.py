@@ -795,24 +795,35 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
         if m and m.start() > 5:
             candidates.append(rest_clean[:m.start()].strip().rstrip('.'))
 
-        first_period = rest_clean.split('.')[0].strip()
-        if first_period:
-            candidates.append(first_period)
+        # Only use first-period split when the period is followed by a space + capital
+        # (genuine sentence boundary). Avoid truncating titles like "PM2.5" or
+        # space-free garbled text where splitting at '.' strips meaningful content.
+        first_period_parts = rest_clean.split('.')
+        if len(first_period_parts) > 1:
+            # Only treat as a sentence boundary if next char after '.' is a space + capital
+            first_period = first_period_parts[0].strip()
+            remainder = rest_clean[len(first_period_parts[0]):].lstrip('.')
+            if remainder and remainder[:1] == ' ' and len(remainder) > 1 and remainder[1].isupper():
+                if first_period:
+                    candidates.append(first_period)
 
         if candidates:
             max_len = int(len(rest_clean) * 0.85)
             valid = [c for c in candidates if 5 < len(c) <= max_len]
             if valid:
-                title_text = min(valid, key=len)
+                # Prefer longest plausible candidate — shortest was truncating
+                # titles containing decimals (e.g. "PM2.5") or run-together words.
+                title_text = max(valid, key=len)
             else:
-                title_text = min(candidates, key=len)
+                title_text = max(candidates, key=len)
         else:
             title_text = rest_clean[:120]
 
-        if entry.entry_type == "article" and title_text:
-            title_text = re.sub(
-                r'\.\s+[A-ZÄÖÜ][^.]{1,50}$', '', title_text.strip()
-            )
+        # NOTE: The article-specific regex that stripped trailing sentence
+        # fragments was removed — it incorrectly truncated titles like
+        # "Artificial neural networks forecasting of PM2.5 pollution using
+        # air mass trajectory based geographic model and wavelet transformation"
+        # at the decimal point. Title cleanup is handled by the colon-split above.
 
         entry.title = title_text.strip().strip('.,;:') or None
         if not entry.title:
@@ -1013,6 +1024,14 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
                 return s
 
             normed = [_norm_surname(s) for s in surnames]
+            # Guard: remove empty strings so s[0] never raises IndexError.
+            # Empty normed entries arise when a "surname" token is all digits/
+            # punctuation (e.g. "2014." parsed from a garbled author string).
+            normed = [s for s in normed if s]
+            if not normed:
+                entry.key_consistent = None
+                return
+            n = len(normed)  # recalculate after filtering
 
             def _compound_initials(authors_str: str) -> set:
                 initials = set()
@@ -1025,10 +1044,10 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
                     else:
                         parts = author.split()
                         surname = parts[-1] if parts else author
-                    if surname:
+                    if surname and surname[0].isalpha():
                         initials.add(surname[0].lower())
                     for part in re.split(r'[-\s]+', surname):
-                        if part:
+                        if part and part[0].isalpha():
                             initials.add(part[0].lower())
                 return initials
 
@@ -1110,12 +1129,12 @@ def _validate_key_vs_metadata(entry: BibEntry) -> None:
         if year_ok is False:
             details.append(f"key year '{key_year_2d}' ≠ parsed year '{entry.year}'")
         if initials_ok is False:
-            if len(surnames) == 2 and key_initials == (normed[0][0] + normed[1][0]):
+            if n >= 2 and key_initials == (normed[0][0] + normed[1][0]):
                 entry.key_consistent = True
                 entry.key_mismatch_detail = None
                 return
             
-            if len(surnames) == 1 and key_initials == normed[0][:2]:
+            if n == 1 and key_initials == normed[0][:2]:
                 entry.key_consistent = True
                 entry.key_mismatch_detail = None
                 return

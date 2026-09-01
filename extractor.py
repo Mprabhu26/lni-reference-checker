@@ -106,6 +106,61 @@ def _find_bib_start(full_text: str) -> int:
         return -1
 
     # Prefer the last heading match that is followed by a bib entry key
+    # BUT: filter out matches where the heading word is embedded mid-sentence
+    # (e.g. "Literature Review" inside a sentence body).  A real bibliography
+    # heading must either:
+    #   (a) be preceded by an optional section number on the same line, OR
+    #   (b) be at the very start of a line with nothing but whitespace before it.
+    # We also prefer matches whose heading text is a *precise* heading word
+    # (References, Bibliography, …) over generic words like "Literature" that
+    # can appear inline.
+
+    STRONG_HEADINGS = re.compile(
+        r'(?:References?|REFERENCES?|Bibliography|BIBLIOGRAPHY|'
+        r'Literaturverzeichnis|LITERATURVERZEICHNIS|Bibliographie|BIBLIOGRAPHIE|'
+        r'Referenzen|REFERENZEN|Quellenverzeichnis|QUELLENVERZEICHNIS|'
+        r'Works\s+Cited|List\s+of\s+References)',
+        re.IGNORECASE,
+    )
+
+    def _is_standalone_heading(m, text):
+        """True when the match looks like a real section heading, not inline text."""
+        # Find the start of the line containing this match
+        line_start = text.rfind('\n', 0, m.start()) + 1
+        line_end   = text.find('\n', m.end())
+        if line_end == -1:
+            line_end = len(text)
+        line = text[line_start:line_end].strip()
+        # Allow optional leading section number: "6 References", "6. References"
+        heading_line = re.sub(r'^\d+[\.\s]+', '', line).strip()
+        # The heading word(s) should be essentially the whole line
+        # (allow trailing colon or nothing)
+        return bool(re.fullmatch(
+            r'(?:References?|REFERENCES?|Bibliography|BIBLIOGRAPHY|'
+            r'Literaturverzeichnis|LITERATURVERZEICHNIS|Bibliographie|BIBLIOGRAPHIE|'
+            r'Referenzen|REFERENZEN|Quellenverzeichnis|QUELLENVERZEICHNIS|'
+            r'Schrifttum|Works\s+Cited|List\s+of\s+References|'
+            r'Literatur(?:\s+Cited)?|Quellen|Sources?|Citations?|'
+            r'Cited\s+(?:Works|References)|Bibliographic\s+References|Literature):?',
+            heading_line,
+            re.IGNORECASE,
+        ))
+
+    # First pass: strong + standalone headings (most reliable)
+    for m in all_matches:
+        if STRONG_HEADINGS.search(m.group(0)) and _is_standalone_heading(m, full_text):
+            window = full_text[m.start(): m.start() + 500]
+            if any_bib_key.search(window):
+                return m.start()
+
+    # Second pass: any match that is a standalone heading line
+    for m in reversed(all_matches):
+        if _is_standalone_heading(m, full_text):
+            window = full_text[m.start(): m.start() + 500]
+            if any_bib_key.search(window):
+                return m.start()
+
+    # Third pass: original behaviour — last match followed by a bib key
     for m in reversed(all_matches):
         window = full_text[m.start(): m.start() + 500]
         if any_bib_key.search(window):
@@ -480,6 +535,30 @@ def _clean_fallback_text(text: str) -> str:
     # Mask all URLs before any substitution that could corrupt path segments,
     # then restore them after all fixes are applied.
     text = re.sub(r'https?://\S+', _mask_url, text)
+
+    # ── Fix space-free bibliography lines (PDF font encoding issue) ─────────
+    # Some PDFs encode bibliography pages without inter-word spaces, producing
+    # runs like "Evaluationofblast-inducedgroundvibrationpredictors" or
+    # "Khandelwal,Manoj;Singh,TN:Evaluation...".
+    # Detect lines where the space-to-char ratio is very low (< 3%) and apply
+    # a heuristic split: insert space before known LNI separators and before
+    # sequences that match the pattern [lowercase][uppercase] which covers
+    # most word boundaries in author names and titles.
+    fixed_lines = []
+    for line in text.split('\n'):
+        stripped = line.strip()
+        if len(stripped) > 30:
+            space_ratio = stripped.count(' ') / len(stripped)
+            if space_ratio < 0.03:
+                # Very few spaces — apply aggressive word-boundary insertion
+                # 1. Insert space before LNI field separators already handled below
+                # 2. Insert space at digit→letter and letter→digit boundaries (volume/page numbers)
+                # 3. Insert space at known two-letter abbreviation boundaries: "TN:" → "TN :"
+                line = re.sub(r'([a-zäöüß])([A-ZÄÖÜ])', r'\1 \2', line)
+                line = re.sub(r'([A-ZÄÖÜa-zäöüß])(\d)', r'\1 \2', line)
+                line = re.sub(r'(\d)([A-ZÄÖÜa-zäöüß])', r'\1 \2', line)
+        fixed_lines.append(line)
+    text = '\n'.join(fixed_lines)
 
     text = re.sub(r'([a-zäöüß])([A-ZÄÖÜ])', r'\1 \2', text)
 
