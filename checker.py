@@ -205,11 +205,15 @@ def _tfidf_similarity(text_a: str, text_b: str) -> Optional[float]:
 
 def _local_ml_gate(entry: BibEntry) -> dict:
     """
-    Conservative local ML gate used before API calls.
-
-    IMPORTANT: This is only a pre-filter. It is not trusted as final truth.
-    A reference should only be marked REAL if the metadata + external checks
-    later confirm it. This avoids false positives from well-fabricated titles.
+    ML plausibility gate used AFTER all external checks (APIs, URL, AI) fail.
+    
+    CRITICAL: ML can NEVER mark as verified - it only scores plausibility.
+    Well-written fake papers will fool ML heuristics (format looks correct).
+    
+    Returns:
+    - "REAL" score 0.85+: Plausible metadata → manual_review (needs human)
+    - "UNCERTAIN" score 0.65-0.85: Uncertain → suspicious
+    - "FAKE" or low score <0.65: Obvious red flags → not_found
     """
     title = (getattr(entry, "title", "") or "").strip()
     authors = (getattr(entry, "authors", "") or "").strip()
@@ -1652,34 +1656,8 @@ def verify_reference(
                 sources_checked=["local_db"],
             )
 
-        # ── STEP 1b: Local ML gate (before API calls) ───────────────────────
-        # Policy: REAL stops early; SUSPICIOUS/FAKE/UNCERTAIN continue to the
-        # API -> URL -> AI cascade. This avoids wasting time on obviously good
-        # entries while still checking ambiguous ones more deeply.
-        ml_gate = _local_ml_gate(entry)
-        if ml_gate["decision"] == "REAL":
-            save_to_cache(
-                title=entry.title or "",
-                authors=entry.authors or "",
-                year=entry.year or "",
-                doi=entry.doi or "",
-                url=(getattr(entry, "url", "") or "").strip(),
-                source="local_ml",
-                confidence=ml_gate["confidence"],
-            )
-            return VerificationResult(
-                key=entry.key,
-                title=entry.title or "",
-                status="verified",
-                confidence=ml_gate["confidence"],
-                matched_title=entry.title or "",
-                correct_authors=entry.authors or "",
-                note=f"Local ML gate accepted as REAL: {ml_gate['reason']}",
-                sources_checked=["local_ml"],
-            )
-        else:
-            print(f"[LOCAL ML] {entry.key}: {ml_gate['decision']} -> continuing to API pipeline ({ml_gate['reason']})",
-                  file=sys.stderr, flush=True)
+        # ── STEP 1b: Local ML gate (REMOVED - moved to STEP 6 after all else fails)
+        # ML gate is now late-stage, not early-stage. See STEP 6 below.
 
         # ── STEP 1c: Grey literature detection ────────────────────────────────
         _entry_dict_for_grey = {
@@ -2026,7 +2004,7 @@ def verify_reference(
                 year=entry.year or "",
                 doi=entry.doi or "",
                 url=web_result.get("open_access_url") or entry_url,
-                source="ai_web_search",
+                source="web_search_verified",
                 confidence=web_result["confidence"],
             )
             return VerificationResult(
@@ -2035,18 +2013,122 @@ def verify_reference(
                 confidence=web_result["confidence"],
                 matched_title=matched,
                 open_access_url=web_result.get("open_access_url"),
-                note=web_result.get("note", "Verified via AI web search"),
+                note=web_result.get("note", "Verified via web search"),
                 sources_checked=web_result.get("sources_checked", ["web_search"]),
             )
 
-        return VerificationResult(
-            key=entry.key, title=entry.title or "",
-            status="manual_review",
-            confidence=web_result.get("confidence", 0.0),
-            matched_title=api_result.matched_title if api_result else None,
-            note=f"Not confirmed by any source. {web_result.get('note', 'Manual review required.')}",
-            sources_checked=web_result.get("sources_checked", ["none"]),
-        )
+        # ── STEP 5: AI VERIFICATION (ALL REFS - grey lit or normal) ─────────────
+        # If APIs, URL, and web search all failed, try AI to classify
+        if allow_ai_fallback and _ai_available():
+            try:
+                from ai_checker import _call_ai, _call_ai_json
+                
+                prompt = f"""Assess if this academic reference is REAL or FABRICATED.
+
+Title: {entry.title or "N/A"}
+Authors: {entry.authors or "N/A"}
+Year: {entry.year or "N/A"}
+Publisher/Journal: {getattr(entry, 'publisher', '') or getattr(entry, 'journal', '') or 'N/A'}
+Entry Type: {getattr(entry, 'entry_type', '') or 'unknown'}
+
+Respond ONLY with JSON:
+{{"verdict": "REAL"|"FABRICATED"|"UNCERTAIN", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
+"""
+                
+                ai_response = _call_ai_json(prompt, max_tokens=500, timeout=10)
+                ai_verdict = ai_response.get("verdict", "UNCERTAIN")
+                ai_confidence = ai_response.get("confidence", 0.0)
+                ai_reasoning = ai_response.get("reasoning", "")
+                
+                print(f"[AI] {entry.key}: {ai_verdict} ({ai_confidence:.2f}) - {ai_reasoning[:80]}", 
+                      file=sys.stderr, flush=True)
+                
+                # Only accept AI if high confidence
+                if ai_verdict == "FABRICATED" and ai_confidence >= 0.80:
+                    save_to_cache(
+                        title=entry.title or "",
+                        authors=entry.authors or "",
+                        year=entry.year or "",
+                        doi=entry.doi or "",
+                        url=entry_url,
+                        source="ai_fabricated",
+                        confidence=ai_confidence,
+                    )
+                    return VerificationResult(
+                        key=entry.key, title=entry.title or "",
+                        status="fabricated",
+                        confidence=ai_confidence,
+                        note=f"AI assessment: {ai_reasoning}",
+                        sources_checked=["ai_assessment"],
+                    )
+                elif ai_verdict == "REAL" and ai_confidence >= 0.80:
+                    save_to_cache(
+                        title=entry.title or "",
+                        authors=entry.authors or "",
+                        year=entry.year or "",
+                        doi=entry.doi or "",
+                        url=entry_url,
+                        source="ai_verified",
+                        confidence=ai_confidence,
+                    )
+                    return VerificationResult(
+                        key=entry.key, title=entry.title or "",
+                        status="verified",
+                        confidence=ai_confidence,
+                        matched_title=entry.title or "",
+                        correct_authors=entry.authors or "",
+                        note=f"AI assessment: {ai_reasoning}",
+                        sources_checked=["ai_assessment"],
+                    )
+                # If UNCERTAIN or low confidence, fall through to ML gate
+                
+            except Exception as e:
+                print(f"[AI ERROR] {entry.key}: {str(e)[:100]}", file=sys.stderr, flush=True)
+                # Fall through to ML gate
+        
+        # ── STEP 6: ML GATE (final resort - scores plausibility, never marks as VERIFIED) ─────
+        ml_gate = _local_ml_gate(entry)
+        
+        # ML only filters - never marks as verified
+        if ml_gate["decision"] == "REAL":
+            # High score - plausible but unconfirmed, needs human check
+            save_to_cache(
+                title=entry.title or "",
+                authors=entry.authors or "",
+                year=entry.year or "",
+                doi=entry.doi or "",
+                url=entry_url,
+                source="ml_gate_plausible",
+                confidence=ml_gate["confidence"],
+            )
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="manual_review",
+                confidence=ml_gate["confidence"],
+                matched_title=entry.title or "",
+                correct_authors=entry.authors or "",
+                note=f"Metadata looks plausible (ML score {ml_gate['confidence']:.2f}), but not confirmed by external sources. Requires manual verification.",
+                sources_checked=["ml_gate"],
+            )
+        elif ml_gate["decision"] == "SUSPICIOUS":
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="suspicious",
+                confidence=ml_gate["confidence"],
+                note=f"ML assessment uncertain: {ml_gate['reason']}",
+                sources_checked=["ml_gate"],
+            )
+        else:  # FAKE / UNCERTAIN
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="not_found",
+                confidence=ml_gate["confidence"],
+                note=f"ML assessment: {ml_gate['reason']}. No external source found.",
+                sources_checked=["ml_gate"],
+            )
     
     except Exception as e:
         return VerificationResult(

@@ -30,6 +30,8 @@ def prioritize_for_review(
     """
     TIER 3 Feature 1: Confidence-Based Review Prioritization
     
+    UPDATED for unified flow: ML gate now runs AFTER all other checks.
+    
     Returns references ordered by how much professor attention they need.
     Priority 0.0 = needs urgent review
     Priority 1.0 = can be skipped (high confidence)
@@ -49,50 +51,66 @@ def prioritize_for_review(
         is_retracted = result.get("is_retracted", False) if isinstance(result, dict) else getattr(result, "is_retracted", False)
         is_duplicate = result.get("is_duplicate", False) if isinstance(result, dict) else getattr(result, "is_duplicate", False)
         duplicate_of = result.get("duplicate_of") if isinstance(result, dict) else getattr(result, "duplicate_of", None)
+        sources = result.get("sources_checked", []) if isinstance(result, dict) else getattr(result, "sources_checked", [])
         
         # Skip if this is a duplicate
         if is_duplicate:
             priority_score = 0.95
             priority_text = "DUPLICATE"
-        # Skip already-verified with high confidence
+        # Skip already-verified via API/URL/AI with high confidence
         elif status == "verified" and confidence >= 0.92:
             priority_score = 1.0
             priority_text = "HIGH_CONFIDENCE_VERIFIED"
-        
-        # Medium priority: moderate confidence or partial matches
         elif status == "verified" and confidence >= 0.75:
-            priority_score = 0.7
+            priority_score = 0.8
             priority_text = "MODERATE_CONFIDENCE_VERIFIED"
         
-        # High priority: manual review needed
-        elif status in ("manual_review", "suspicious"):
-            if confidence < 0.4:
-                priority_score = 0.1  # URGENT
-                priority_text = "LOW_CONFIDENCE_SUSPICIOUS"
-            elif confidence < 0.65:
-                priority_score = 0.3
-                priority_text = "QUESTIONABLE"
-            else:
-                priority_score = 0.6
-                priority_text = "MODERATE_MANUAL_REVIEW"
-        
-        # Very high priority: likely fake
-        elif status == "not_found":
+        # URGENT: manual_review from ML gate (plausible but unconfirmed)
+        # These look OK but failed all external checks - needs human judgment
+        elif status == "manual_review" and "ml_gate" in sources:
             if confidence >= 0.85:
-                priority_score = 0.05  # CRITICAL
-                priority_text = "LIKELY_FAKE_HIGH_CONFIDENCE"
+                priority_score = 0.2  # HIGH PRIORITY
+                priority_text = "ML_PLAUSIBLE_NEEDS_HUMAN_CHECK"
             else:
-                priority_score = 0.2
-                priority_text = "POSSIBLE_FAKE_LOW_CONFIDENCE"
+                priority_score = 0.4
+                priority_text = "ML_UNCERTAIN_NEEDS_REVIEW"
+        
+        # Medium priority: manual_review from other sources
+        elif status == "manual_review":
+            priority_score = 0.5
+            priority_text = "MANUAL_REVIEW_NEEDED"
+        
+        # High priority: suspicious entries
+        elif status == "suspicious":
+            priority_score = 0.3
+            priority_text = "SUSPICIOUS_NEEDS_VERIFICATION"
+        
+        # Fabricated detected by AI
+        elif status == "fabricated":
+            priority_score = 0.15  # High priority but likely reject
+            priority_text = "AI_DETECTED_FABRICATED"
+        
+        # Low priority: not_found or not_found by ML
+        elif status == "not_found":
+            if confidence >= 0.8:
+                priority_score = 0.05  # CRITICAL (high confidence it's fake)
+                priority_text = "ML_LIKELY_FAKE_HIGH_CONFIDENCE"
+            else:
+                priority_score = 0.25
+                priority_text = "NOT_FOUND_LOW_CONFIDENCE"
         
         else:
             priority_score = 0.5
             priority_text = "OTHER"
         
         evidence = []
+        if "ml_gate" in sources:
+            evidence.append("ML assessment (after all checks failed)")
+        if "ai_assessment" in sources:
+            evidence.append("AI assessment")
         if confidence < 0.5:
             evidence.append("Low confidence score")
-        if status in ("manual_review", "suspicious", "not_found"):
+        if status in ("manual_review", "suspicious", "not_found", "fabricated"):
             evidence.append(f"Status: {status}")
         if note:
             evidence.append(f"Note: {str(note)[:100]}")
