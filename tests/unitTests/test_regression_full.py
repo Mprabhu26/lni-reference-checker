@@ -423,7 +423,8 @@ class TestCompletenessIssues:
         e.title = "A Website"
         e.url = "https://example.com"
         _check_completeness(e)
-        assert any("urldate" in i.lower() for i in e.completeness_issues)
+        # urldate is now optional, so it should NOT be flagged as missing
+        assert not any("urldate" in i.lower() for i in e.completeness_issues)
 
     def test_R76_missing_url_website_flagged(self):
         e = BibEntry(key="We22", raw_text="")
@@ -938,6 +939,16 @@ class TestExtractorSplit:
     def test_R173_no_bib_returns_minus_one(self):
         text = "This paper has no references at all. Plain body text only."
         assert _find_bib_start(text) == -1
+
+    def test_R173b_embedded_bibliography_heading(self):
+        text = (
+            "Body citation [MD00].\n"
+            "Running header Bibliography\n"
+            "[Ar05] Araújo, Miguel: A Paper. Journal, 2005."
+        )
+        pos = _find_bib_start(text)
+        assert pos > text.index("Body citation")
+        assert "[Ar05]" in text[pos:]
 
     def test_R174_body_not_contaminated(self):
         text = "Introduction.\n\nReferences\n[1] Smith: Paper. 2020."

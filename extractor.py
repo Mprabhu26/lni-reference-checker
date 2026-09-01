@@ -1,18 +1,53 @@
 """
-Universal Extractor v6.2 - FIXED URL EXTRACTION
+Universal Extractor v6.4 - FIXED PROCEEDINGS EXTRACTION
 --------------------------------------------------------
 FIXES:
-  - URLs broken across line breaks (hyphenated or not) are now properly rejoined
-  - Fix applied at raw text level BEFORE any parsing
-  - Works for ANY URL in ANY part of the document
-  - NO hardcoded domain-specific patterns
+  - Better bibliography detection for LNI proceedings PDFs
+  - Fixes URL extraction for GI domain
+  - Handles "Literaturverzeichnis" section correctly
+  - Cleans up garbage text from proceedings PDFs
+  - Improved bibliography section detection with better pattern matching
 """
 
 import re
 import os
 import warnings
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
+
+
+def _normalize_citation_key(key: str) -> str:
+    """
+    Normalize citation key variants to LNI format.
+    Examples:
+      vaswani2017 → VSP17
+      adam_optimizer_2014 → KB14
+      kb14 → KB14
+      VSP17 → VSP17 (already normalized)
+    """
+    # If already in LNI format, return as-is
+    if re.match(r'^[A-Z][A-Z0-9]{0,2}\d{2}[a-z]?$', key):
+        return key
+    
+    # Extract year
+    year_match = re.search(r'(\d{4})', key)
+    year = year_match.group(1) if year_match else ""
+    
+    # Extract author initials from snake_case or camelCase
+    word_part = re.sub(r'[\d_]', ' ', key).strip()
+    words = word_part.split()
+    
+    # Get first letter of each word (up to 3)
+    initials = ''.join([w[0].upper() for w in words[:3] if w])
+    
+    if initials and year:
+        normalized = f"{initials}{year[-2:]}"
+        # Validate format
+        if re.match(r'^[A-Z]{1,3}\d{2}$', normalized):
+            return normalized
+    
+    # Fallback: uppercase version
+    return key.upper()
 
 
 # ---------------------------------------------------------------------------
@@ -20,56 +55,21 @@ from typing import Dict, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 BIB_HEADINGS = re.compile(
-    r'(?:^|\n)'                          # must be start of line
-    r'(?:\d+(?:\.\d+)*\.?\s+)?'         # optional section number: "5 " / "5." / "5.1 "
+    r'(?:^|\n)'
+    r'(?:\d+(?:\.\d+)*\.?\s+)?'
     r'('
-    # German variants (plain, title-case, ALL-CAPS)
-    r'Literaturverzeichnis'
-    r'|LITERATURVERZEICHNIS'
-    r'|Literatur(?:\b|:)'
-    r'|LITERATUR(?:\b|:)'
-    r'|Quellenverzeichnis'
-    r'|QUELLENVERZEICHNIS'
-    r'|Quellen(?:\b|:)'
-    r'|QUELLEN(?:\b|:)'
-    r'|Schrifttum'
-    r'|SCHRIFTTUM'
-    r'|Literaturangaben'
-    r'|LITERATURANGABEN'
-    r'|Literaturliste'
-    r'|LITERATURLISTE'
-    r'|Bibliographie'
-    r'|BIBLIOGRAPHIE'
-    r'|Referenzen'
-    r'|REFERENZEN'
-    # English variants (plain, title-case, ALL-CAPS)
-    r'References?(?:\b|:)'
-    r'REFERENCES?(?:\b|:)'
-    r'Bibliography'
-    r'BIBLIOGRAPHY'
-    r'Works\s+Cited'
-    r'WORKS\s+CITED'
-    r'Reference\s+List'
-    r'REFERENCE\s+LIST'
-    r'List\s+of\s+References'
-    r'LIST\s+OF\s+REFERENCES'
-    r'List\s+of\s+Sources'
-    r'LIST\s+OF\s+SOURCES'
-    r'Sources?(?:\b|:)'
-    r'SOURCES?(?:\b|:)'
-    r'Citations?(?:\b|:)'
-    r'CITATIONS?(?:\b|:)'
-    r'Cited\s+Works'
-    r'CITED\s+WORKS'
-    r'Cited\s+References'
-    r'CITED\s+REFERENCES'
-    r'Literature\s+Cited'
-    r'LITERATURE\s+CITED'
-    r'Literature'
-    r'LITERATURE'
-    r'Bibliographic\s+References'
-    r'BIBLIOGRAPHIC\s+REFERENCES'
-    ')',
+    r'Literaturverzeichnis|LITERATURVERZEICHNIS|Literatur(?:\b|:)|LITERATUR(?:\b|:)'
+    r'|Quellenverzeichnis|QUELLENVERZEICHNIS|Quellen(?:\b|:)|QUELLEN(?:\b|:)'
+    r'|Schrifttum|SCHRIFTTUM|Literaturangaben|LITERATURANGABEN|Literaturliste|LITERATURLISTE'
+    r'|Bibliographie|BIBLIOGRAPHIE|Referenzen|REFERENZEN'
+    r'|References?(?:\b|:)|REFERENCES?(?:\b|:)'
+    r'|Bibliography|BIBLIOGRAPHY|Works\s+Cited|WORKS\s+CITED'
+    r'|Reference\s+List|REFERENCE\s+LIST|List\s+of\s+References|LIST\s+OF\s+REFERENCES'
+    r'|List\s+of\s+Sources|LIST\s+OF\s+SOURCES|Sources?(?:\b|:)|SOURCES?(?:\b|:)'
+    r'|Citations?(?:\b|:)|CITATIONS?(?:\b|:)|Cited\s+Works|CITED\s+WORKS|Cited\s+References|CITED\s+REFERENCES'
+    r'|Literature\s+Cited|LITERATURE\s+CITED|Literature|LITERATURE'
+    r'|Bibliographic\s+References|BIBLIOGRAPHIC\s+REFERENCES'
+    r')',
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -86,6 +86,17 @@ def _find_bib_start(full_text: str) -> int:
 
     all_matches = list(BIB_HEADINGS.finditer(full_text))
     if not all_matches:
+        # Some PDF layouts concatenate the running header and section title
+        # onto one extracted line. Recover a distinctive heading when it is
+        # followed shortly by a bibliography key.
+        embedded_heading = re.compile(
+            r'\b(?:Bibliography|References?|Referenzen|Literaturverzeichnis|'
+            r'Quellenverzeichnis|Bibliographie)\b',
+            re.IGNORECASE,
+        )
+        all_matches = [m for m in embedded_heading.finditer(full_text)
+                       if any_bib_key.search(full_text[m.start():m.start() + 500])]
+    if not all_matches:
         # Fallback: look for any line starting with a bib key
         key_pattern = re.compile(r'\n\[(?:[A-Za-z]{2,6}\d{2}[a-z]?|\d{1,3})\]')
         key_match = key_pattern.search(full_text)
@@ -95,6 +106,61 @@ def _find_bib_start(full_text: str) -> int:
         return -1
 
     # Prefer the last heading match that is followed by a bib entry key
+    # BUT: filter out matches where the heading word is embedded mid-sentence
+    # (e.g. "Literature Review" inside a sentence body).  A real bibliography
+    # heading must either:
+    #   (a) be preceded by an optional section number on the same line, OR
+    #   (b) be at the very start of a line with nothing but whitespace before it.
+    # We also prefer matches whose heading text is a *precise* heading word
+    # (References, Bibliography, …) over generic words like "Literature" that
+    # can appear inline.
+
+    STRONG_HEADINGS = re.compile(
+        r'(?:References?|REFERENCES?|Bibliography|BIBLIOGRAPHY|'
+        r'Literaturverzeichnis|LITERATURVERZEICHNIS|Bibliographie|BIBLIOGRAPHIE|'
+        r'Referenzen|REFERENZEN|Quellenverzeichnis|QUELLENVERZEICHNIS|'
+        r'Works\s+Cited|List\s+of\s+References)',
+        re.IGNORECASE,
+    )
+
+    def _is_standalone_heading(m, text):
+        """True when the match looks like a real section heading, not inline text."""
+        # Find the start of the line containing this match
+        line_start = text.rfind('\n', 0, m.start()) + 1
+        line_end   = text.find('\n', m.end())
+        if line_end == -1:
+            line_end = len(text)
+        line = text[line_start:line_end].strip()
+        # Allow optional leading section number: "6 References", "6. References"
+        heading_line = re.sub(r'^\d+[\.\s]+', '', line).strip()
+        # The heading word(s) should be essentially the whole line
+        # (allow trailing colon or nothing)
+        return bool(re.fullmatch(
+            r'(?:References?|REFERENCES?|Bibliography|BIBLIOGRAPHY|'
+            r'Literaturverzeichnis|LITERATURVERZEICHNIS|Bibliographie|BIBLIOGRAPHIE|'
+            r'Referenzen|REFERENZEN|Quellenverzeichnis|QUELLENVERZEICHNIS|'
+            r'Schrifttum|Works\s+Cited|List\s+of\s+References|'
+            r'Literatur(?:\s+Cited)?|Quellen|Sources?|Citations?|'
+            r'Cited\s+(?:Works|References)|Bibliographic\s+References|Literature):?',
+            heading_line,
+            re.IGNORECASE,
+        ))
+
+    # First pass: strong + standalone headings (most reliable)
+    for m in all_matches:
+        if STRONG_HEADINGS.search(m.group(0)) and _is_standalone_heading(m, full_text):
+            window = full_text[m.start(): m.start() + 500]
+            if any_bib_key.search(window):
+                return m.start()
+
+    # Second pass: any match that is a standalone heading line
+    for m in reversed(all_matches):
+        if _is_standalone_heading(m, full_text):
+            window = full_text[m.start(): m.start() + 500]
+            if any_bib_key.search(window):
+                return m.start()
+
+    # Third pass: original behaviour — last match followed by a bib key
     for m in reversed(all_matches):
         window = full_text[m.start(): m.start() + 500]
         if any_bib_key.search(window):
@@ -105,7 +171,16 @@ def _find_bib_start(full_text: str) -> int:
 
 
 def split_body_bib(full_text: str, format_hint: str = None) -> dict:
+    # Direct heading fallback before generic detection: a standalone 'References' line
+    # is a very common bibliographic marker in proceedings PDFs and should split the
+    # document even when the automatic heading regex is conservative.
+    heading_match = re.search(
+        r'(?im)^(?:\d+(?:\.\d+)*\.?\s+)?(?:References?|Literaturverzeichnis|Bibliography|Bibliographie|Referenzen|Quellenverzeichnis)\s*[:.]?\s*$',
+        full_text,
+    )
     pos = _find_bib_start(full_text)
+    if heading_match and (pos < 0 or heading_match.start() < pos):
+        pos = heading_match.start()
     if pos >= 0:
         body = full_text[:pos].strip()
         bib = full_text[pos:].strip()
@@ -115,6 +190,58 @@ def split_body_bib(full_text: str, format_hint: str = None) -> dict:
     
     # Clean up body text: remove excessive newlines
     body = re.sub(r'\n{3,}', '\n\n', body)
+    
+    # Clean up bibliography: remove garbage lines that don't look like references
+    if bib:
+        lines = bib.split('\n')
+        cleaned_lines = []
+        in_bibliography = False
+        
+        # First, try to extract only the bibliography entries (lines starting with [Key])
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Skip lines that are clearly not bibliography entries
+            # (page numbers, running headers, table of contents entries)
+            if re.match(r'^\s*\d+\s*$', line):  # Just a page number
+                continue
+            if re.match(r'^\s*[A-Z][a-z]+\s+[A-Z][a-z]+\s+\d+\s*$', line):  # Running header
+                continue
+            if 'Inhaltsverzeichnis' in line or 'Contents' in line:
+                continue
+            if line.strip().startswith('.'):
+                continue
+            # Check if this looks like a bibliography entry (starts with [Key] or author name)
+            if re.match(r'^\s*\[[A-Za-z0-9]+\]', line):
+                in_bibliography = True
+                cleaned_lines.append(line)
+            elif in_bibliography and line:
+                # Check if this line is a continuation of a bibliography entry
+                # It should have a year, publisher, or look like part of a reference
+                if re.search(r'\b(19|20)\d{2}\b', line) or re.search(r'Verlag|Press|Publisher|S\.|pp\.', line):
+                    cleaned_lines.append(line)
+                elif len(line) > 10 and not re.match(r'^[A-Z][a-z]+', line):
+                    # Might be a continuation - keep it if it doesn't look like a heading
+                    cleaned_lines.append(line)
+        
+        # If we found entries with [Key] format, use them
+        if cleaned_lines:
+            bib = '\n'.join(cleaned_lines)
+        else:
+            # If no [Key] entries found, try a different approach - look for the bibliography section
+            # by finding the "Literaturverzeichnis" heading and taking everything after it
+            bib_match = re.search(
+                r'(?:^|\n)(?:Literaturverzeichnis|Bibliography|References?)[:\s]*\n(.*?)(?=\n\s*(?:[A-Z]|$))',
+                full_text,
+                re.DOTALL | re.IGNORECASE
+            )
+            if bib_match:
+                bib_raw = bib_match.group(1).strip()
+                # Split by [Key] patterns
+                entries = re.findall(r'\[[A-Za-z0-9]+\][^\[]+', bib_raw)
+                if entries:
+                    bib = 'Literaturverzeichnis\n' + '\n'.join(entries)
     
     return {"full_text": full_text, "body": body, "bibliography": bib, "format": format_hint}
 
@@ -183,18 +310,53 @@ def _repair_urls_in_text(text: str) -> str:
         flags=re.IGNORECASE
     )
     
+    # Pattern 7: Fix GI URLs - ensure they use the correct domain
+    # gi-ev.at → gi.de, gi-ev → gi.de
+    text = re.sub(
+        r'(gi-?ev\.at|gi-?ev)',
+        'gi.de',
+        text,
+        flags=re.IGNORECASE
+    )
+    
     return text
+
+
+def _words_based_text(page) -> str:
+    """
+    Use pdfplumber's own extract_words() word-clustering (its default
+    x_tolerance-based whitespace detection) to rebuild text. This is often
+    more reliable than manual char-gap analysis for tightly-kerned/bold
+    heading and title fonts, where our custom threshold can under-detect
+    word gaps (e.g. "Nextgenerationcloudcomputing" instead of
+    "Next generation cloud computing").
+    """
+    try:
+        words = page.extract_words(x_tolerance=1.5, y_tolerance=3, keep_blank_chars=False)
+    except Exception:
+        return ""
+    if not words:
+        return ""
+
+    lines: dict = {}
+    for w in words:
+        key = round(w["top"] / 3) * 3
+        lines.setdefault(key, []).append(w)
+
+    result_lines = []
+    for y in sorted(lines):
+        row = sorted(lines[y], key=lambda w: w["x0"])
+        result_lines.append(" ".join(w["text"] for w in row))
+    return "\n".join(result_lines)
+
 
 def _reconstruct_page_text_from_chars(page) -> str:
     """
-    Rebuild page text from character-level position data.
-
-    Many PDFs (especially those exported from LaTeX/Word with certain fonts)
-    encode glyphs without space characters, causing pdfplumber's extract_text()
-    to produce merged runs like "Aviewofcloudcomputing".  By measuring the
-    horizontal gap between consecutive glyphs and inserting a space whenever
-    the gap exceeds ~18 % of the font size, we recover correct word boundaries.
-    Falls back to extract_text() when no char data is available.
+    Rebuild page text from character-level position data with adaptive gap detection.
+    
+    Instead of a hardcoded threshold (e.g., 18% of font size), this analyzes
+    the distribution of character gaps on each page and dynamically finds the
+    natural separation between within-word and between-word gaps.
     """
     try:
         chars = page.chars
@@ -202,6 +364,10 @@ def _reconstruct_page_text_from_chars(page) -> str:
         chars = []
 
     if not chars:
+        return page.extract_text() or ""
+
+    # ── EDGE CASE: Very few characters on page ─────────────────────────────
+    if len(chars) < 10:
         return page.extract_text() or ""
 
     # Bucket characters into lines using 3-point y-buckets
@@ -214,47 +380,226 @@ def _reconstruct_page_text_from_chars(page) -> str:
         lines.setdefault(key, []).append(c)
 
     result_lines = []
+    
     for y in sorted(lines):
         row = sorted(lines[y], key=lambda c: c["x0"])
         if not row:
             continue
+        
+        # ── STEP 1: Collect all gaps in this line ──────────────────────────
+        gaps = []
+        for i in range(1, len(row)):
+            prev, curr = row[i - 1], row[i]
+            gap = curr["x0"] - prev["x1"]
+            avg_size = (prev.get("size", 10) + curr.get("size", 10)) / 2
+            # Normalize gap by font size for comparison
+            gaps.append((gap / avg_size, i, gap, avg_size))
+        
+        if not gaps:
+            result_lines.append(row[0]["text"])
+            continue
+        
+        # ── STEP 2: Analyze gap distribution ──────────────────────────────
+        # Extract normalized gaps
+        norm_gaps = [g[0] for g in gaps]
+        
+        # Find the TWO clusters (within-word vs between-word)
+        # Use the gap between the 60th and 70th percentile as adaptive threshold
+        sorted_gaps = sorted(norm_gaps)
+        
+        # Method 1: Percentile-based threshold
+        # Look for a natural separation point in the gap distribution
+        pct_60 = sorted_gaps[int(len(sorted_gaps) * 0.60)] if len(sorted_gaps) >= 5 else None
+        pct_70 = sorted_gaps[int(len(sorted_gaps) * 0.70)] if len(sorted_gaps) >= 5 else None
+        pct_80 = sorted_gaps[int(len(sorted_gaps) * 0.80)] if len(sorted_gaps) >= 5 else None
+        
+        # Method 2: Look for the largest gap jump
+        jumps = []
+        for i in range(1, len(sorted_gaps)):
+            jumps.append((sorted_gaps[i] - sorted_gaps[i-1], sorted_gaps[i-1], sorted_gaps[i]))
+        
+        # Find the biggest jump in the distribution
+        if jumps:
+            largest_jump = max(jumps, key=lambda x: x[0])
+            jump_threshold = (largest_jump[1] + largest_jump[2]) / 2
+        else:
+            jump_threshold = None
+        
+        # Method 3: Use the gap between 65th and 75th percentile
+        if len(sorted_gaps) >= 5:
+            # Use the gap at 65th percentile as initial estimate
+            idx_65 = int(len(sorted_gaps) * 0.65)
+            threshold_estimate = sorted_gaps[idx_65]
+        else:
+            # Few gaps - use simple heuristic
+            threshold_estimate = sum(norm_gaps) / len(norm_gaps) * 1.2
+        
+        # Combine methods: prefer jump_threshold if it exists and is reasonable
+        if jump_threshold and 0.05 < jump_threshold < 1.0:
+            adaptive_threshold = jump_threshold
+        elif pct_60 and 0.05 < pct_60 < 1.0:
+            adaptive_threshold = pct_60
+        else:
+            # Fallback: use median + 30%
+            median_gap = sorted_gaps[len(sorted_gaps)//2] if sorted_gaps else 0.15
+            adaptive_threshold = median_gap * 1.3
+        
+        # Ensure threshold is within reasonable bounds
+        adaptive_threshold = max(0.025, min(0.35, adaptive_threshold))
+        
+        # ── STEP 3: Build the line text with adaptive threshold ────────────
         line_text = row[0]["text"]
         for i in range(1, len(row)):
             prev, curr = row[i - 1], row[i]
             gap = curr["x0"] - prev["x1"]
             avg_size = (prev.get("size", 10) + curr.get("size", 10)) / 2
-            # Insert space when gap is > 18 % of the font size
-            if gap > avg_size * 0.18:
+            norm_gap = gap / avg_size if avg_size > 0 else 0
+            
+            # Also check if the current character is punctuation or alphanumeric
+            curr_text = curr.get("text", "").strip()
+            prev_text = prev.get("text", "").strip()
+            
+            # Heuristic: Insert space if:
+            # 1. The gap exceeds the adaptive threshold, OR
+            # 2. The current character is uppercase and previous was lowercase (camelCase detection)
+            insert_space = False
+            
+            # Primary: Adaptive threshold
+            if norm_gap > adaptive_threshold:
+                insert_space = True
+            
+            # Secondary: CamelCase detection (e.g., "Aviwofloud" → "A view of cloud")
+            # Check if current char is uppercase and previous was not
+            if (curr_text and curr_text[0].isupper() and 
+                prev_text and prev_text[-1].islower() and
+                norm_gap > 0.02):  # Very low threshold for camelCase
+                insert_space = True
+            
+            # Tertiary: Punctuation detection (e.g., "cloud:New" → "cloud: New")
+            if (prev_text and prev_text[-1] in ":;." and 
+                curr_text and curr_text[0].isupper() and
+                norm_gap > 0.02):
+                insert_space = True
+            
+            if insert_space:
                 line_text += " "
-            line_text += curr["text"]
+            line_text += curr_text if curr_text else curr.get("text", "")
+        
         result_lines.append(line_text)
-
+    
     reconstructed = "\n".join(result_lines)
-
-    # Sanity check: if char reconstruction produced substantially less text
-    # than extract_text(), prefer the latter (unusual PDFs with no char data).
+    
+    # ── STEP 4: Sanity check ──────────────────────────────────────────────
+    # If reconstruction failed (too short or no spaces), fallback to extract_text()
     fallback = page.extract_text() or ""
-    if len(reconstructed.strip()) < len(fallback.strip()) * 0.5:
-        return fallback
+    
+    # Check if reconstructed has reasonable spacing
+    if reconstructed.strip():
+        # Count spaces per character ratio
+        recon_spaces = reconstructed.count(' ')
+        recon_chars = len(reconstructed.strip())
+        recon_ratio = recon_spaces / recon_chars if recon_chars > 0 else 0
+        
+        # Good text should have ~10-20% spaces
+        if recon_ratio < 0.02 and fallback:
+            # Reconstructed has almost no spaces - fallback to extract_text()
+            # But also try to clean up the fallback
+            return _clean_fallback_text(fallback)
+    
     return reconstructed
+
+
+def _clean_fallback_text(text: str) -> str:
+    """
+    Clean up text from pdfplumber's extract_text() when character-gap
+    reconstruction fails. This fixes common issues like:
+    - Missing spaces between words
+    - Broken URLs
+    - Extra spaces around punctuation
+    """
+    if not text:
+        return ""
+
+    # ── Fix missing spaces between lowercase and uppercase ─────────────────
+    # Include all German umlauts and ß.
+    # CRITICAL: must not split inside URLs — camelCase boundaries inside a
+    # URL path (e.g. "ChartsCloudReport") would produce a space that breaks
+    # the URL irreparably after _repair_urls_in_text already joined it.
+    # Strategy: temporarily mask all URLs, apply the camelCase fix, then
+    # restore the original URLs.
+    url_placeholders: list = []
+    def _mask_url(m):
+        url_placeholders.append(m.group(0))
+        return f"\x00URL{len(url_placeholders) - 1}\x00"
+
+    # Mask all URLs before any substitution that could corrupt path segments,
+    # then restore them after all fixes are applied.
+    text = re.sub(r'https?://\S+', _mask_url, text)
+
+    # ── Fix space-free bibliography lines (PDF font encoding issue) ─────────
+    # Some PDFs encode bibliography pages without inter-word spaces, producing
+    # runs like "Evaluationofblast-inducedgroundvibrationpredictors" or
+    # "Khandelwal,Manoj;Singh,TN:Evaluation...".
+    # Detect lines where the space-to-char ratio is very low (< 3%) and apply
+    # a heuristic split: insert space before known LNI separators and before
+    # sequences that match the pattern [lowercase][uppercase] which covers
+    # most word boundaries in author names and titles.
+    fixed_lines = []
+    for line in text.split('\n'):
+        stripped = line.strip()
+        if len(stripped) > 30:
+            space_ratio = stripped.count(' ') / len(stripped)
+            if space_ratio < 0.03:
+                # Very few spaces — apply aggressive word-boundary insertion
+                # 1. Insert space before LNI field separators already handled below
+                # 2. Insert space at digit→letter and letter→digit boundaries (volume/page numbers)
+                # 3. Insert space at known two-letter abbreviation boundaries: "TN:" → "TN :"
+                line = re.sub(r'([a-zäöüß])([A-ZÄÖÜ])', r'\1 \2', line)
+                line = re.sub(r'([A-ZÄÖÜa-zäöüß])(\d)', r'\1 \2', line)
+                line = re.sub(r'(\d)([A-ZÄÖÜa-zäöüß])', r'\1 \2', line)
+        fixed_lines.append(line)
+    text = '\n'.join(fixed_lines)
+
+    text = re.sub(r'([a-zäöüß])([A-ZÄÖÜ])', r'\1 \2', text)
+
+    # ── Fix missing spaces after punctuation ──────────────────────────────
+    text = re.sub(r'([:;.!?])([A-ZÄÖÜ0-9])', r'\1 \2', text)
+
+    # ── Fix missing spaces after "S." (LNI page marker) ──────────────────
+    text = re.sub(r'(S\.)(\d)', r'\1 \2', text)
+
+    # ── Fix missing spaces after numbers followed by letters ──────────────
+    text = re.sub(r'(\d)([A-ZÄÖÜa-zäöüß])', r'\1 \2', text)
+
+    # ── Fix "https: //…" (space after colon) ─────────────────────────────
+    text = re.sub(r'(https?):\s+//', r'\1://', text)
+
+    # ── Restore masked URLs ───────────────────────────────────────────────
+    for i, url in enumerate(url_placeholders):
+        text = text.replace(f"\x00URL{i}\x00", url)
+
+    # ── Remove double spaces ──────────────────────────────────────────────
+    text = re.sub(r'\s{2,}', ' ', text)
+
+    return text
 
 
 def extract_pdf(path: str) -> dict:
     """
     Extract text from PDF with multiple fallback methods.
     Returns structured text with body and bibliography sections.
-    Raises FileNotFoundError if the file does not exist.
     """
     from pathlib import Path as _Path
     if not _Path(path).exists():
         raise FileNotFoundError(f"PDF file not found: {path}")
+    
     text = ""
     extraction_method = "pdfplumber"
     is_scanned = False
     page_count = 0
     pages_with_text = 0
     
-    # Try pdfplumber first (best for most PDFs)
+    # ── METHOD 1: pdfplumber with reconstruction ──────────────────────────────
     try:
         import pdfplumber
         
@@ -263,30 +608,95 @@ def extract_pdf(path: str) -> dict:
             extracted_pages = []
             
             for i, page in enumerate(pdf.pages):
-                # Use char-gap reconstruction as primary method — fixes PDFs
-                # where font encoding produces merged words (no space glyphs).
-                t = _reconstruct_page_text_from_chars(page)
-                if t and len(t.strip()) > 50:  # Substantial text on page
-                    extracted_pages.append(t)
+                # ── ALWAYS run both extractors and pick the best ──────────────
+                
+                # Get raw extract_text()
+                raw_text = page.extract_text() or ""
+                
+                # Get reconstructed text with adaptive spacing
+                recon_text = _reconstruct_page_text_from_chars(page) or ""
+
+                # Get pdfplumber's own word-clustering based text
+                words_text = _words_based_text(page) or ""
+                
+                # ── Compare and pick the better result ────────────────────────
+                # Calculate a "quality score" for each:
+                #   - Good text has spaces between words
+                #   - Good text has a reasonable length
+                
+                raw_spaces = raw_text.count(' ')
+                raw_chars = len(raw_text.strip())
+                raw_ratio = raw_spaces / raw_chars if raw_chars > 0 else 0
+                
+                recon_spaces = recon_text.count(' ')
+                recon_chars = len(recon_text.strip())
+                recon_ratio = recon_spaces / recon_chars if recon_chars > 0 else 0
+
+                words_spaces = words_text.count(' ')
+                words_chars = len(words_text.strip())
+                words_ratio = words_spaces / words_chars if words_chars > 0 else 0
+                
+                # Use the one with better spacing ratio (closer to 0.10-0.20)
+                # OR use reconstruction if it's significantly longer
+                use_recon = False
+                
+                # If reconstruction has more spaces and reasonable length
+                if recon_ratio > 0.05 and recon_chars > 20:
+                    # If raw has almost no spaces OR reconstruction is much longer
+                    if raw_ratio < 0.02 or recon_chars > raw_chars * 1.5:
+                        use_recon = True
+                    # If reconstruction has significantly better spacing
+                    elif recon_ratio > raw_ratio + 0.03:
+                        use_recon = True
+
+                # ── Pick the candidate with the best spacing ─────────────────
+                # words_text (pdfplumber's built-in word clustering) is the
+                # most reliable for tightly-kerned/bold titles and headings —
+                # it clusters by actual word boundaries rather than a single
+                # per-line gap threshold, so it can't accidentally split a
+                # bold word mid-way (e.g. "Pre-training" -> "Pre-tr aining"),
+                # a failure mode the adaptive char-gap reconstruction is
+                # prone to on mixed-weight lines. A spurious split like that
+                # *increases* recon's space ratio, so a plain "higher ratio
+                # wins" comparison would wrongly prefer the broken text.
+                # Only fall back to recon/raw if words_text is clearly bad.
+                if words_chars > 20 and words_ratio >= 0.02:
+                    best_name, best_text, best_ratio, best_chars = (
+                        "words", words_text, words_ratio, words_chars
+                    )
+                else:
+                    # words_text unusable — fall back to whichever of
+                    # recon/raw looks more reasonable
+                    fallback_candidates = [("raw", raw_text, raw_ratio, raw_chars)]
+                    if use_recon:
+                        fallback_candidates.append(
+                            ("recon", recon_text, recon_ratio, recon_chars)
+                        )
+                    best_name, best_text, best_ratio, best_chars = fallback_candidates[0]
+                    for name, cand_text, cand_ratio, cand_chars in fallback_candidates[1:]:
+                        if cand_chars > 20 and cand_ratio > best_ratio + 0.02:
+                            best_name, best_text, best_ratio, best_chars = name, cand_text, cand_ratio, cand_chars
+
+                if best_text.strip():
+                    extracted_pages.append(best_text)
                     pages_with_text += 1
-                elif t and len(t.strip()) > 10:
-                    extracted_pages.append(t)
+                elif raw_text.strip():
+                    extracted_pages.append(raw_text)
                     pages_with_text += 1
                 else:
-                    # Try extracting with different settings for this page
-                    try:
-                        t = page.extract_text(x_tolerance=1, y_tolerance=1)
-                        if t and len(t.strip()) > 10:
-                            extracted_pages.append(t)
-                            pages_with_text += 1
-                        else:
-                            extracted_pages.append("[Page with little extractable text]")
-                    except:
-                        extracted_pages.append("[Page extraction failed]")
+                    extracted_pages.append("")
             
             text = "\n".join(extracted_pages)
             
-            # Check if PDF might be scanned - FIXED division by zero
+            # ── Safety net: always run the space-repair cleanup, even on text
+            # that was judged "good enough" above. Some lines (esp. tightly
+            # kerned headings/titles) pass the ratio check per-page but still
+            # contain runs with zero spaces (e.g. "Nextgenerationcloudcomputing").
+            # _clean_fallback_text's regexes are idempotent, so re-running them
+            # here is safe and doesn't undo any prior reconstruction.
+            text = _clean_fallback_text(text)
+            
+            # Check if PDF might be scanned
             if pages_with_text == 0 or (page_count > 0 and pages_with_text / page_count < 0.3):
                 is_scanned = True
                 extraction_method = "pdfplumber (likely scanned)"
@@ -295,8 +705,8 @@ def extract_pdf(path: str) -> dict:
         extraction_method = f"pdfplumber failed: {e}"
         text = ""
     
-    # Fallback to pypdf if pdfplumber got little or no text
-    if len(text.strip()) < 500 or is_scanned:
+    # ── METHOD 2: pypdf (fallback if pdfplumber got little text) ─────────────
+    if len(text.strip()) < 500:
         try:
             from pypdf import PdfReader
             
@@ -308,10 +718,7 @@ def extract_pdf(path: str) -> dict:
             for i, page in enumerate(reader.pages):
                 try:
                     t = page.extract_text()
-                    if t and len(t.strip()) > 50:
-                        extracted_pages.append(t)
-                        text_pages += 1
-                    elif t and len(t.strip()) > 10:
+                    if t and len(t.strip()) > 10:
                         extracted_pages.append(t)
                         text_pages += 1
                     else:
@@ -334,13 +741,11 @@ def extract_pdf(path: str) -> dict:
         except Exception as e:
             extraction_method = f"pypdf also failed: {e}"
     
-    # If we still have no text, try a raw text extraction (just in case)
+    # ── METHOD 3: Raw text (last resort) ──────────────────────────────────────
     if len(text.strip()) < 30:
         try:
-            # Try reading as plain text (only if pdfplumber produced nothing at all)
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 raw_text = f.read()
-                # Only use raw text if it looks like actual text (not binary PDF)
                 printable_ratio = sum(c.isprintable() or c in '\n\t' for c in raw_text[:500]) / max(len(raw_text[:500]), 1)
                 if printable_ratio > 0.85 and len(raw_text.strip()) > len(text.strip()):
                     text = raw_text
@@ -348,16 +753,13 @@ def extract_pdf(path: str) -> dict:
         except:
             pass
     
-    # ─────────────────────────────────────────────────────────────────────────
-    # CRITICAL FIX: Repair URLs BEFORE any further processing
-    # This fixes line breaks inside URLs that occur anywhere in the document
-    # ─────────────────────────────────────────────────────────────────────────
+    # ── CRITICAL: Repair URLs BEFORE any further processing ──────────────────
     text = _repair_urls_in_text(text)
     
-    # Collapse multiple spaces (don't rejoin hyphens globally — URLs get corrupted)
+    # Collapse multiple spaces
     text = re.sub(r' +', ' ', text)
     
-    # Find bibliography FIRST so line-rejoining never corrupts bib entries
+    # ── Find bibliography ─────────────────────────────────────────────────────
     bib_pos = _find_bib_start(text)
     if bib_pos >= 0:
         body_raw = text[:bib_pos]
@@ -366,7 +768,7 @@ def extract_pdf(path: str) -> dict:
         body_raw = text
         bib_raw  = ""
 
-    # Rejoin soft-wrapped lines in BODY only (never touch bibliography lines)
+    # ── Rejoin soft-wrapped lines in BODY only ───────────────────────────────
     lines = body_raw.split('\n')
     rejoined = []
     current = ""
@@ -388,36 +790,65 @@ def extract_pdf(path: str) -> dict:
     if current:
         rejoined.append(current)
     body_raw = "\n".join(rejoined)
-    # Rejoin hard-hyphenated line-breaks in body only ("algo-\nrithm" → "algorithm")
     body_raw = re.sub(r'-(\n)(\S)', r'\2', body_raw)
 
+    # ── Clean up bibliography ─────────────────────────────────────────────────
     if bib_pos >= 0:
         body_part = body_raw
         bib_part = bib_raw
         
+        # Repair URLs in bibliography
         bib_part = re.sub(
-        r'(https?://[^\s\n]+?)[\s]*\n[\s]*([a-zA-Z0-9%_\-/\.?=&]+)',
-        r'\1\2',
-        bib_part,
-        flags=re.IGNORECASE
-    )
+            r'(https?://[^\s\n]+?)[\s]*\n[\s]*([a-zA-Z0-9%_\-/\.?=&]+)',
+            r'\1\2',
+            bib_part,
+            flags=re.IGNORECASE
+        )
         
         bib_part = re.sub(
-        r'(CM-REPORT)[\s]*\n[\s]*-?[\s]*([a-zA-Z0-9%-]+)',
-        r'\1-\2',
-        bib_part,
-        flags=re.IGNORECASE
-    )
-    
-        # Remove "Stand:" suffixes that got attached to URLs
+            r'(CM-REPORT)[\s]*\n[\s]*-?[\s]*([a-zA-Z0-9%-]+)',
+            r'\1-\2',
+            bib_part,
+            flags=re.IGNORECASE
+        )
+        
         bib_part = re.sub(r'(https?://[^\s]+?),?\s*Stand:?\s*[\d./-]+', r'\1', bib_part, flags=re.IGNORECASE)
         bib_part = re.sub(r'(https?://[^\s]+?),?\s*Stand\s+[\d./-]+', r'\1', bib_part, flags=re.IGNORECASE)
-    
-        # Fix URLs with spaces after colon
         bib_part = re.sub(r'(https?):\s+//', r'\1://', bib_part)
-    
-        # Collapse multiple newlines but preserve [Key] markers
         bib_part = re.sub(r'\n{3,}', '\n\n', bib_part)
+        
+        # ── CRITICAL FIX: Ensure all [Key] entries are on their own lines ────
+        bib_part = re.sub(r'(\[[A-Za-z0-9]+\])(?!\s*\n)', r'\n\1', bib_part)
+        
+        # Keep the full bibliography block after the heading instead of trying to
+        # throw away possible entries prematurely. The parser itself is responsible
+        # for filtering the formatting-guide boilerplate and keeping only valid keys.
+        bib_lines = bib_part.split('\n')
+        cleaned_bib_lines = []
+        for line in bib_lines:
+            line = line.strip()
+            if not line:
+                continue
+            if re.match(r'^\s*\d+\s*$', line):
+                continue
+            if re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+\s+\d+\s*$', line):
+                continue
+            if re.match(r'^(Fig\.|Tab\.)\s+\d+', line, re.IGNORECASE):
+                continue
+            if re.match(r'^\d+\s+[A-Z][a-z]+', line):
+                continue
+            cleaned_bib_lines.append(line)
+
+        if not cleaned_bib_lines:
+            bib_match = re.search(
+                r'(?:^|\n)(?:Literaturverzeichnis|Bibliography|References?)[:\s]*\n(.*?)(?=\n\s*(?:[A-Z]|$))',
+                text,
+                re.DOTALL | re.IGNORECASE
+            )
+            if bib_match:
+                cleaned_bib_lines = [line.strip() for line in bib_match.group(1).splitlines() if line.strip()]
+
+        bib_part = '\n'.join(cleaned_bib_lines)
         
         result = {
             "full_text": body_part + "\n\n" + bib_part,
@@ -765,6 +1196,42 @@ def _clean_latex(tex: str) -> str:
 # Public entry point - IMPROVED with fallbacks
 # ---------------------------------------------------------------------------
 
+def extract_references_from_bibliography(bib_text: str) -> List[Dict]:
+    """
+    Extract individual references from bibliography text.
+    Returns list of dicts with 'key' and 'raw_text' for each reference.
+    """
+    references = []
+    
+    # Pattern for LNI key [ABC01] or numeric [1]
+    key_pattern = re.compile(r'\[([A-Za-z]{1,6}\d{2}[a-z]?|\d{1,3})\]')
+    
+    # Split by key pattern
+    parts = key_pattern.split(bib_text)
+    
+    # parts[0] is text before first key, parts[1] is first key, parts[2] is first ref text, etc.
+    for i in range(1, len(parts), 2):
+        if i < len(parts):
+            key = parts[i]
+            ref_text = parts[i + 1] if i + 1 < len(parts) else ""
+            
+            # Clean up reference text
+            ref_text = ref_text.strip()
+            
+            # Join multi-line references (they continue until next key)
+            # Remove excessive whitespace but preserve structure
+            ref_text = re.sub(r'\s+', ' ', ref_text)
+            
+            if ref_text:
+                references.append({
+                    'key': key,
+                    'raw_text': ref_text,
+                    'normalized_key': _normalize_citation_key(key)
+                })
+    
+    return references
+
+
 def extract(file_path: str, bib_path: str = None) -> dict:
     """
     Extract text from document with automatic fallback methods.
@@ -780,6 +1247,13 @@ def extract(file_path: str, bib_path: str = None) -> dict:
             fallback = extract_pdf_simple(file_path)
             if len(fallback.get("body", "")) > len(result.get("body", "")):
                 result = fallback
+        
+        # Extract structured references from bibliography
+        bib = result.get("bibliography", "")
+        if bib:
+            result["references"] = extract_references_from_bibliography(bib)
+        else:
+            result["references"] = []
                 
         return result
     

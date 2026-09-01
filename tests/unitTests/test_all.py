@@ -19,11 +19,11 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 # ── Add project root to path ──────────────────────────────────────────────────
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-FIXTURES_TXT = Path(__file__).parent / "fixtures" / "txt"
-FIXTURES_PDF = Path(__file__).parent / "fixtures" / "pdf"
-FIXTURES_DOCX = Path(__file__).parent / "fixtures" / "docx"
+FIXTURES_TXT = ROOT / "fixtures" / "txt"
+FIXTURES_PDF = ROOT / "fixtures" / "pdf"
+FIXTURES_DOCX = ROOT / "fixtures" / "docx"
 
 # ── Conditional imports ────────────────────────────────────────────────────────
 try:
@@ -60,12 +60,30 @@ try:
 except ImportError:
     LOCALDB_AVAILABLE = False
 
+try:
+    from web_search_verifier import _safe_re_sub, _safe_re_search
+    WEB_SEARCH_AVAILABLE = True
+except ImportError:
+    WEB_SEARCH_AVAILABLE = False
+
 
 def _load_txt(name: str) -> str:
     path = FIXTURES_TXT / name
     if path.exists():
         return path.read_text(encoding="utf-8")
     return ""
+
+
+# =============================================================================
+# SECTION REGRESSION — SAFE REGEX HANDLING
+# =============================================================================
+
+@pytest.mark.skipif(not WEB_SEARCH_AVAILABLE, reason="web_search_verifier.py unavailable")
+def test_compiled_regex_works_with_safe_wrapper():
+    compiled = re.compile(r'\.\s*In:\s*.*$', re.IGNORECASE)
+    text = "Attention is all you need. In: Proceedings of NeurIPS, 2017"
+    assert _safe_re_sub(compiled, "", text).strip() == "Attention is all you need"
+    assert _safe_re_search(compiled, text) is not None
 
 
 # =============================================================================
@@ -350,13 +368,14 @@ class TestParserCompletenessChecks:
         assert any("url" in i.lower() for i in e.completeness_issues)
 
     def test_P39_missing_urldate_for_website_flagged(self):
-        """Website entry without urldate gets 'Missing required field: urldate'."""
+        """Website entry without urldate is allowed (urldate is optional)."""
         bib = _load_txt("bib_website_no_urldate.txt")
         entries = parse_bibliography(bib)
         if entries[0].entry_type == "website":
             issues = entries[0].completeness_issues
-            assert any("urldate" in i.lower() for i in issues), \
-                f"Expected urldate issue, got: {issues}"
+            # urldate should NOT be flagged as missing (it's optional)
+            assert not any("urldate" in i.lower() for i in issues), \
+                f"urldate should be optional, but got issue: {issues}"
 
     def test_P40_huge_page_span_flagged(self):
         """Page range spanning >200 pages is flagged as implausible."""
@@ -451,6 +470,31 @@ class TestParserCompletenessChecks:
             assert not any("key" in i.lower() and "format" in i.lower()
                            for i in e.completeness_issues), \
                 f"Unexpected key format issue in {e.key}: {e.completeness_issues}"
+
+    def test_P51_proceedings_venue_in_text_does_not_require_booktitle(self):
+        """Proceedings entries with 'In: ...' venue remain valid even if booktitle is not extracted separately."""
+        bib = "[Wa14a] Wagner, K.: Paper A. In: IEEE, 2014; S. 1--10."
+        entries = parse_bibliography(bib)
+        assert entries[0].entry_type in ("proceedings", "inproceedings")
+        assert not any("booktitle" in i.lower() and "missing" in i.lower()
+                       for i in entries[0].completeness_issues), entries[0].completeness_issues
+
+    def test_B1_malformed_key_not_silently_dropped(self):
+        """Bug 1 regression: Entries with malformed keys must not be silently dropped.
+        Instead, they should be preserved and the key flagged as a format violation."""
+        # Case 1: Long-form key that doesn't match LNI format
+        bib = "[Smith2020] Smith, John: A Paper. Springer, 2020."
+        entries = parse_bibliography(bib)
+        assert len(entries) >= 1, "Entry with malformed key [Smith2020] was silently dropped!"
+        # The entry should be present but the key should be flagged
+        assert any("malformed" in i.lower() or ("key" in i.lower() and "format" in i.lower())
+                   for i in entries[0].completeness_issues), \
+            f"Expected key format issue for [Smith2020], got: {entries[0].completeness_issues}"
+        
+        # Case 2: Key with special characters
+        bib2 = "[A-B2020] Anonymous: Another paper. ACM, 2020."
+        entries2 = parse_bibliography(bib2)
+        assert len(entries2) >= 1, "Entry with malformed key [A-B2020] was silently dropped!"
 
 
 # =============================================================================
@@ -936,11 +980,12 @@ class TestLocalDB:
         import local_db
         # Insert an entry with a very old last_seen date
         import sqlite3
+        save_to_cache("Old Paper", "Author", "2010", None, None, "test", 0.5)
         conn = sqlite3.connect(str(local_db.CACHE_DB))
-        conn.execute("""
-            INSERT INTO verified_papers (title, authors, year, source, confidence, last_seen, title_normalized)
-            VALUES ('Old Paper', 'Author', 2010, 'test', 0.5, '2000-01-01T00:00:00', 'old paper')
-        """)
+        conn.execute(
+            "UPDATE verified_papers SET last_seen = ? WHERE title_norm = ?",
+            ("2000-01-01T00:00:00", local_db.normalize_title("Old Paper")),
+        )
         conn.commit()
         conn.close()
         clear_old_entries(days=1)
@@ -1007,6 +1052,27 @@ class TestVerificationIntegration:
         result = _search_semantic_scholar(e)
         if result:
             assert result.confidence < 0.5
+
+    def test_I05a_automated_fake_findings_do_not_reduce_score(self):
+        """Only professor-confirmed fake references may reduce the score."""
+        from checker import CrossCheckResult, compute_score
+
+        entry = BibEntry(key="FA99", raw_text="")
+        entry.key_consistent = True
+        result = compute_score(
+            [entry], CrossCheckResult(), [], [], [],
+            verification_results=[{"key": "FA99", "ai_verdict": "FAKE", "status": "not_found"}],
+        )
+        assert result["score"] == 100
+        assert not any(p["category"] == "Confirmed fake references" for p in result["penalties"])
+
+        confirmed = compute_score(
+            [entry], CrossCheckResult(), [], [], [],
+            professor_confirmed_fakes=1,
+            verification_results=[{"key": "FA99", "ai_verdict": "FAKE", "status": "not_found"}],
+        )
+        assert confirmed["score"] == 90
+        assert any(p["category"] == "Confirmed fake references" for p in confirmed["penalties"])
 
     def test_I06_author_fallback_s2(self):
         """Author-first fallback: if title changed between preprint/published, still found."""

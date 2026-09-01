@@ -1,0 +1,105 @@
+graph TD
+    Start([User Uploads Document]) --> FileCheck{File Type?}
+    
+    FileCheck -->|PDF| ExtractPDF["<b>Extractor</b><br/>pdfplumber extraction<br/>Split at bibliography"]
+    FileCheck -->|DOCX| ExtractDOCX["<b>Extractor</b><br/>python-docx parsing<br/>Split at bibliography"]
+    FileCheck -->|LaTeX| ExtractLaTeX["<b>Extractor</b><br/>LaTeX markup stripping<br/>.bib file parsing"]
+    
+    ExtractPDF --> RawText["Raw Text + Bibliography"]
+    ExtractDOCX --> RawText
+    ExtractLaTeX --> RawText
+    
+    RawText --> Parser["<b>Parser</b><br/>LNI Key Validation<br/>Metadata Extraction<br/>BibEntry Creation"]
+    
+    Parser --> BibEntries["Bibliography Entries<br/>[Key, Title, Authors, Year, DOI, URL, ...]"]
+    
+    BibEntries --> CitationExtract["<b>Checker</b><br/>Extract Citations from Body Text<br/>LNI Key Lookup"]
+    
+    CitationExtract --> CrossCheck["<b>Cross-Check Analysis</b><br/>✗ Missing References<br/>✗ Unused Entries<br/>✗ Duplicates<br/>✓ Self-Citations"]
+    
+    CrossCheck --> Verification["<b>4-Stage Verification Pipeline</b>"]
+    
+    Verification --> Stage1["<b>Stage 1: Local Cache</b><br/>SQLite Lookup<br/>normalize_title()<br/>≥95% Title Match?"]
+    
+    Stage1 -->|Hit| CacheHit["<b style='color:green'>REAL</b><br/>from_local_db=True<br/>Instant Result"]
+    Stage1 -->|Miss| Stage2
+    
+    Stage2["<b>Stage 2: Academic APIs</b><br/>Parallel ThreadPoolExecutor<br/>5 concurrent requests"]
+    
+    Stage2 --> API1["CrossRef API<br/>DOI Lookup"]
+    Stage2 --> API2["Semantic Scholar<br/>Title Search"]
+    Stage2 --> API3["OpenAlex<br/>Multidisciplinary"]
+    Stage2 --> API4["DBLP<br/>CS Conferences"]
+    Stage2 --> API5["arXiv<br/>Preprints"]
+    
+    API1 --> APIScore["<b>Scoring Matrix</b><br/>Title Match: 40%<br/>Author Overlap: 35%<br/>Year Exact: 25%<br/>Threshold: ≥85%"]
+    API2 --> APIScore
+    API3 --> APIScore
+    API4 --> APIScore
+    API5 --> APIScore
+    
+    APIScore -->|≥85%| APIHit["<b style='color:green'>REAL</b><br/>API Source Attribution<br/>Cache Entry Created"]
+    APIScore -->|<85%| Stage3
+    
+    Stage3["<b>Stage 3: URL Validation</b><br/>fetch_with_timeout()<br/>Bot Detection<br/>Title Extraction"]
+    
+    Stage3 -->|URL + 403/429| URLFail["Skip to AI"]
+    Stage3 -->|HTTP 200| URLParse["Extract Page Title<br/>≥95% Match?"]
+    
+    URLParse -->|Match| URLHit["<b style='color:green'>REAL</b><br/>URL Verified<br/>Cache Entry Created"]
+    URLParse -->|No Match| Stage4
+    URLFail --> Stage4
+    
+    Stage4["<b>Stage 4: AI Fallback</b><br/>Groq LLaMA 3.3 70B<br/>or Gemini 1.5 Flash"]
+    
+    Stage4 --> WebSearch["Web Search<br/>DuckDuckGo Results"]
+    
+    WebSearch --> LLMAnalysis["<b>LLM Semantic Analysis</b><br/>Query: Verify Reference Existence<br/>Context: Web Search Results<br/>Confidence Score: 0-100%"]
+    
+    LLMAnalysis -->|≥70%| AIHit["<b style='color:green'>REAL</b><br/>AI Confidence ≥70%<br/>Cache Entry Created"]
+    LLMAnalysis -->|<70%| Suspicious["<b style='color:orange'>SUSPICIOUS</b><br/>Manual Review Required<br/>NOT Cached"]
+    
+    CacheHit --> MetadataWarn["<b>Metadata Warning Check</b><br/>Author/Year/Publisher Mismatch?<br/>Incomplete Fields?<br/>Severity Levels"]
+    APIHit --> MetadataWarn
+    URLHit --> MetadataWarn
+    AIHit --> MetadataWarn
+    Suspicious --> MetadataWarn
+    
+    MetadataWarn --> JSONResponse["JSON Response<br/>bibentries[]<br/>cross_check{}<br/>stats{}"]
+    
+    JSONResponse --> WebUI["<b>Web UI - React Frontend</b>"]
+    
+    WebUI --> Tab1["📋 Bibliography Tab<br/>All parsed entries<br/>Completeness warnings<br/>Metadata alerts"]
+    
+    WebUI --> Tab2["🔗 Cross-Check Tab<br/>Missing references<br/>Unused entries<br/>Duplicates"]
+    
+    WebUI --> Tab3["✓ Verification Tab<br/>Verdict badges<br/>Confidence scores<br/>Source attribution"]
+    
+    WebUI --> Tab4["💾 Database Tab<br/>Browse cached papers<br/>Search + pagination<br/>Delete/Inject"]
+    
+    Tab3 --> ProfessorAction{"Professor Action"}
+    
+    ProfessorAction -->|Mark FAKE| MarkFake["<b>Manual Override: FAKE</b><br/>User-confirmed hallucination<br/>Logged in review_queue<br/>NOT cached"]
+    
+    ProfessorAction -->|Mark REAL| MarkReal["<b>Manual Override: REAL</b><br/>Professor confirms legitimacy<br/>inject_confirmed_paper()<br/>SQLite: source='manual'<br/>confidence=1.0"]
+    
+    ProfessorAction -->|No Action| Accept["Entry Accepted<br/>REAL or SUSPICIOUS"]
+    
+    MarkFake --> Report["Generate Report<br/>Summary Statistics<br/>Verdict Breakdown"]
+    MarkReal --> Report
+    Accept --> Report
+    
+    Report --> Download["📊 Download Report<br/>JSON Export<br/>CSV (Optional)<br/>PDF Summary"]
+    
+    Download --> End(["✓ Verification Complete"])
+    
+    style Start fill:#E8F8F5
+    style End fill:#E8F8F5
+    style CacheHit fill:#D5F4E6
+    style APIHit fill:#D5F4E6
+    style URLHit fill:#D5F4E6
+    style AIHit fill:#D5F4E6
+    style Suspicious fill:#FADBD8
+    style MarkFake fill:#FADBD8
+    style MarkReal fill:#D5F4E6
+    style ProfessorAction fill:#FCF3CF
