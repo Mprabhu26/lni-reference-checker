@@ -29,15 +29,34 @@ CACHE_DB = DB_DIR / "verified_papers.db"
 _SCHEMA_VERSION = 3
 
 
+def _db_author_overlap(cited: str, cached: str) -> float:
+    """Check author surname overlap inside DB queries without circular imports."""
+    if not cited or not cached:
+        return 0.0
+    def _surnames(s):
+        out = set()
+        for p in re.split(r';|\band\b|\bund\b', s, flags=re.IGNORECASE):
+            p = p.strip()
+            if not p or re.match(r'^et\s+al\.?$', p.lower()):
+                continue
+            sur = p.split(',')[0].strip() if ',' in p else p.split()[-1].strip()
+            clean = re.sub(r'[^a-zA-Z0-9]', '', sur.lower())
+            if len(clean) > 2:
+                out.add(clean)
+        return out
+    s_cited = _surnames(cited)
+    s_cached = _surnames(cached)
+    if not s_cited or not s_cached:
+        return 0.0
+    
+    # Overlap measured against authors provided by user (supports "et al." or partial citation)
+    matched = len(s_cited & s_cached)
+    return round(matched / len(s_cited), 3)
+
+
 def _validate_url(url: str) -> str:
     """
     Validate URL and try common fixes. Returns the working URL or empty string.
-    Strategy:
-    1. Try HEAD request to URL as-is
-    2. Try GET if HEAD fails (some servers don't support HEAD)
-    3. If 4xx error and www missing, try adding www.
-    4. If PDF/download URL fails, try without download params
-    5. If all fail, return empty string (skip caching URL, but don't reject paper)
     """
     if not url or not url.strip().startswith("http"):
         return ""
@@ -47,13 +66,11 @@ def _validate_url(url: str) -> str:
     original_url = url.strip()
     attempts = [original_url]
     
-    # For PDF downloads, also try removing download params
     if "?download" in original_url or ".pdf" in original_url.lower():
         base_url = original_url.split("?")[0]
         if base_url != original_url:
             attempts.append(base_url)
     
-    # Variant 2: Add www if missing
     if "://" in original_url:
         schema, rest = original_url.split("://", 1)
         if not rest.startswith("www."):
@@ -61,24 +78,22 @@ def _validate_url(url: str) -> str:
     
     for attempt_url in attempts:
         try:
-            # Try HEAD first (faster, but some servers don't allow it)
             resp = requests.head(attempt_url, timeout=5, allow_redirects=True, 
                                 headers={"User-Agent": "Mozilla/5.0"})
             if resp.status_code in (200, 301, 302, 303, 307, 308):
-                return attempt_url  # This URL works
+                return attempt_url
             
-            # If 4xx, try GET instead (some servers don't support HEAD or block PDFs via HEAD)
             if 400 <= resp.status_code < 500:
                 resp = requests.get(attempt_url, timeout=5, allow_redirects=True,
                                    headers={"User-Agent": "Mozilla/5.0"})
                 if resp.status_code in (200, 301, 302, 303, 307, 308):
-                    return attempt_url  # GET works even if HEAD failed
+                    return attempt_url
         except requests.Timeout:
-            pass  # Try next variant
+            pass
         except Exception:
-            pass  # Try next variant
+            pass
     
-    return ""  # No URL variant worked; skip caching but don't reject paper
+    return ""
 
 
 @dataclass
@@ -91,7 +106,7 @@ class CachedPaper:
     source: str          # 'crossref' | 'semantic_scholar' | 'openalex' | 'web_search' | 'manual'
     confidence: float
     last_seen: str
-    from_local_db: bool = True   # always True for entries returned from here
+    from_local_db: bool = True
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -106,25 +121,17 @@ def _decompress(blob: bytes) -> str:
 
 
 def normalize_title(title: str) -> str:
-    """
-    Deterministic title key used for deduplication.
-    FIXED v2.3: Better normalization for matching.
-    """
+    """Deterministic title key used for deduplication."""
     if not title:
         return ""
     
-    # Lowercase
     t = title.lower()
-    
-    # German umlauts
     for a, b in [('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss')]:
         t = t.replace(a, b)
     
-    # Remove punctuation and extra spaces
     t = re.sub(r'[^\w\s]', '', t)
     t = re.sub(r'\s+', ' ', t).strip()
     
-    # Remove common stop words (more aggressive for dedup)
     stop = {
         'the', 'a', 'an', 'in', 'of', 'for', 'on', 'and', 'to', 'with', 'by', 'at',
         'der', 'die', 'das', 'und', 'fur', 'von', 'mit', 'im', 'an', 'zu',
@@ -132,39 +139,27 @@ def normalize_title(title: str) -> str:
         'after', 'before', 'above', 'below', 'between', 'among',
     }
     words = [w for w in t.split() if w not in stop and len(w) > 2]
-    
-    # Keep first 8 words max for dedup (enough to uniquely identify)
     return ' '.join(words[:8])
 
 
 def normalize_authors(authors: str) -> str:
-    """
-    Normalize authors for deduplication.
-    Extracts first author's surname and first initial.
-    """
+    """Normalize authors for deduplication (first author surname and initial)."""
     if not authors:
         return ""
     
-    # Get first author
     first = authors.split(';')[0].strip()
-    
-    # Extract surname (part before comma)
     if ',' in first:
         surname = first.split(',')[0].strip()
     else:
-        # No comma - take last word as surname
         parts = first.split()
         surname = parts[-1] if parts else first
     
-    # Normalize surname
     surname = surname.lower()
     for a, b in [('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss')]:
         surname = surname.replace(a, b)
     
-    # Remove punctuation
     surname = re.sub(r'[^\w]', '', surname)
     
-    # Get first initial if available
     initial = ""
     if ',' in first:
         given = first.split(',')[1].strip()
@@ -178,7 +173,7 @@ def normalize_authors(authors: str) -> str:
 
 def init_cache_db():
     conn = sqlite3.connect(str(CACHE_DB))
-    conn.execute("PRAGMA journal_mode=WAL")   # safe concurrent reads
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     c = conn.cursor()
 
@@ -190,26 +185,32 @@ def init_cache_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS verified_papers (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            title_norm       TEXT    UNIQUE NOT NULL,   -- dedup key
-            author_norm      TEXT,                       -- normalized first author
-            title_blob       BLOB    NOT NULL,          -- zlib-compressed title
-            authors_blob     BLOB,                      -- zlib-compressed authors
+            title_norm       TEXT    UNIQUE NOT NULL,
+            author_norm      TEXT,
+            title_blob       BLOB    NOT NULL,
+            authors_blob     BLOB,
             year             INTEGER,
             doi              TEXT,
             url              TEXT,
             source           TEXT    NOT NULL DEFAULT 'unknown',
             confidence       REAL    NOT NULL DEFAULT 1.0,
-            confirmed_real   INTEGER NOT NULL DEFAULT 1, -- 1 = only real papers stored
+            confirmed_real   INTEGER NOT NULL DEFAULT 1,
             added_date       TEXT    NOT NULL,
             last_seen        TEXT    NOT NULL
         )
     """)
 
-    # Fast lookup indexes
     c.execute("CREATE INDEX IF NOT EXISTS idx_tnorm  ON verified_papers(title_norm)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_doi    ON verified_papers(doi)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_year   ON verified_papers(year)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_author ON verified_papers(author_norm)")
+    
+    # Purge entries cached under legacy unverified heuristics
+    c.execute("""
+        DELETE FROM verified_papers 
+        WHERE source IN ('ml_gate', 'arxiv_verified', 'url_verify', 'url_verify_pdf', 'url_verify_docs')
+           OR (source = 'web_search_verified' AND confidence < 0.75)
+    """)
 
     conn.commit()
     conn.close()
@@ -220,18 +221,12 @@ def _ensure_db():
         init_cache_db()
 
 
-# ── Write (FIXED: Better deduplication) ─────────────────────────────────────
+# ── Write ───────────────────────────────────────────────────────────────────
 
 def save_to_cache(title: str, authors: str, year: str, doi: str,
                   url: str, source: str, confidence: float,
                   only_if_real: bool = True):
-    """
-    Persist a paper to the local DB.
-    FIXED v2.3:
-      - Better deduplication using normalized title + author
-      - Merges confidence scores (highest wins)
-      - Duplicates are NOT stored multiple times
-    """
+    """Persist a multi-field verified paper to the local DB."""
     if not title or not title.strip():
         return
     _ensure_db()
@@ -248,16 +243,12 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
         if m:
             year_int = int(m.group())
 
-    # Validate URLs before caching (try to fix incomplete URLs)
     url_to_cache = url
     if url and url.strip().startswith("http"):
         fixed_url = _validate_url(url)
         if fixed_url:
             url_to_cache = fixed_url
-            if fixed_url != url.strip():
-                print(f"[local_db] URL fixed: {url} → {fixed_url}")
         else:
-            print(f"[local_db] URL validation failed, skipping: {url}")
             url_to_cache = ""
 
     conn = sqlite3.connect(str(CACHE_DB))
@@ -265,24 +256,16 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
     now = datetime.now().isoformat()
     
     try:
-        # Check if the paper already exists with the same normalized title
         existing = conn.execute(
             "SELECT id, confidence, source FROM verified_papers WHERE title_norm = ?",
             (norm_title,)
         ).fetchone()
         
         if existing:
-            # Update existing record with higher confidence
             existing_id, existing_conf, existing_source = existing
             new_confidence = max(confidence, existing_conf)
+            merged_source = f"{existing_source},{source}" if source not in existing_source else existing_source
             
-            # Merge sources
-            if source not in existing_source:
-                merged_source = f"{existing_source},{source}"
-            else:
-                merged_source = existing_source
-            
-            # Update the record
             conn.execute("""
                 UPDATE verified_papers 
                 SET confidence = MAX(confidence, ?),
@@ -304,9 +287,7 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
                 norm_title,
             ))
             conn.commit()
-            print(f"[local_db] Updated existing paper: '{title[:40]}...' (confidence {new_confidence:.2f})")
         else:
-            # Insert new paper
             conn.execute("""
                 INSERT INTO verified_papers
                     (title_norm, author_norm, title_blob, authors_blob, year, doi, url,
@@ -326,11 +307,8 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
                 now,
             ))
             conn.commit()
-            print(f"[local_db] Added new paper: '{title[:40]}...' (source: {source})")
             
-    except sqlite3.IntegrityError as e:
-        print(f"[local_db] Integrity error (duplicate): {e}")
-        # Try to update instead
+    except sqlite3.IntegrityError:
         try:
             conn.execute("""
                 UPDATE verified_papers 
@@ -349,8 +327,8 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
                 norm_title,
             ))
             conn.commit()
-        except Exception as e2:
-            print(f"[local_db] Update failed: {e2}")
+        except Exception:
+            pass
     finally:
         conn.close()
 
@@ -358,7 +336,7 @@ def save_to_cache(title: str, authors: str, year: str, doi: str,
 # ── Read ──────────────────────────────────────────────────────────────────────
 
 def search_cache(title: str, authors: str = "") -> Optional[CachedPaper]:
-    """Look up a paper by normalised title."""
+    """Look up a paper by normalised title with author overlap verification."""
     if not title:
         return None
     _ensure_db()
@@ -378,18 +356,24 @@ def search_cache(title: str, authors: str = "") -> Optional[CachedPaper]:
             ORDER BY confidence DESC
             LIMIT 1
         """, (norm,)).fetchone()
-        
-        # Do not fall back to author-only matching: common or fabricated
-        # author strings can otherwise return an unrelated real paper.
     finally:
         conn.close()
     
     if not row:
         return None
     
+    cached_authors = _decompress(row["authors_blob"]) if row["authors_blob"] else ""
+
+    # Strict author checking:
+    if authors and cached_authors:
+        if _db_author_overlap(authors, cached_authors) < 0.60:
+            return None  # Author mismatch: reject cache hit
+    elif not authors and cached_authors:
+        return None  # Do not give free pass to anonymous entries
+    
     return CachedPaper(
         title       = _decompress(row["title_blob"]),
-        authors     = _decompress(row["authors_blob"]) if row["authors_blob"] else "",
+        authors     = cached_authors,
         year        = str(row["year"]) if row["year"] else None,
         doi         = row["doi"],
         url         = row["url"],
@@ -400,15 +384,11 @@ def search_cache(title: str, authors: str = "") -> Optional[CachedPaper]:
     )
 
 
-# ── Manual inject (professor confirms a suspicious entry as real) ─────────────
+# ── Manual inject ─────────────────────────────────────────────────────────────
 
 def inject_confirmed_paper(title: str, authors: str, year: str,
                             doi: str = "", url: str = "") -> bool:
-    """
-    Professor manually confirms a reference is real.
-    Stored with source='manual' and confidence=1.0.
-    FIXED v2.3: Uses save_to_cache for proper deduplication.
-    """
+    """Professor manually confirms a reference is real."""
     try:
         save_to_cache(title, authors, year, doi, url,
                       source="manual", confidence=1.0)
@@ -429,11 +409,9 @@ def get_cache_stats() -> dict:
         for row in conn.execute(
             "SELECT source, COUNT(*) FROM verified_papers GROUP BY source"
         ).fetchall():
-            # Handle comma-separated sources
             sources = row[0].split(',')
             for s in sources:
                 by_source[s] = by_source.get(s, 0) + row[1]
-        # Approximate disk size
         size_bytes = CACHE_DB.stat().st_size if CACHE_DB.exists() else 0
         return {
             "total_papers": total,
@@ -446,7 +424,7 @@ def get_cache_stats() -> dict:
 
 
 def vacuum_db():
-    """Reclaim disk space (run occasionally, not on every request)."""
+    """Reclaim disk space."""
     _ensure_db()
     conn = sqlite3.connect(str(CACHE_DB))
     conn.execute("VACUUM")
@@ -454,10 +432,7 @@ def vacuum_db():
 
 
 def clear_old_entries(days: int = 730):
-    """
-    Remove papers not seen for `days` days (default 2 years).
-    Manual entries are never deleted.
-    """
+    """Remove papers not seen for `days` days (default 2 years)."""
     _ensure_db()
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     conn = sqlite3.connect(str(CACHE_DB))
@@ -473,10 +448,7 @@ def clear_old_entries(days: int = 730):
 
 
 def get_all_papers(limit: int = 500, offset: int = 0, search: str = "") -> list:
-    """
-    Retrieve all papers from the DB for the Database browser tab.
-    Supports pagination and optional search filter.
-    """
+    """Retrieve all papers from the DB for the Database browser tab."""
     _ensure_db()
     conn = sqlite3.connect(str(CACHE_DB))
     conn.execute("PRAGMA journal_mode=WAL")
@@ -519,7 +491,7 @@ def get_all_papers(limit: int = 500, offset: int = 0, search: str = "") -> list:
 
 
 def delete_paper(title: str) -> bool:
-    """Delete a paper from the DB by title (for the DB browser tab)."""
+    """Delete a paper from the DB by title."""
     if not title:
         return False
     _ensure_db()
