@@ -1242,7 +1242,11 @@ def _check_completeness(entry: BibEntry) -> None:
         venue_keywords = {"journal", "proceedings", "conference", "workshop", "springer",
                          "wiley", "elsevier", "acm", "ieee", "international", "review"}
         raw_lower = entry.raw_text.lower() if entry.raw_text else ""
-        venue_str = (entry.venue or "").lower() if entry.venue else ""
+        venue_str = " ".join(
+            value.lower()
+            for value in (entry.journal, entry.booktitle, entry.publisher)
+            if value
+        )
         
         has_venue_keyword = any(kw in raw_lower or kw in venue_str for kw in venue_keywords)
         

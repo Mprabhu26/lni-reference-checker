@@ -509,8 +509,17 @@ def _assemble_result(
             and bool(vr.sources_checked)
             and any(s in _real_db_sources for s in vr.sources_checked)
         )
+        _has_metadata_mismatch = vr.status == "partial_match" or bool(
+            getattr(vr, "consistency_issues", [])
+        )
 
-        if vr.status == "fabricated" and _external_confirmed:
+        if _has_metadata_mismatch:
+            # A database candidate was found, but at least one cited field did
+            # not match. AI may explain the discrepancy, but cannot override
+            # this deterministic metadata result with REAL.
+            ai_verdict = "MANUAL_REVIEW"
+            status = "manual_review"
+        elif vr.status == "fabricated" and _external_confirmed:
             ai_verdict = "FAKE"
             status = "manual_review"
         elif ai_verdict == "FAKE" and not _external_confirmed:

@@ -783,8 +783,10 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
         print(f"  [CrossRef DEBUG] {len(_items)} items returned (attempt {attempt+1})")
         break
 
+    best_partial = None
+    best_partial_score = 0.0
     try:
-        for item in _items[:10]:
+        for item in _items:
             title = (item.get("title") or [""])[0]
             if not title:
                 continue
@@ -801,7 +803,24 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
             ok, checks = _full_combination_match(entry, rec)
             if not ok:
                 fails = [k for k, v in checks.items() if v and not _check_ok(v)]
-                print(f"  [CrossRef DEBUG] NO MATCH title={title[:60]!r} year={year} fails={fails}")
+                title_check = checks.get("title")
+                title_score = title_check[1] if isinstance(title_check, tuple) and isinstance(title_check[1], (int, float)) else _title_similarity(entry.title, title)
+                print(f"  [CrossRef DEBUG] PARTIAL CANDIDATE title={title[:60]!r} year={year} fails={fails}")
+                if title_score >= 0.75 and title_score > best_partial_score:
+                    best_partial_score = title_score
+                    best_partial = VerificationResult(
+                        key=entry.key, title=entry.title or "",
+                        status="partial_match", confidence=round(max(0.45, min(0.79, title_score * 0.75)), 2),
+                        matched_title=title, doi=doi or None,
+                        open_access_url=_check_unpaywall(doi) if doi else None,
+                        note=f"CrossRef found a likely paper by title, but metadata differs: {_fails_summary(checks)}",
+                        sources_checked=["CrossRef"],
+                        correct_authors=author_str,
+                        corrected_title=title, corrected_authors=author_str,
+                        corrected_year=year, corrected_journal=container or None,
+                        field_checks=checks,
+                        consistency_issues=[_field_mismatch_label(k) for k, v in checks.items() if v and not _check_ok(v)],
+                    )
                 continue
             return VerificationResult(
                 key=entry.key, title=entry.title or "",
@@ -816,8 +835,8 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                 field_checks=checks,
             )
     except Exception:
-        return None
-    return None
+        return best_partial
+    return best_partial
 
 
 def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
