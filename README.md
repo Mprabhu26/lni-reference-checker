@@ -193,4 +193,3 @@ This README reflects the behavior present in the current codebase and deliberate
 
 
 **Maintainer**: Mithila Prabhu (Frankfurt University of Applied Sciences)  
-**Status**: Production-ready ✓
