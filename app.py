@@ -1,17 +1,14 @@
 """
-Flask Web Server — LNI Reference Checker v7.0
+Flask Web Server — LNI Reference Checker v8.1
 =============================================
-CHANGES v7.0:
-  - Removed ai_extract_references_from_text() full-text AI pass (wasteful).
-    Only ai_parse_uncertain_entries() is called for entries the regex flagged.
-  - Verification pipeline now follows strict 4-step order:
-      1. Local DB  2. Academic APIs  3. URL fetch (suspicious only)  4. AI
-  - AI final verdict never outputs FAKE — only REAL or SUSPICIOUS.
-    FAKE is only set by professor manual action.
-  - FIXED v8.2: Duplicate entries are now handled properly via verify_all_references()
+Strict verification pipeline:
+  1. Local DB  2. Academic APIs  3. URL fetch  4. AI Fallback
+Rule: Never auto-assigns FAKE. All suspect entries are marked MANUAL_REVIEW
+for the professor to review and manually confirm/penalize.
 """
 
 import os
+import html
 import re
 import sys
 from pathlib import Path
@@ -31,7 +28,7 @@ import signal
 from functools import wraps
 
 try:
-    from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context  # type: ignore[import-not-found]
+    from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 except ImportError as exc:
     raise RuntimeError("Flask is required. Install it with: pip install flask") from exc
 
@@ -74,37 +71,17 @@ app.config["TIMEOUT"] = 180
 from local_db import init_cache_db
 from review_queue import init_review_db
 try:
+    from api_config import check_api_reachability, get_active_api_summary, print_startup_summary
+    _has_api_config = True
+except ImportError:
+    _has_api_config = False
+try:
     init_cache_db()
     init_review_db()
 except Exception as _db_init_err:
     print(f"Warning: DB init error (non-fatal): {_db_init_err}")
-
-
-# ---------------------------------------------------------------------------
-# Timeout decorator
-# ---------------------------------------------------------------------------
-
-class TimeoutError(Exception):
-    pass
-
-def timeout(seconds=180):
-    def decorator(func):
-        def _handle_timeout(signum, frame):
-            raise TimeoutError(f"Function timed out after {seconds} seconds")
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            if sys.platform != 'win32':
-                signal.signal(signal.SIGALRM, _handle_timeout)
-                signal.alarm(seconds)
-                try:
-                    result = func(*args, **kwargs)
-                finally:
-                    signal.alarm(0)
-                return result
-            else:
-                return func(*args, **kwargs)
-        return wrapper
-    return decorator
+if _has_api_config:
+    print_startup_summary()
 
 
 # ---------------------------------------------------------------------------
@@ -121,27 +98,53 @@ def status():
     from checker import _ARXIV_BIBTEX_MEM_CACHE, _MEM_CACHE
     llm_stats = get_llm_cache_stats()
     from ai_checker import _ai_available, _AI_BASE_URL, _AI_MODEL
-    groq_available = _ai_available()
-    provider_label = _AI_BASE_URL.split("/")[2] if "//" in _AI_BASE_URL else (_AI_BASE_URL or "none")
+    ai_ok = _ai_available()
+    provider_label = (
+        _AI_BASE_URL.split("/")[2] if "//" in _AI_BASE_URL else (_AI_BASE_URL or "none")
+    )
+    api_summary = get_active_api_summary() if _has_api_config else {}
     return jsonify({
         "status": "ok",
-        "version": "7.0",
+        "version": "8.1",
         "cache": {
             "llm_response_cache_entries": llm_stats["llm_cache_entries"],
             "arxiv_bibtex_cache_entries": len(_ARXIV_BIBTEX_MEM_CACHE),
             "verification_result_cache_entries": len(_MEM_CACHE),
         },
-        "ai_available": groq_available,
-        "ai_provider": provider_label if groq_available else "none",
-        "apis": {
-            "groq": groq_available,
-            "github": bool(os.environ.get("GITHUB_TOKEN")),
-            "unpaywall": bool(os.environ.get("UNPAYWALL_EMAIL")),
-        },
+        "ai_available": ai_ok,
+        "ai_provider": provider_label if ai_ok else "none",
+        "apis_configured": {name: info["ready"] for name, info in api_summary.items()},
         "env": {
             "disk_cache_dir": os.environ.get("LNI_CACHE_DIR", ".lni_cache"),
         },
+        "hint": "GET /status/apis for live API reachability check",
     })
+
+
+@app.route("/status/apis", methods=["GET"])
+def status_apis():
+    """Live probe of each academic API — use to diagnose why references show MANUAL_REVIEW."""
+    if not _has_api_config:
+        return jsonify({"error": "api_config.py not found — add it to your project folder"}), 501
+    timeout = float(request.args.get("timeout", "5"))
+    results = check_api_reachability(timeout=timeout)
+    reachable = sum(1 for v in results.values() if v.get("reachable") is True)
+    blocked   = sum(1 for v in results.values() if v.get("reachable") is False and "403" in str(v.get("note","")))
+    diagnosis = []
+    if blocked:
+        diagnosis.append(
+            f"{blocked} API(s) blocked by network proxy (403). "
+            "All references fall to MANUAL_REVIEW in this environment. "
+            "Deploy to a server with open egress to fix this."
+        )
+    if reachable == 0 and blocked:
+        diagnosis.append(
+            "ROOT CAUSE of 0 verified / all MANUAL_REVIEW: "
+            "no academic APIs are reachable from this host."
+        )
+    return jsonify({"reachable": reachable, "blocked": blocked,
+                    "diagnosis": diagnosis, "apis": results,
+                    "tip": "Copy .env.example → .env and fill in your keys."})
 
 
 # ---------------------------------------------------------------------------
@@ -151,28 +154,27 @@ def status():
 def _bib_to_dicts(bib_list: list) -> list:
     result = []
     for e in bib_list:
-        # Get field validation warnings for this entry
         compliance_warnings = get_lni_compliance_warnings(e)
         all_warnings = compliance_warnings.get('all_warnings', [])
-        
+
         result.append({
-            "key": e.key, 
+            "key": e.key,
             "entry_type": e.entry_type or "unknown",
-            "authors": e.authors, 
-            "title": e.title, 
+            "authors": e.authors,
+            "title": e.title,
             "year": e.year,
-            "publisher": e.publisher, 
-            "journal": e.journal, 
+            "publisher": e.publisher,
+            "journal": e.journal,
             "booktitle": e.booktitle,
-            "pages": e.pages, 
-            "url": e.url, 
+            "pages": e.pages,
+            "url": e.url,
             "urldate": e.urldate,
-            "doi": e.doi, 
-            "isbn": e.isbn, 
+            "doi": e.doi,
+            "isbn": e.isbn,
             "raw_text": e.raw_text[:300],
-            "needs_ai_parsing": e.needs_ai_parsing, 
+            "needs_ai_parsing": e.needs_ai_parsing,
             "key_consistent": e.key_consistent,
-            "field_warnings": all_warnings,  # NEW: LNI compliance warnings
+            "field_warnings": all_warnings,
             "has_field_issues": len(all_warnings) > 0,
         })
     return result
@@ -180,125 +182,147 @@ def _bib_to_dicts(bib_list: list) -> list:
 
 def _vr_to_dicts(api_results_raw: list) -> list:
     return [
-        {"key": vr.key, "status": vr.status, "confidence": round(vr.confidence, 2),
-         "matched_title": vr.matched_title, "doi": vr.doi,
-         "open_access_url": vr.open_access_url, "note": vr.note,
-         "sources_checked": vr.sources_checked, "web_evidence": vr.web_evidence,
-         "correct_authors": vr.correct_authors,
-         "version_note": vr.version_note,
-         "is_retracted": getattr(vr, "is_retracted", False),
-         "retraction_doi": getattr(vr, "retraction_doi", None),
-         "retraction_note": getattr(vr, "retraction_note", None),
-         "corrected_title": getattr(vr, "corrected_title", None),
-         "corrected_authors": getattr(vr, "corrected_authors", None),
-         "corrected_year": getattr(vr, "corrected_year", None),
-         "corrected_journal": getattr(vr, "corrected_journal", None),
-         "corrected_publisher": getattr(vr, "corrected_publisher", None),
-         "corrected_volume": getattr(vr, "corrected_volume", None),
-         "corrected_pages": getattr(vr, "corrected_pages", None),
-         "title_match_score": getattr(vr, "title_match_score", None),
-         "author_match_score": getattr(vr, "author_match_score", None),
-         "is_duplicate": getattr(vr, "is_duplicate", False),
-         "duplicate_of": getattr(vr, "duplicate_of", None),
-         }
+        {
+            "key": vr.key,
+            "status": vr.status,
+            "confidence": round(vr.confidence, 2),
+            "matched_title": html.unescape(vr.matched_title) if vr.matched_title else vr.matched_title,
+            "doi": vr.doi,
+            "open_access_url": vr.open_access_url,
+            "note": vr.note,
+            "sources_checked": vr.sources_checked,
+            "sources_checked_str": ", ".join(vr.sources_checked) if vr.sources_checked else "",
+            "web_evidence": vr.web_evidence,
+            "correct_authors": vr.correct_authors,
+            "version_note": vr.version_note,
+            "is_retracted": getattr(vr, "is_retracted", False),
+            "retraction_doi": getattr(vr, "retraction_doi", None),
+            "retraction_note": getattr(vr, "retraction_note", None),
+            "corrected_title": html.unescape(getattr(vr, "corrected_title", None)) if getattr(vr, "corrected_title", None) else None,
+            "corrected_authors": getattr(vr, "corrected_authors", None),
+            "corrected_year": getattr(vr, "corrected_year", None),
+            "corrected_journal": html.unescape(getattr(vr, "corrected_journal", None)) if getattr(vr, "corrected_journal", None) else None,
+            "corrected_publisher": getattr(vr, "corrected_publisher", None),
+            "corrected_volume": getattr(vr, "corrected_volume", None),
+            "corrected_pages": getattr(vr, "corrected_pages", None),
+            "title_match_score": getattr(vr, "title_match_score", None),
+            "author_match_score": getattr(vr, "author_match_score", None),
+            "is_duplicate": getattr(vr, "is_duplicate", False),
+            "duplicate_of": getattr(vr, "duplicate_of", None),
+            "consistency_issues": getattr(vr, "consistency_issues", []),
+        }
         for vr in api_results_raw
     ]
 
 
 def _verified_result_without_ai(bib_dicts: list, api_results_raw: list) -> dict:
-    """Build the final verdict when every reference already passed verification."""
     by_key = {vr.key: vr for vr in api_results_raw}
     verdicts = []
     for entry in bib_dicts:
         vr = by_key.get(entry["key"])
         if vr is None:
             continue
-        verdicts.append({
-            "key": entry["key"],
-            "verdict": "REAL",
-            "confidence": vr.confidence,
-            "reasoning": (
+
+        if vr.status == "verified":
+            verdict = "REAL"
+            reasoning = (
                 f"Found in {', '.join(vr.sources_checked[:2]) if vr.sources_checked else 'academic database'}"
                 + (f" — title match {int(vr.title_match_score * 100)}%"
                    if getattr(vr, 'title_match_score', None) else "")
                 + (f", author match {int(vr.author_match_score * 100)}%"
                    if getattr(vr, 'author_match_score', None) else "")
                 + (f". DOI confirmed." if getattr(vr, 'doi', None) else ".")
-            ),
-            "risk_factors": [],
+            )
+        else:
+            verdict = "MANUAL_REVIEW"
+            reasoning = vr.note or "Metadata could not be fully confirmed. Manual review required."
+
+        verdicts.append({
+            "key": entry["key"],
+            "verdict": verdict,
+            "confidence": vr.confidence,
+            "reasoning": reasoning,
+            "risk_factors": getattr(vr, "consistency_issues", []) or [],
         })
+
+    real_count = sum(1 for v in verdicts if v["verdict"] == "REAL")
+    manual_count = sum(1 for v in verdicts if v["verdict"] == "MANUAL_REVIEW")
+
     return {
         "verdicts": verdicts,
         "fake_count": 0,
-        "suspicious_count": 0,
-        "real_count": len(verdicts),
-        "summary": f"Analysis: {len(verdicts)} REAL, 0 SUSPICIOUS, 0 FAKE",
+        "suspicious_count": manual_count,
+        "real_count": real_count,
+        "summary": f"Analysis: {real_count} REAL, {manual_count} MANUAL_REVIEW, 0 FAKE",
     }
 
 
 def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) -> list:
-    """
-    Compare cited metadata against what the database found.
-    Returns a list of warning dicts: {type, cited, correct, severity}
-    Severity: 'error' (clear wrong data) | 'warn' (minor/ambiguous)
-    Covers: author mismatch, year mismatch, extra/fake authors,
-            missing authors, publisher mismatch, title case, journal mismatch.
-    """
+    from checker import _normalize_metadata_text
     import re as _re
     from checker import author_overlap_score
     warnings = []
 
     cited_authors = (entry_dict.get("authors") or "").strip()
-    correct_authors = (vr_dict.get("correct_authors") or
-                       vr_dict.get("corrected_authors") or "").strip()
+    correct_authors = (
+        vr_dict.get("correct_authors")
+        or vr_dict.get("corrected_authors")
+        or ""
+    ).strip()
     cited_year = str(entry_dict.get("year") or "").strip()
     corrected_year = str(vr_dict.get("corrected_year") or "").strip()
-    cited_title = (entry_dict.get("title") or "").strip()
-    matched_title = (vr_dict.get("matched_title") or
-                     vr_dict.get("corrected_title") or "").strip()
     cited_publisher = (entry_dict.get("publisher") or "").strip()
     corrected_publisher = (vr_dict.get("corrected_publisher") or "").strip()
-    cited_journal = (entry_dict.get("journal") or "").strip()
-    corrected_journal = (vr_dict.get("corrected_journal") or "").strip()
+    cited_journal = _normalize_metadata_text(entry_dict.get("journal"))
+    corrected_journal = _normalize_metadata_text(vr_dict.get("corrected_journal"))
 
-    # ── Author warnings ──────────────────────────────────────────────────────
-    # Detect et al. — if present, author count comparisons are suppressed
     _has_et_al = bool(_re.search(r'\bet\.?\s*al\.?', cited_authors, _re.IGNORECASE))
 
     if cited_authors and correct_authors:
         overlap = author_overlap_score(cited_authors, correct_authors)
         if overlap is not None:
-            # Count authors in each
             def _count_authors(s):
-                parts = [p.strip() for p in _re.split(r';|\band\b|\bund\b', s, flags=_re.IGNORECASE) if p.strip()]
-                return [p for p in parts if not _re.match(r'^et\.?\s*al\.?$', p.lower())]
+                affiliation_markers = (
+                    "university", "college", "institute", "department", "faculty",
+                    "engineering", "indonesia", "yogyakarta", "hospital", "school",
+                    "organization", "laboratory", "laboratories", "centre", "center",
+                )
+                parts = [
+                    p.strip()
+                    for p in _re.split(r';|\band\b|\bund\b', s, flags=_re.IGNORECASE)
+                    if p.strip()
+                ]
+                return [
+                    p for p in parts
+                    if not _re.match(r'^et\.?\s*al\.?$', p.lower())
+                    and _re.search(r'[A-Za-zÀ-ÿ]{2,}', p)
+                    and not any(marker in p.lower() for marker in affiliation_markers)
+                ]
 
             cited_list = _count_authors(cited_authors)
             correct_list = _count_authors(correct_authors)
             n_cited = len(cited_list)
             n_correct = len(correct_list)
 
-            if overlap < 0.40:
+            if overlap < 0.20:
                 warnings.append({
-                    "type": "author_mismatch",
-                    "label": "Author mismatch",
+                    "type": "severe_author_mismatch",
+                    "label": "Severe author mismatch",
                     "cited": cited_authors[:120],
                     "correct": correct_authors[:120],
                     "severity": "error",
-                    "detail": f"Only {int(overlap*100)}% of cited authors match the database record"
+                    "detail": f"Only {int(overlap*100)}% author overlap — potential fabrication",
                 })
-            elif overlap < 0.75:
+            elif overlap < 0.60:
                 warnings.append({
                     "type": "author_mismatch",
                     "label": "Author mismatch",
                     "cited": cited_authors[:120],
                     "correct": correct_authors[:120],
                     "severity": "warn",
-                    "detail": f"Partial author match ({int(overlap*100)}%) — verify author list"
+                    "detail": f"Partial author match ({int(overlap*100)}%) — verify author list",
                 })
             elif not _has_et_al:
-                # Good overlap but count differs → extra or missing authors
-                # Skip if et al. is used (intentional truncation)
                 if n_cited > n_correct:
                     warnings.append({
                         "type": "extra_authors",
@@ -306,7 +330,7 @@ def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) 
                         "cited": cited_authors[:120],
                         "correct": correct_authors[:120],
                         "severity": "warn",
-                        "detail": f"Cited {n_cited} authors but database lists {n_correct} — possible fabricated co-author"
+                        "detail": f"Cited {n_cited} authors but database lists {n_correct}",
                     })
                 elif n_correct > n_cited + 1:
                     warnings.append({
@@ -315,33 +339,28 @@ def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) 
                         "cited": cited_authors[:120],
                         "correct": correct_authors[:120],
                         "severity": "warn",
-                        "detail": f"Cited {n_cited} authors but database lists {n_correct} — some authors omitted"
+                        "detail": f"Cited {n_cited} authors but database lists {n_correct}",
                     })
 
-    # ── Year warnings ────────────────────────────────────────────────────────
     if cited_year and corrected_year:
         try:
             m_c = _re.search(r'\d{4}', cited_year)
             m_d = _re.search(r'\d{4}', corrected_year)
-            y_cited   = int(m_c.group()) if m_c else None
+            y_cited = int(m_c.group()) if m_c else None
             y_correct = int(m_d.group()) if m_d else None
-            if y_cited is None or y_correct is None:
-                raise ValueError("no year found")
-            diff = abs(y_cited - y_correct)
-            if diff > 0:
-                sev = "error" if diff > 2 else "warn"
+            if y_cited and y_correct and y_cited != y_correct:
+                diff = abs(y_cited - y_correct)
                 warnings.append({
                     "type": "year_mismatch",
                     "label": "Year mismatch",
                     "cited": cited_year,
                     "correct": corrected_year,
-                    "severity": sev,
-                    "detail": f"Cited year {cited_year} but publication year is {corrected_year} (off by {diff} year{'s' if diff > 1 else ''})"
+                    "severity": "error",
+                    "detail": f"Cited year {cited_year} differs from database year {corrected_year} (off by {diff} yr)",
                 })
-        except (ValueError, TypeError):
+        except Exception:
             pass
 
-    # ── Publisher warnings ───────────────────────────────────────────────────
     if cited_publisher and corrected_publisher:
         cp_norm = cited_publisher.lower().replace(" ", "")
         db_norm = corrected_publisher.lower().replace(" ", "")
@@ -352,13 +371,17 @@ def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) 
                 "cited": cited_publisher[:80],
                 "correct": corrected_publisher[:80],
                 "severity": "warn",
-                "detail": f"Cited publisher '{cited_publisher}' differs from database record '{corrected_publisher}'"
+                "detail": "Cited publisher differs from database record",
             })
 
-    # ── Journal warnings ─────────────────────────────────────────────────────
-    if cited_journal and corrected_journal:
-        cj_norm = cited_journal.lower().replace(" ", "")
-        dj_norm = corrected_journal.lower().replace(" ", "")
+    publisher_markers = (
+        "springer", "wiley", "elsevier", "verlag", "press", "publishers",
+        "cambridge", "oxford", "routledge", "sage", "de gruyter", "mit press",
+    )
+    if (cited_journal and corrected_journal
+            and not any(marker in cited_journal.lower() for marker in publisher_markers)):
+        cj_norm = _re.sub(r"[^a-z0-9]+", "", cited_journal.lower())
+        dj_norm = _re.sub(r"[^a-z0-9]+", "", corrected_journal.lower())
         if cj_norm not in dj_norm and dj_norm not in cj_norm:
             warnings.append({
                 "type": "journal_mismatch",
@@ -366,7 +389,7 @@ def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) 
                 "cited": cited_journal[:80],
                 "correct": corrected_journal[:80],
                 "severity": "warn",
-                "detail": f"Cited journal name differs from database record"
+                "detail": "Cited journal differs from database record",
             })
 
     return warnings
@@ -395,47 +418,13 @@ def _apply_ai_improvements(bib_list: list, improvements: dict) -> list:
 
 
 def _build_match_breakdown(vr, ai: dict) -> dict:
-    """
-    Build a structured match-quality breakdown for display in the UI.
-
-    The 'confidence' number on a reference card is MATCH QUALITY (how well the
-    bibliography entry matched a database record), NOT a probability that the
-    paper exists. This dict gives the UI enough information to show a clear,
-    honest label like:
-
-        Title match: 78% | Author match: 65% | Source: CrossRef
-        Verdict: ⚠ Suspicious — needs manual review
-
-    instead of the ambiguous bare "78% — no database found this".
-
-    Fields
-    ------
-    title_match   : int|None   — title similarity %, None if no DB match attempted
-    author_match  : int|None   — author overlap %, None if unavailable
-    api_found     : bool       — True if any academic API returned a candidate
-    sources       : list[str]  — which APIs were queried
-    confidence_label : str     — short human label for the confidence band
-    confidence_tooltip : str   — one-sentence explanation of what the number means
-    """
     title_sim = getattr(vr, "title_match_score", None) if vr else None
     author_sim = getattr(vr, "author_match_score", None) if vr else None
     sources = (getattr(vr, "sources_checked", []) if vr else []) or []
     api_found = bool(getattr(vr, "matched_title", None) if vr else None)
 
-    # Pull per-signal info surfaced by ai_checker if available
-    ai_risk = ai.get("risk_factors", [])
-    for rf in ai_risk:
-        if isinstance(rf, str) and rf.startswith("Title match:"):
-            try:
-                pct = int(rf.split(":")[1].strip().rstrip("%"))
-                if title_sim is None:
-                    title_sim = pct / 100.0
-            except (ValueError, IndexError):
-                pass
-
     conf = ai.get("confidence") or (getattr(vr, "confidence", 0.0) if vr else 0.0)
 
-    # Band label
     if conf >= 0.95:
         band = "Strong match"
     elif conf >= 0.80:
@@ -447,12 +436,7 @@ def _build_match_breakdown(vr, ai: dict) -> dict:
     else:
         band = "No match found"
 
-    tooltip = (
-        "This percentage is match quality — how closely the bibliography entry "
-        "matches a record in academic databases. "
-        "≥95%: confirmed real. 70–94%: suspicious (may be real but poorly formatted). "
-        "<70%: likely hallucinated or a very obscure work."
-    )
+    tooltip = "Metadata match quality. Any discrepancies route the entry to manual review."
 
     return {
         "title_match": round(title_sim * 100) if title_sim is not None else None,
@@ -474,13 +458,11 @@ def _assemble_result(
     ai_verdicts_by_key = {v["key"]: v for v in verification_result.get("verdicts", [])}
     vr_by_key = {vr.key: vr for vr in api_results_raw}
 
-    # Fast-path for large PDFs: skip expensive optional features
     bib_count = len(bib_list)
-    is_large_pdf = bib_count > 40  # 40+ refs = optimization mode
-    
+    is_large_pdf = bib_count > 40
+
     verification_output = []
     for vr in api_results_raw:
-        # ── Check for duplicates for THIS entry ──────────────────────────────────
         dup_info = None
         if getattr(vr, "is_duplicate", False) and getattr(vr, "duplicate_of", None):
             dup_info = {"duplicate_of": vr.duplicate_of, "reason": "Same paper (deduplicated)"}
@@ -494,41 +476,73 @@ def _assemble_result(
                     break
 
         ai = ai_verdicts_by_key.get(vr.key, {})
-        ai_verdict = ai.get("verdict", "SUSPICIOUS")
-        
-        # Map vr.status to ai_verdict:
-        # - fabricated → FAKE (definitive)
-        # - manual_review → MANUAL_REVIEW (needs review)
-        # - verified + ai says REAL → REAL (verified)
-        # - anything else → use AI verdict or default to SUSPICIOUS
-        if vr.status == "fabricated":
-            ai_verdict = "FAKE"
-        elif vr.status == "manual_review":
+        ai_verdict = ai.get("verdict", "MANUAL_REVIEW")
+
+        # ------------------------------------------------------------------
+        # USER RULE: NEVER AUTO-FLAG AS FAKE.
+        # AI FAKE verdicts are only kept when an external API actually confirmed
+        # a mismatch. If no external source was checked (APIs blocked/timed out),
+        # FAKE is downgraded to MANUAL_REVIEW so the professor decides.
+        # ------------------------------------------------------------------
+        _external_confirmed = bool(
+            vr.sources_checked
+            and any(
+                s not in ("source_chain_exhausted", "web_search",
+                          "error", "structural_validation",
+                          "fabrication_detector")
+                for s in vr.sources_checked
+            )
+        )
+
+        # A reference may only be promoted to REAL if it was actually
+        # confirmed against an academic database. "verified" from a structural
+        # shortcut (metadata_early_check / metadata_fallback) is no longer
+        # possible, but we guard here anyway: only genuine DB sources count.
+        _real_db_sources = {
+            "CrossRef (DOI)", "CrossRef", "OpenAlex", "Semantic Scholar",
+            "DBLP", "arXiv (ID)", "arXiv", "PubMed", "DataCite", "OpenAIRE",
+            "BASE", "Google Scholar", "ResearchGate", "local_db",
+            "landmark_detection", "professor_review",
+        }
+        _verified_from_db = (
+            vr.status == "verified"
+            and bool(vr.sources_checked)
+            and any(s in _real_db_sources for s in vr.sources_checked)
+        )
+        _has_metadata_mismatch = vr.status == "partial_match" or bool(
+            getattr(vr, "consistency_issues", [])
+        )
+
+        if _has_metadata_mismatch:
+            # A database candidate was found, but at least one cited field did
+            # not match. AI may explain the discrepancy, but cannot override
+            # this deterministic metadata result with REAL.
             ai_verdict = "MANUAL_REVIEW"
-        elif vr.status == "verified" and ai_verdict != "REAL":
-            ai_verdict = "REAL"
-        elif ai_verdict == "SUSPICIOUS" and vr.status not in ("verified", "fabricated", "manual_review"):
-            # Unverified entries should be MANUAL_REVIEW, not SUSPICIOUS
-            ai_verdict = "MANUAL_REVIEW"
-            
-        # Debug: log verdict assignments for entries that need manual review
-        if ai_verdict in ("MANUAL_REVIEW", "FAKE") or vr.status == "manual_review":
-            print(f"[VERDICT] {vr.key}: vr.status={vr.status} ai_from_checker={ai.get('verdict','none')} → final_ai_verdict={ai_verdict}", file=sys.stderr, flush=True)
-        # Map AI verdict to display status
-        if ai_verdict == "REAL":
-            status = "verified"
-        elif ai_verdict == "FAKE":
-            status = "not_found"
-        elif ai_verdict == "MANUAL_REVIEW":
             status = "manual_review"
+        elif vr.status == "fabricated" and _external_confirmed:
+            ai_verdict = "FAKE"
+            status = "manual_review"
+        elif ai_verdict == "FAKE" and not _external_confirmed:
+            # No external API checked — AI is guessing. Don't penalise student.
+            ai_verdict = "MANUAL_REVIEW"
+            status = "manual_review"
+        elif ai_verdict == "FAKE" and _external_confirmed:
+            status = "manual_review"
+        elif _verified_from_db:
+            ai_verdict = "REAL"
+            status = "verified"
         else:
-            status = "suspicious"
+            # Not confirmed by a real database. Respect the AI verdict -
+            # REAL is only kept if the AI returned REAL on real evidence.
+            ai_verdict = ai.get("verdict", "MANUAL_REVIEW")
+            ai_verdict = ai_verdict if ai_verdict in ("REAL", "FAKE", "SUSPICIOUS", "MANUAL_REVIEW") else "MANUAL_REVIEW"
+            if ai_verdict in ("FAKE", "SUSPICIOUS"):
+                ai_verdict = "MANUAL_REVIEW"  # never auto-FAKE; professor decides
+            status = "verified" if ai_verdict == "REAL" else "manual_review"
 
         _raw = (bib_dict.get(vr.key) and bib_dict[vr.key].raw_text or "")[:300]
         _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""
         _raw_ai_reasoning = ai.get("reasoning", "")
-        # If AI returned no reasoning or a trivial stub, use the verification note directly.
-        # vr.note always has the real detail (e.g. web search result, why manual review needed).
         _is_stub = (
             not _raw_ai_reasoning
             or len(_raw_ai_reasoning) < 25
@@ -536,14 +550,13 @@ def _assemble_result(
         )
         ai_reasoning_text = vr.note if _is_stub else _raw_ai_reasoning
 
-        # TIER 2: Author validation (ENHANCED) — SKIP for large PDFs
         entry_obj = bib_dict.get(vr.key)
         author_validation = None
         if not is_large_pdf and entry_obj and entry_obj.authors:
             try:
                 author_validation = get_author_validation_report(
                     entry_obj.authors,
-                    vr.correct_authors
+                    vr.correct_authors,
                 )
             except Exception as e:
                 print(f"[AUTHOR_VAL] Error for {vr.key}: {e}", file=sys.stderr, flush=True)
@@ -554,7 +567,7 @@ def _assemble_result(
             "raw": _raw,
             "status": status,
             "confidence": round(ai.get("confidence", vr.confidence), 2),
-            "confidence_tier": getattr(vr, "confidence_tier", "moderate"),  # TIER 1
+            "confidence_tier": getattr(vr, "confidence_tier", "moderate"),
             "matched_title": vr.matched_title,
             "doi": vr.doi or ai.get("open_access_url"),
             "open_access_url": ai.get("open_access_url") or vr.open_access_url,
@@ -564,8 +577,8 @@ def _assemble_result(
             "web_evidence": vr.web_evidence,
             "ai_verdict": ai_verdict,
             "ai_reasoning": ai_reasoning_text,
-            "ai_risk_factors": ai.get("risk_factors", []),
-            "author_validation": author_validation,  # TIER 2
+            "ai_risk_factors": ai.get("risk_factors", []) or getattr(vr, "consistency_issues", []),
+            "author_validation": author_validation,
             "version_note": vr.version_note,
             "is_retracted": getattr(vr, "is_retracted", False),
             "retraction_doi": getattr(vr, "retraction_doi", None),
@@ -577,15 +590,12 @@ def _assemble_result(
             "corrected_publisher": getattr(vr, "corrected_publisher", None),
             "corrected_volume": getattr(vr, "corrected_volume", None),
             "corrected_pages": getattr(vr, "corrected_pages", None),
-            # match_breakdown: explicit per-signal scores so the UI can show
-            # "Title match: 78% | Author match: 65%" instead of a bare confidence %.
-            # confidence = match quality against DB records, NOT probability of existence.
             "match_breakdown": _build_match_breakdown(vr, ai),
             "is_duplicate": dup_info is not None,
             "duplicate_of": dup_info.get("duplicate_of") if dup_info else None,
             "duplicate_reason": dup_info.get("reason") if dup_info else None,
         })
-        # Compute metadata warnings for this entry
+
         _entry_obj = bib_dict.get(vr.key)
         _entry_raw = {
             "authors": getattr(_entry_obj, "authors", "") or "",
@@ -605,37 +615,31 @@ def _assemble_result(
         }
         verification_output[-1]["metadata_warnings"] = _compute_metadata_warnings(_entry_raw, _vr_raw)
 
-    # Entries that never went through API verification (e.g. no title/DOI)
     api_keys = {vr.key for vr in api_results_raw}
     for entry in _bib_to_dicts(bib_list):
         if entry["key"] not in api_keys:
             ai = ai_verdicts_by_key.get(entry["key"], {})
-            ai_verdict = ai.get("verdict") or "SUSPICIOUS"
-            if ai_verdict != "REAL":
-                ai_verdict = "MANUAL_REVIEW"
             verification_output.append({
                 "key": entry["key"],
                 "title": entry.get("title") or "",
                 "raw": entry.get("raw_text") or "",
-                "status": "verified" if ai_verdict == "REAL" else "manual_review",
-                "confidence": ai.get("confidence", 0.5),
+                "status": "manual_review",
+                "confidence": ai.get("confidence", 0.4),
                 "matched_title": None,
                 "doi": entry.get("doi"),
                 "open_access_url": ai.get("open_access_url") or entry.get("url"),
-                "note": ai.get("reasoning", ""),
-                "api_note": ai.get("reasoning", ""),
+                "note": ai.get("reasoning", "Unverified entry. Manual review required."),
+                "api_note": ai.get("reasoning", "Unverified entry."),
                 "web_evidence": None,
-                "ai_verdict": ai_verdict,
-                "ai_reasoning": ai.get("reasoning", ""),
+                "ai_verdict": "MANUAL_REVIEW",
+                "ai_reasoning": ai.get("reasoning", "Professor verification required."),
                 "ai_risk_factors": ai.get("risk_factors", []),
                 "version_note": None,
                 "metadata_warnings": [],
                 "match_breakdown": _build_match_breakdown(None, ai),
             })
 
-    # Score
     retracted_count = sum(1 for vr in api_results_raw if getattr(vr, "is_retracted", False))
-    # Fakes only deducted after professor manually confirms via Mark as Fake — not auto.
     professor_confirmed_fakes = 0
     det_score = compute_score(
         bib_list, xcheck, api_results_raw,
@@ -646,11 +650,6 @@ def _assemble_result(
     )
     s = det_score["score"]
 
-    # Count entries needing manual review:
-    # - SUSPICIOUS: unclear evidence
-    # - MANUAL_REVIEW: plausible but unconfirmed (ML gate) or flagged by systems
-    # - FAKE: detected as fabricated but needs professor confirmation
-    # Until professor resolves each, submission stays PENDING with tentative score
     suspicious_pending = sum(
         1 for v in verification_output
         if v.get("ai_verdict") in ("SUSPICIOUS", "MANUAL_REVIEW", "FAKE")
@@ -667,30 +666,17 @@ def _assemble_result(
     ) or "No issues detected."
 
     if suspicious_pending > 0:
-        fake_count = sum(1 for v in verification_output if v.get("ai_verdict") == "FAKE")
-        review_count = sum(1 for v in verification_output if v.get("ai_verdict") == "MANUAL_REVIEW")
-        susp_count = sum(1 for v in verification_output if v.get("ai_verdict") == "SUSPICIOUS")
-        
-        reasons = []
-        if fake_count > 0:
-            reasons.append(f"{fake_count} reference(s) flagged as fabricated")
-        if review_count > 0:
-            reasons.append(f"{review_count} reference(s) require manual verification")
-        if susp_count > 0:
-            reasons.append(f"{susp_count} reference(s) are suspicious/uncertain")
-        
-        reason_text = " and ".join(reasons) if reasons else f"{suspicious_pending} reference(s) need review"
-        
         _det_reason = (
-            f"Tentative score {s}/100 — {reason_text}. "
-            f"No verdict can be issued until professor confirms each entry. {_pen_parts}"
+            f"Tentative score {s}/100 — {suspicious_pending} reference(s) require manual verification. "
+            f"No final verdict until confirmed by professor. {_pen_parts}"
         )
     else:
         _det_reason = f"Score {s}/100. {_pen_parts}"
 
     _ai_reason = overall.get("verdict_reason", "")
     _verdict_reason = (
-        _ai_reason if (suspicious_pending == 0 and _ai_reason and overall.get("verdict") == det_verdict)
+        _ai_reason
+        if (suspicious_pending == 0 and _ai_reason and overall.get("verdict") == det_verdict)
         else _det_reason
     )
 
@@ -707,11 +693,6 @@ def _assemble_result(
         "suspicious_pending": suspicious_pending,
     }
 
-    # ── Map each entry to the duplicate group it belongs to (if any) ──────────
-    # `duplicates` holds pairwise matches (key_a, key_b, reason); collapse
-    # these into groups via the same union-find canonicalization used
-    # elsewhere so entries can be flagged in the Bibliography Format Check
-    # tab too, not just the Reference Verification tab.
     _dup_group_map: Dict[str, List[str]] = {}
     if duplicates:
         _parent = {e.key: e.key for e in bib_list}
@@ -742,15 +723,25 @@ def _assemble_result(
                     _dup_group_map[m] = [k for k in members if k != m]
 
     bib_output = [
-        {"key": e.key, "type": e.entry_type or "unknown",
-         "authors": e.authors, "title": e.title, "year": e.year,
-         "publisher": e.publisher, "journal": e.journal, "url": e.url,
-         "doi": e.doi, "isbn": e.isbn, "pages": e.pages, "raw": e.raw_text[:250],
-         "completeness_issues": e.completeness_issues,
-         "key_consistent": e.key_consistent,
-         "is_duplicate": e.key in _dup_group_map,
-         "duplicate_of": _dup_group_map.get(e.key, []),
-         "ai_reparsed": e.key in ai_parse_improvements}
+        {
+            "key": e.key,
+            "type": e.entry_type or "unknown",
+            "authors": e.authors,
+            "title": e.title,
+            "year": e.year,
+            "publisher": e.publisher,
+            "journal": e.journal,
+            "url": e.url,
+            "doi": e.doi,
+            "isbn": e.isbn,
+            "pages": e.pages,
+            "raw": e.raw_text[:250],
+            "completeness_issues": e.completeness_issues,
+            "key_consistent": e.key_consistent,
+            "is_duplicate": e.key in _dup_group_map,
+            "duplicate_of": _dup_group_map.get(e.key, []),
+            "ai_reparsed": e.key in ai_parse_improvements,
+        }
         for e in bib_list
     ]
 
@@ -763,50 +754,47 @@ def _assemble_result(
             num = k_str.replace('__NUM_', '').replace('__', '')
             real_cited.add(num)
 
-    # Generate citation analysis report (skip for large PDFs)
     citation_report = {}
     if not is_large_pdf:
-        citation_report = generate_citation_report(body, set(bib_dict.keys()), citation_contexts)
-    
-    # TIER 3: Professor Workflow Enhancements (SKIP for large PDFs - optimization)
+        citation_report = generate_citation_report(
+            body, set(bib_dict.keys()), citation_contexts
+        )
+
     review_priorities = []
     review_summary = {"urgent": [], "important": [], "optional": [], "skip": [], "summary": ""}
     batch_patterns = {"patterns": [], "warnings": []}
-    
-    if not is_large_pdf:  # Only run TIER 3 for <40 refs
+
+    if not is_large_pdf:
         try:
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-            
-            # Wrap TIER 3 functions with timeout - fail fast if too slow
+            from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=1) as executor:
-                # First get review priorities (fast)
                 pri_future = executor.submit(prioritize_for_review, verification_output)
-                review_priorities = pri_future.result(timeout=10)  # 10s timeout
-                
-                # Then summary (fast)
+                review_priorities = pri_future.result(timeout=10)
+
                 sum_future = executor.submit(get_review_summary, review_priorities)
-                review_summary = sum_future.result(timeout=5)  # 5s timeout
-                
-                # Batch patterns (optional, skip if too slow)
+                review_summary = sum_future.result(timeout=5)
+
                 try:
                     pat_future = executor.submit(detect_batch_patterns, verification_output)
-                    batch_patterns = pat_future.result(timeout=5)  # 5s timeout
-                except:
-                    pass  # Skip batch patterns if timeout
+                    batch_patterns = pat_future.result(timeout=5)
+                except Exception:
+                    pass
         except Exception as e:
-            # If TIER 3 times out or fails, use defaults - don't block the user
             print(f"[TIER3] Skipped (timeout/error): {str(e)[:80]}", file=sys.stderr, flush=True)
-    
+
     version_notes = [
         {"key": v["key"], "note": v["version_note"]}
         for v in verification_output if v.get("version_note")
     ]
 
     return {
-        "filename": filename, "format": fmt.upper(),
+        "filename": filename,
+        "format": fmt.upper(),
         "stats": {
-            "body_chars": len(body), "bib_chars": len(bib_text),
-            "bib_entry_count": len(bib_dict), "citation_count": len(real_cited),
+            "body_chars": len(body),
+            "bib_chars": len(bib_text),
+            "bib_entry_count": len(bib_dict),
+            "citation_count": len(real_cited),
             "numeric_citations_found": has_numeric,
         },
         "bibliography": bib_output,
@@ -816,14 +804,14 @@ def _assemble_result(
             "in_bib_not_cited": xcheck.in_bib_not_cited,
         },
         "citation_contexts": citation_contexts,
-        "citation_analysis": citation_report,  # NEW: Citation context analysis
+        "citation_analysis": citation_report,
         "style_suggestions": style_suggestions,
         "duplicates": duplicates,
         "self_citations": self_citations,
         "score": final_score,
         "verification": verification_output,
         "verification_ai_summary": verification_result.get("summary", ""),
-        "professor_workflow": {  # TIER 3
+        "professor_workflow": {
             "review_summary": {
                 "urgent": len(review_summary.get("urgent", [])),
                 "important": len(review_summary.get("important", [])),
@@ -840,8 +828,8 @@ def _assemble_result(
             "uncited_entries": len(xcheck.in_bib_not_cited),
             "incomplete_entries": sum(1 for e in bib_list if e.completeness_issues),
             "key_inconsistencies": sum(1 for e in bib_list if e.key_consistent is False),
-            "fake_candidates": verification_result.get("fake_count", 0),
-            "suspicious": sum(1 for v in verification_output if v.get("ai_verdict") == "SUSPICIOUS"),
+            "fake_candidates": 0,
+            "suspicious": 0,
             "manual_review": sum(1 for v in verification_output if v.get("ai_verdict") == "MANUAL_REVIEW"),
             "verified": sum(1 for v in verification_output if v["status"] == "verified"),
             "retracted": sum(1 for v in verification_output if v.get("is_retracted")),
@@ -859,30 +847,18 @@ def _assemble_result(
 
 
 # ---------------------------------------------------------------------------
-# Core pipeline — streaming check (FIXED: no duplicate verification loop)
+# Core pipeline — streaming check
 # ---------------------------------------------------------------------------
 
 def _run_streaming_check(main_path: str, bib_path: str = None,
-                          verify: bool = True, filename: str = ""):
-    """Generator yielding SSE strings. Final event is 'done' with full result JSON."""
-    import sys
-
+                         verify: bool = True, filename: str = ""):
     def _sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     start_time = time.time()
-    
-    # Diagnostic: log that we've started
-    print(f"[DIAG] _run_streaming_check started for {filename}", file=sys.stderr, flush=True)
-
     try:
-        sse_msg = _sse("progress", {"step": "extract", "message": "📄 Extracting text from document..."})
-        print(f"[DIAG] Yielding extract message", file=sys.stderr, flush=True)
-        yield sse_msg
-
-        print(f"[DIAG] Calling extract({main_path})", file=sys.stderr, flush=True)
+        yield _sse("progress", {"step": "extract", "message": "📄 Extracting text from document..."})
         sections = extract(main_path, bib_path)
-        print(f"[DIAG] Extract returned successfully", file=sys.stderr, flush=True)
         body = sections.get("body", "")
         bib_text = sections.get("bibliography", "")
         fmt = sections.get("format", "unknown")
@@ -903,16 +879,12 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             yield _sse("progress", {"step": "warning",
                 "message": "⚠️ No bibliography section found. Add a 'Literaturverzeichnis' heading."})
 
-        # ── Parse bibliography ────────────────────────────────────────────────
-        print(f"[DIAG] Calling parse_bibliography", file=sys.stderr, flush=True)
         yield _sse("progress", {"step": "parse", "message": "📚 Parsing bibliography entries..."})
         bib_list = parse_bibliography(bib_text)
-        print(f"[DIAG] parse_bibliography returned {len(bib_list)} entries", file=sys.stderr, flush=True)
         bib_dict = entries_to_dict(bib_list)
         yield _sse("progress", {"step": "parse_done",
             "message": f"✓ Found {len(bib_list)} bibliography entries"})
 
-        # ── AI re-parse only uncertain entries (flagged by regex) ─────────────
         bib_dicts = _bib_to_dicts(bib_list)
         uncertain_count = sum(1 for e in bib_dicts if e.get("needs_ai_parsing"))
         if uncertain_count:
@@ -926,7 +898,6 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             yield _sse("progress", {"step": "parse_done",
                 "message": f"✓ AI re-parsed {len(ai_parse_improvements)} uncertain entries"})
 
-        # ── Deterministic checks ──────────────────────────────────────────────
         yield _sse("progress", {"step": "check",
             "message": f"🔍 Running checks on {len(bib_list)} entries..."})
         style_suggestions = check_lni_macros(body)
@@ -952,32 +923,22 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             yield _sse("progress", {"step": "check_result",
                 "message": f"⚠️ {len(xcheck.in_bib_not_cited)} bibliography entry(s) never cited"})
 
-        # ── Verification: SINGLE call to verify_all_references ────────────────
-        # FIXED v9.0: Removed large bibliography fast-path that was marking
-        # all refs as manual_review. Now verifies all references regardless of count.
         api_results_raw = []
         if verify and bib_dict:
             total = len(bib_dict)
-            print(f"[DIAG] Starting verify_all_references for {total} entries", file=sys.stderr, flush=True)
             yield _sse("progress", {"step": "verify_start",
                 "message": f"🔍 Verifying {total} references (DB → APIs → URL → AI)..."})
 
-            # verify_all_references now handles duplicates internally with parallel processing
             verification_start = time.time()
-            print(f"[TIMER] Starting parallel verification of {len(bib_dict)} entries...", 
-                  file=sys.stderr, flush=True)
             api_results_raw = verify_all_references(bib_dict)
             verification_elapsed = time.time() - verification_start
-            print(f"[TIMER] Verification completed in {verification_elapsed:.1f}s, got {len(api_results_raw)} results", 
-                  file=sys.stderr, flush=True)
-            
-            yield _sse("progress", {"step": "verify_complete", 
+
+            yield _sse("progress", {"step": "verify_complete",
                 "message": f"✓ Verified {len(api_results_raw)} references in {verification_elapsed:.1f}s"})
 
             verified_count = sum(1 for r in api_results_raw if r.status == "verified")
-            suspicious_count = sum(1 for r in api_results_raw if r.status == "suspicious")
-            
-            # Send progress updates for each result
+            manual_count = sum(1 for r in api_results_raw if r.status != "verified")
+
             for i, vr in enumerate(api_results_raw):
                 progress_data = {
                     "step": "verify",
@@ -985,23 +946,19 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                     "key": vr.key,
                     "status": vr.status,
                     "confidence": round(vr.confidence, 2),
-                    "done": i+1,
+                    "done": i + 1,
                     "total": total,
                     "verified_count": verified_count,
-                    "suspicious_count": suspicious_count,
+                    "manual_review_count": manual_count,
                 }
                 if vr.version_note:
                     progress_data["version_note"] = vr.version_note
                 yield _sse("progress", progress_data)
-                time.sleep(0.05)  # Small delay for UI responsiveness
+                time.sleep(0.05)
 
             yield _sse("progress", {"step": "verify_done",
-                "message": f"✓ Verification done: {verified_count} verified, "
-                           f"{suspicious_count} suspicious"})
+                "message": f"✓ Verification done: {verified_count} verified, {manual_count} manual review"})
 
-        # ── AI final verdict pass (only suspicious entries) ───────────────────
-        # Only the unresolved subset should go to AI. The large-document workaround
-        # must not broaden to all references.
         unresolved_keys = {
             vr.key for vr in api_results_raw
             if vr.status not in ("verified", "journal_metadata")
@@ -1009,60 +966,26 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
         unresolved_bib = [entry for entry in bib_dicts if entry["key"] in unresolved_keys]
         unresolved_api = [vr for vr in _vr_to_dicts(api_results_raw) if vr["key"] in unresolved_keys]
 
-        yield _sse("progress", {"step": "ai_verify",
-            "message": "🤖 AI review of unresolved references..."})
-
-        # FAST PATH: If all references are already verified or have high confidence,
-        # skip AI review to avoid hanging on LLM timeouts.
-        fake_count = sum(1 for vr in api_results_raw if vr.status == "fabricated")
-        real_and_confirmed = sum(1 for vr in api_results_raw 
-                                if vr.status in ("verified", "journal_metadata") 
-                                and vr.confidence >= 0.75)
-
-        if (api_results_raw and len(api_results_raw) == len(bib_dicts)
-                and all(vr.status in ("verified", "journal_metadata") for vr in api_results_raw)):
+        if not unresolved_bib:
             verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
-            print(f"[FAST PATH] Skipped AI - all {len(api_results_raw)} entries already verified",
-                  file=sys.stderr, flush=True)
-        elif not unresolved_bib:
-            verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
-            print(f"[FAST PATH] No unresolved references for AI review",
-                  file=sys.stderr, flush=True)
-        elif fake_count > 0 or real_and_confirmed < len(api_results_raw) * 0.80:
+        else:
             try:
                 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-
-                yield _sse("progress", {"step": "ai_verify", "message": f"🤖 AI reviewing {len(unresolved_bib)} unresolved references..."})
-
-                ai_start = time.time()
-                print(f"[TIMER] Starting AI verification for unresolved refs (timeout: 45s)...", file=sys.stderr, flush=True)
-
+                yield _sse("progress", {"step": "ai_verify",
+                    "message": f"🤖 Reviewing {len(unresolved_bib)} unconfirmed references..."})
                 _ai_executor = ThreadPoolExecutor(max_workers=1)
                 try:
-                    future = _ai_executor.submit(ai_verify_references, unresolved_bib, unresolved_api)
+                    future = _ai_executor.submit(
+                        ai_verify_references, unresolved_bib, unresolved_api
+                    )
                     verification_result = future.result(timeout=45)
-                    ai_elapsed = time.time() - ai_start
-                    print(f"[TIMER] AI verification completed in {ai_elapsed:.1f}s", file=sys.stderr, flush=True)
                 except FutureTimeoutError:
                     future.cancel()
-                    print(f"[WARNING] AI verification timed out after 45s", file=sys.stderr, flush=True)
-                    yield _sse("progress", {"step": "ai_timeout", "message": "⚠️ AI review timed out, using verification-only results"})
                     verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
                 finally:
                     _ai_executor.shutdown(wait=False, cancel_futures=True)
-
-            except Exception as e:
-                print(f"[WARNING] AI verification failed: {str(e)[:100]}", file=sys.stderr, flush=True)
+            except Exception:
                 verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
-        else:
-            verification_result = _verified_result_without_ai(bib_dicts, api_results_raw)
-            print(f"[FAST PATH] Skipped AI - {real_and_confirmed}/{len(api_results_raw)} entries verified",
-                  file=sys.stderr, flush=True)
-
-        suspicious_ai = verification_result.get("suspicious_count", 0)
-        if suspicious_ai > 0:
-            yield _sse("progress", {"step": "ai_result",
-                "message": f"⚠️ AI flagged {suspicious_ai} reference(s) as SUSPICIOUS"})
 
         yield _sse("progress", {"step": "ai_verdict", "message": "📋 Generating final verdict..."})
         summary_for_ai = {
@@ -1071,15 +994,8 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             "style_issues": len(style_suggestions),
         }
 
-        # Generate verdict with timeout protection and timing. This is kept
-        # separate from the AI review subset, so the AI call only applies to the
-        # unresolved references instead of all references in the bibliography.
         try:
             from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-
-            verdict_start = time.time()
-            print(f"[TIMER] Starting verdict generation (timeout: 20s)...", file=sys.stderr, flush=True)
-
             _verdict_executor = ThreadPoolExecutor(max_workers=1)
             try:
                 future = _verdict_executor.submit(
@@ -1089,11 +1005,8 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                     bib_list=bib_list, verification_result=verification_result,
                 )
                 overall = future.result(timeout=20)
-                verdict_elapsed = time.time() - verdict_start
-                print(f"[TIMER] Verdict generated in {verdict_elapsed:.1f}s", file=sys.stderr, flush=True)
             except FutureTimeoutError:
                 future.cancel()
-                print(f"[WARNING] Verdict generation timed out after 20s", file=sys.stderr, flush=True)
                 overall = {
                     "verdict": "PENDING",
                     "score": 85,
@@ -1105,20 +1018,16 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
             finally:
                 _verdict_executor.shutdown(wait=False, cancel_futures=True)
         except Exception as _verdict_err:
-            print(f"[WARNING] Verdict block error: {str(_verdict_err)[:100]}", file=sys.stderr, flush=True)
             overall = {
                 "verdict": "PENDING",
                 "score": 85,
                 "grade": None,
-                "verdict_reason": f"Verdict generation failed: {str(_verdict_err)[:80]}",
+                "verdict_reason": f"Verdict generation error: {str(_verdict_err)[:80]}",
                 "student_feedback": [],
                 "professor_note": "Manual review needed",
             }
 
         yield _sse("progress", {"step": "assembling", "message": "📦 Assembling final results..."})
-        print(f"[TIMER] Starting result assembly at {time.time()-start_time:.1f}s", file=sys.stderr, flush=True)
-        
-        # Wrap assembly with timeout - if it takes >30s, fail fast
         try:
             from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
             _asm_executor = ThreadPoolExecutor(max_workers=1)
@@ -1141,30 +1050,23 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
                 result = asm_future.result(timeout=30)
             except FutureTimeoutError:
                 asm_future.cancel()
-                print(f"[ERROR] Assembly timed out after 30s", file=sys.stderr, flush=True)
                 result = {
                     "filename": filename or Path(main_path).name,
                     "overall": overall,
-                    "verification": api_results_raw if api_results_raw else [],
+                    "verification": _vr_to_dicts(api_results_raw) if api_results_raw else [],
                     "assembly_error": "Assembly timed out after 30s",
                 }
             finally:
                 _asm_executor.shutdown(wait=False, cancel_futures=True)
         except Exception as e:
-            print(f"[ERROR] Assembly failed: {str(e)[:100]}", file=sys.stderr, flush=True)
             result = {
                 "filename": filename or Path(main_path).name,
                 "overall": overall,
-                "verification": api_results_raw if api_results_raw else [],
+                "verification": _vr_to_dicts(api_results_raw) if api_results_raw else [],
                 "assembly_error": str(e)[:100],
             }
 
-        # Global timeout check: if processing > 5 minutes, return immediately
         elapsed = time.time() - start_time
-        if elapsed > 300:  # 5 minutes
-            print(f"[TIMEOUT] Global 5-minute timeout reached at {elapsed:.1f}s", file=sys.stderr, flush=True)
-            yield _sse("progress", {"step": "timeout_reached", "message": "⏱️ Processing timed out, returning partial results"})
-        
         result["processing_time_seconds"] = round(elapsed, 1)
         yield _sse("done", result)
 
@@ -1184,7 +1086,6 @@ def _run_streaming_check(main_path: str, bib_path: str = None,
 
 def _run_full_check(main_path: str, bib_path: str = None,
                     verify: bool = True, filename: str = "") -> dict:
-    """Non-streaming full pipeline (for batch and export)."""
     sections = extract(main_path, bib_path)
     body = sections["body"]
     bib_text = sections["bibliography"]
@@ -1220,9 +1121,6 @@ def _run_full_check(main_path: str, bib_path: str = None,
     if verify and bib_dict:
         api_results_raw = verify_all_references(bib_dict)
 
-    # Only unresolved references should be sent to AI. This keeps the workflow
-    # aligned with the original design while still preserving a fail-safe for
-    # large reference sets. Verified entries stay out of the AI path.
     unresolved_keys = {
         vr.key for vr in api_results_raw
         if vr.status not in ("verified", "journal_metadata")
@@ -1388,13 +1286,12 @@ def batch_check():
                     "summary": result["summary"],
                     "flagged_refs": [
                         v["key"] for v in result["verification"]
-                        if v.get("ai_verdict") in ("FAKE", "SUSPICIOUS")
-                        or v.get("status") == "suspicious"
+                        if v.get("ai_verdict") in ("FAKE", "SUSPICIOUS", "MANUAL_REVIEW")
+                        or v.get("status") in ("suspicious", "manual_review")
                     ],
                     "arxiv_version_notes": result.get("arxiv_version_notes", []),
                 })
             except Exception as e:
-                import traceback
                 results.append({"filename": filename, "error": str(e)})
         results.sort(key=lambda r: r.get("score", {}).get("score", -1), reverse=True)
         return jsonify({"files": results, "count": len(results)})
@@ -1414,16 +1311,18 @@ def ai_review():
 
     s = data.get("summary", {})
     sc = data.get("score", {})
-    flagged = [v for v in data.get("verification", [])
-               if v.get("status") == "suspicious"
-               or v.get("ai_verdict") in ("FAKE", "SUSPICIOUS", "MANUAL_REVIEW")]
+    flagged = [
+        v for v in data.get("verification", [])
+        if v.get("status") in ("suspicious", "manual_review")
+        or v.get("ai_verdict") in ("FAKE", "SUSPICIOUS", "MANUAL_REVIEW")
+    ]
     incomplete = [e for e in data.get("bibliography", []) if e.get("completeness_issues")]
     key_issues = [e for e in data.get("bibliography", []) if e.get("key_consistent") is False]
     dupes = data.get("duplicates", [])
     self_cit = data.get("self_citations", [])
 
     flagged_lines = "\n".join(
-        f"  [{v['key']}] \"{v['title']}\" ai={v.get('ai_verdict','?')} "
+        f"  [{v['key']}] \"{v['title']}\" status={v.get('status','?')} "
         f"conf={int(v['confidence']*100)}% src={','.join(v.get('sources_checked',[]))}"
         + (f"\n    ℹ {v['version_note']}" if v.get('version_note') else "")
         for v in flagged
@@ -1438,14 +1337,14 @@ AUDIT SUMMARY:
 - Incomplete: {s.get('incomplete_entries',0)} | Key mismatches: {s.get('key_inconsistencies',0)}
 - Duplicates: {s.get('duplicates',0)} | Self-citations: {s.get('self_citations',0)}
 
-SUSPICIOUS REFERENCES:
+UNCONFIRMED / MANUAL REVIEW REFERENCES:
 {flagged_lines}
 
 INCOMPLETE: {chr(10).join(f"  [{e['key']}] {e.get('title','?')} — {', '.join(e['completeness_issues'])}" for e in incomplete) or "  None"}
 DUPLICATES: {chr(10).join(f"  [{d['key_a']}] vs [{d['key_b']}] {int(d['similarity']*100)}% similar" for d in dupes) or "  None"}
 SELF-CITATIONS: {chr(10).join(f"  [{s_['key']}] {s_['matched_author']}" for s_ in self_cit) or "  None"}
 
-Return JSON with verdict and reasoning."""
+Return JSON with suggested recommendations for professor manual review."""
 
     from ai_checker import _call_ai, _ai_available, _AI_BASE_URL, _AI_MODEL
     if not _ai_available():
@@ -1453,8 +1352,11 @@ Return JSON with verdict and reasoning."""
     try:
         ai_text = _call_ai(prompt, max_tokens=700)
         provider = _AI_BASE_URL.split("/")[2] if "//" in _AI_BASE_URL else _AI_BASE_URL
-        return jsonify({"verdict": ai_text, "ai_source": f"{provider} ({_AI_MODEL})",
-                        "flagged_count": len(flagged)})
+        return jsonify({
+            "verdict": ai_text,
+            "ai_source": f"{provider} ({_AI_MODEL})",
+            "flagged_count": len(flagged),
+        })
     except Exception as e:
         return jsonify({"error": f"AI API failed: {str(e)}"}), 503
 
@@ -1505,10 +1407,12 @@ def inject_paper():
     if not ok:
         return jsonify({"error": "Failed to save to database"}), 500
     stats = get_cache_stats()
-    return jsonify({"success": True,
-                    "message": f"'{title[:60]}' saved to local DB.",
-                    "db_total": stats["total_papers"],
-                    "db_size_kb": stats["db_size_kb"]})
+    return jsonify({
+        "success": True,
+        "message": f"'{title[:60]}' saved to local DB.",
+        "db_total": stats["total_papers"],
+        "db_size_kb": stats["db_size_kb"],
+    })
 
 
 @app.route("/api/confirm_paper", methods=["POST"])
@@ -1529,15 +1433,20 @@ def db_stats():
 @app.route("/api/db_contents", methods=["GET"])
 def db_contents():
     from local_db import get_all_papers, get_cache_stats
-    limit  = min(int(request.args.get("limit",  100)), 500)
+    limit = min(int(request.args.get("limit", 100)), 500)
     offset = int(request.args.get("offset", 0))
     search = request.args.get("search", "").strip()
     papers = get_all_papers(limit=limit, offset=offset, search=search)
-    stats  = get_cache_stats()
-    return jsonify({"papers": papers, "total": stats["total_papers"],
-                    "limit": limit, "offset": offset, "search": search,
-                    "by_source": stats.get("by_source", {}),
-                    "db_size_kb": stats.get("db_size_kb", 0)})
+    stats = get_cache_stats()
+    return jsonify({
+        "papers": papers,
+        "total": stats["total_papers"],
+        "limit": limit,
+        "offset": offset,
+        "search": search,
+        "by_source": stats.get("by_source", {}),
+        "db_size_kb": stats.get("db_size_kb", 0),
+    })
 
 
 @app.route("/api/db_delete", methods=["POST"])
@@ -1550,9 +1459,12 @@ def db_delete():
     try:
         ok = delete_paper(title)
         stats = get_cache_stats()
-        return jsonify({"success": ok, "db_total": stats["total_papers"],
-                        "db_size_kb": stats.get("db_size_kb", 0),
-                        "message": "Deleted" if ok else "Not found"})
+        return jsonify({
+            "success": ok,
+            "db_total": stats["total_papers"],
+            "db_size_kb": stats.get("db_size_kb", 0),
+            "message": "Deleted" if ok else "Not found",
+        })
     except Exception as e:
         return jsonify({"error": str(e), "success": False}), 500
 
@@ -1570,9 +1482,12 @@ def db_delete_all():
         conn.commit()
         conn.close()
         stats = get_cache_stats()
-        return jsonify({"success": True, "deleted": deleted,
-                        "db_total": stats["total_papers"],
-                        "message": f"Deleted {deleted} entries"})
+        return jsonify({
+            "success": True,
+            "deleted": deleted,
+            "db_total": stats["total_papers"],
+            "message": f"Deleted {deleted} entries",
+        })
     except Exception as e:
         return jsonify({"error": str(e), "success": False}), 500
 
@@ -1599,20 +1514,22 @@ def export_bibtex():
         entry_type = (orig.get("type") or orig.get("entry_type") or "misc").lower().replace("@", "")
         has_correction = any(v.get(f) for f in (
             "corrected_title", "corrected_authors", "corrected_year",
-            "corrected_journal", "corrected_publisher", "corrected_volume", "corrected_pages"))
+            "corrected_journal", "corrected_publisher",
+            "corrected_volume", "corrected_pages",
+        ))
         if not has_correction and not v.get("is_retracted"):
             continue
         if v.get("is_retracted"):
             lines.append(f"% ⚠ RETRACTED: {v.get('retraction_note','See CrossRef')}")
-        title  = v.get("corrected_title")   or orig.get("title", "")
-        authors= v.get("corrected_authors") or orig.get("authors", "")
-        year   = v.get("corrected_year")    or orig.get("year", "")
-        journal= v.get("corrected_journal") or orig.get("journal", "")
-        pub    = v.get("corrected_publisher") or orig.get("publisher", "")
-        volume = v.get("corrected_volume")  or orig.get("volume", "")
-        pages  = v.get("corrected_pages")   or orig.get("pages", "")
-        doi    = v.get("doi") or orig.get("doi", "")
-        url    = v.get("open_access_url") or orig.get("url", "")
+        title = v.get("corrected_title") or orig.get("title", "")
+        authors = v.get("corrected_authors") or orig.get("authors", "")
+        year = v.get("corrected_year") or orig.get("year", "")
+        journal = v.get("corrected_journal") or orig.get("journal", "")
+        pub = v.get("corrected_publisher") or orig.get("publisher", "")
+        volume = v.get("corrected_volume") or orig.get("volume", "")
+        pages = v.get("corrected_pages") or orig.get("pages", "")
+        doi = v.get("doi") or orig.get("doi", "")
+        url = v.get("open_access_url") or orig.get("url", "")
         lines.append(f"@{entry_type}{{{key},")
         if title:   lines.append(f"  title     = {{{{{title}}}}},")
         if authors: lines.append(f"  author    = {{{authors}}},")
@@ -1628,8 +1545,11 @@ def export_bibtex():
     if exported == 0:
         return jsonify({"error": "No entries with corrected metadata found."}), 400
     from flask import Response as _R
-    return _R("\n".join(lines), mimetype="text/plain",
-              headers={"Content-Disposition": "attachment; filename=corrected_references.bib"})
+    return _R(
+        "\n".join(lines),
+        mimetype="text/plain",
+        headers={"Content-Disposition": "attachment; filename=corrected_references.bib"},
+    )
 
 
 @app.route("/export", methods=["POST"])
@@ -1639,16 +1559,21 @@ def export_report():
         return jsonify({"error": "No data"}), 400
     sc = data.get("score", {})
     s = data.get("summary", {})
-    verdict_icon = "✅" if sc.get("verdict") == "PASS" else "⚠️" if sc.get("verdict") == "FLAG" else "❌"
+    verdict_icon = (
+        "✅" if sc.get("verdict") == "PASS"
+        else "⚠️" if sc.get("verdict") == "FLAG"
+        else "⏳" if sc.get("verdict") == "PENDING"
+        else "❌"
+    )
     lines = [
         "=" * 80,
-        "LNI REFERENCE CHECKER v7.0 — PROFESSOR REPORT",
+        "LNI REFERENCE CHECKER v8.1 — PROFESSOR REPORT",
         "=" * 80,
         f"File        : {data.get('filename', '?')}",
         f"Format      : {data.get('format', '?')}",
-        f"Score       : {sc.get('score', '?')}/100  Grade: {sc.get('grade', '?')}",
+        f"Score       : {sc.get('score', '?')}/100  Grade: {sc.get('grade', '?') or 'Pending'}",
         f"Verdict     : {verdict_icon} {sc.get('verdict', '?')}",
-        f"Reason      : {sc.get('verdict_reason', 'No AI reasoning provided')}",
+        f"Reason      : {sc.get('verdict_reason', 'No reasoning provided')}",
         "",
         "─" * 80,
         "SUMMARY",
@@ -1659,7 +1584,7 @@ def export_report():
         f"  Never cited (orphaned)    : {s.get('uncited_entries', 0)}",
         f"  Incomplete entries        : {s.get('incomplete_entries', 0)}",
         f"  Key-vs-metadata errors    : {s.get('key_inconsistencies', 0)}",
-        f"  SUSPICIOUS references     : {s.get('suspicious', 0)}",
+        f"  MANUAL REVIEW references  : {s.get('manual_review', 0)}",
         f"  Verified REAL             : {s.get('verified', 0)}",
         f"  Duplicates                : {s.get('duplicates', 0)}",
         f"  Self-citations            : {s.get('self_citations', 0)}",
@@ -1668,11 +1593,14 @@ def export_report():
     if s.get("numeric_citations"):
         lines.append("  ⚠ Numeric citations detected — LNI requires [Author+Year]")
 
-    suspicious_refs = [v for v in data.get("verification", [])
-                       if v.get("status") == "suspicious" or v.get("ai_verdict") == "SUSPICIOUS"]
-    if suspicious_refs:
-        lines += ["", "─" * 80, "SUSPICIOUS REFERENCES — Manual Review Required", "─" * 80]
-        for v in suspicious_refs[:20]:
+    flagged_refs = [
+        v for v in data.get("verification", [])
+        if v.get("status") in ("suspicious", "manual_review")
+        or v.get("ai_verdict") in ("FAKE", "SUSPICIOUS", "MANUAL_REVIEW")
+    ]
+    if flagged_refs:
+        lines += ["", "─" * 80, "REFERENCES REQUIRING MANUAL REVIEW", "─" * 80]
+        for v in flagged_refs[:20]:
             lines.append(f"  [{v['key']}] {v['title']}")
             lines.append(f"    {v.get('ai_reasoning', v.get('note', 'No reasoning'))}")
 
@@ -1682,21 +1610,27 @@ def export_report():
         for k in missing_refs[:20]:
             lines.append(f"  [MISSING] {k}")
 
-    lines += ["", "=" * 80,
-              "Generated by LNI Reference Checker v7.0",
-              "Pipeline: DB → APIs → URL → AI (suspicious only)",
-              "=" * 80]
+    lines += [
+        "",
+        "=" * 80,
+        "Generated by LNI Reference Checker v8.1",
+        "Pipeline: DB → APIs → URL → AI (all unconfirmed entries route to Manual Review)",
+        "=" * 80,
+    ]
 
     report = "\n".join(lines)
     fname = re.sub(r'[^\w\-.]', '_', data.get("filename", "report")) + "_lni_report.txt"
     from flask import Response as _R
-    return _R(report, mimetype="text/plain",
-              headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    return _R(
+        report,
+        mimetype="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 if __name__ == "__main__":
-    print("\n  LNI Reference Checker v7.0")
+    print("\n  LNI Reference Checker v8.1")
     print("  http://localhost:5000")
-    print("  Pipeline: DB → APIs → URL → AI (suspicious only)\n")
+    print("  Pipeline: DB → APIs → URL → AI\n")
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
