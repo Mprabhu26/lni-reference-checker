@@ -70,10 +70,17 @@ app.config["TIMEOUT"] = 180
 from local_db import init_cache_db
 from review_queue import init_review_db
 try:
+    from api_config import check_api_reachability, get_active_api_summary, print_startup_summary
+    _has_api_config = True
+except ImportError:
+    _has_api_config = False
+try:
     init_cache_db()
     init_review_db()
 except Exception as _db_init_err:
     print(f"Warning: DB init error (non-fatal): {_db_init_err}")
+if _has_api_config:
+    print_startup_summary()
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +101,7 @@ def status():
     provider_label = (
         _AI_BASE_URL.split("/")[2] if "//" in _AI_BASE_URL else (_AI_BASE_URL or "none")
     )
+    api_summary = get_active_api_summary() if _has_api_config else {}
     return jsonify({
         "status": "ok",
         "version": "8.1",
@@ -104,15 +112,38 @@ def status():
         },
         "ai_available": ai_ok,
         "ai_provider": provider_label if ai_ok else "none",
-        "apis": {
-            "groq": ai_ok,
-            "github": bool(os.environ.get("GITHUB_TOKEN")),
-            "unpaywall": bool(os.environ.get("UNPAYWALL_EMAIL")),
-        },
+        "apis_configured": {name: info["ready"] for name, info in api_summary.items()},
         "env": {
             "disk_cache_dir": os.environ.get("LNI_CACHE_DIR", ".lni_cache"),
         },
+        "hint": "GET /status/apis for live API reachability check",
     })
+
+
+@app.route("/status/apis", methods=["GET"])
+def status_apis():
+    """Live probe of each academic API — use to diagnose why references show MANUAL_REVIEW."""
+    if not _has_api_config:
+        return jsonify({"error": "api_config.py not found — add it to your project folder"}), 501
+    timeout = float(request.args.get("timeout", "5"))
+    results = check_api_reachability(timeout=timeout)
+    reachable = sum(1 for v in results.values() if v.get("reachable") is True)
+    blocked   = sum(1 for v in results.values() if v.get("reachable") is False and "403" in str(v.get("note","")))
+    diagnosis = []
+    if blocked:
+        diagnosis.append(
+            f"{blocked} API(s) blocked by network proxy (403). "
+            "All references fall to MANUAL_REVIEW in this environment. "
+            "Deploy to a server with open egress to fix this."
+        )
+    if reachable == 0 and blocked:
+        diagnosis.append(
+            "ROOT CAUSE of 0 verified / all MANUAL_REVIEW: "
+            "no academic APIs are reachable from this host."
+        )
+    return jsonify({"reachable": reachable, "blocked": blocked,
+                    "diagnosis": diagnosis, "apis": results,
+                    "tip": "Copy .env.example → .env and fill in your keys."})
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +190,7 @@ def _vr_to_dicts(api_results_raw: list) -> list:
             "open_access_url": vr.open_access_url,
             "note": vr.note,
             "sources_checked": vr.sources_checked,
+            "sources_checked_str": ", ".join(vr.sources_checked) if vr.sources_checked else "",
             "web_evidence": vr.web_evidence,
             "correct_authors": vr.correct_authors,
             "version_note": vr.version_note,
@@ -431,21 +463,55 @@ def _assemble_result(
 
         # ------------------------------------------------------------------
         # USER RULE: NEVER AUTO-FLAG AS FAKE.
-        # Suspected fabrications route to MANUAL_REVIEW for professor confirmation.
+        # AI FAKE verdicts are only kept when an external API actually confirmed
+        # a mismatch. If no external source was checked (APIs blocked/timed out),
+        # FAKE is downgraded to MANUAL_REVIEW so the professor decides.
         # ------------------------------------------------------------------
-        if vr.status == "fabricated":
+        _external_confirmed = bool(
+            vr.sources_checked
+            and any(
+                s not in ("source_chain_exhausted", "web_search",
+                          "error", "structural_validation",
+                          "fabrication_detector")
+                for s in vr.sources_checked
+            )
+        )
+
+        # A reference may only be promoted to REAL if it was actually
+        # confirmed against an academic database. "verified" from a structural
+        # shortcut (metadata_early_check / metadata_fallback) is no longer
+        # possible, but we guard here anyway: only genuine DB sources count.
+        _real_db_sources = {
+            "CrossRef (DOI)", "CrossRef", "OpenAlex", "Semantic Scholar",
+            "DBLP", "arXiv (ID)", "arXiv", "PubMed", "DataCite", "OpenAIRE",
+            "BASE", "Google Scholar", "ResearchGate",
+        }
+        _verified_from_db = (
+            vr.status == "verified"
+            and bool(vr.sources_checked)
+            and any(s in _real_db_sources for s in vr.sources_checked)
+        )
+
+        if vr.status == "fabricated" and _external_confirmed:
             ai_verdict = "FAKE"
             status = "manual_review"
-        elif ai_verdict == "FAKE":
-    # AI said FAKE — keep it. Status is manual_review so it does not
-    # appear as a green verified checkmark, but ai_verdict stays FAKE.
+        elif ai_verdict == "FAKE" and not _external_confirmed:
+            # No external API checked — AI is guessing. Don't penalise student.
+            ai_verdict = "MANUAL_REVIEW"
             status = "manual_review"
-        elif vr.status == "verified" and ai_verdict == "REAL":
+        elif ai_verdict == "FAKE" and _external_confirmed:
+            status = "manual_review"
+        elif _verified_from_db:
             ai_verdict = "REAL"
             status = "verified"
         else:
-            ai_verdict = "MANUAL_REVIEW"
-            status = "manual_review"
+            # Not confirmed by a real database. Respect the AI verdict -
+            # REAL is only kept if the AI returned REAL on real evidence.
+            ai_verdict = ai.get("verdict", "MANUAL_REVIEW")
+            ai_verdict = ai_verdict if ai_verdict in ("REAL", "FAKE", "SUSPICIOUS", "MANUAL_REVIEW") else "MANUAL_REVIEW"
+            if ai_verdict in ("FAKE", "SUSPICIOUS"):
+                ai_verdict = "MANUAL_REVIEW"  # never auto-FAKE; professor decides
+            status = "verified" if ai_verdict == "REAL" else "manual_review"
 
         _raw = (bib_dict.get(vr.key) and bib_dict[vr.key].raw_text or "")[:300]
         _vr_title = vr.title or (bib_dict.get(vr.key) and bib_dict[vr.key].title) or ""

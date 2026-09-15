@@ -495,6 +495,10 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
 
     raw = re.sub(r'\s+([.,;:)])', r'\1', raw)
     raw = re.sub(r'\bm\s+Ay\b', 'may', raw, flags=re.IGNORECASE)
+    # FIXED: normalize PDF-extracted spaces inside initials: "A . ;" -> "A.;"
+    raw = re.sub(r'([A-Z])\s+\.\s*', r'\1. ', raw)
+    # FIXED: normalize "Name ,Initial" -> "Name, Initial"  
+    raw = re.sub(r'([A-Za-zÀ-ÿ])\s+,\s+', r'\1, ', raw)
 
     doi_match = re.search(
         r'(?:doi:\s*|https?://doi\.org/|DOI:\s*)([^\s,;\]]+)',
@@ -746,6 +750,8 @@ def _classify_and_parse(entry: BibEntry, raw: str) -> None:
                 if re.search(r'[A-Z\u00c0-\u00de](?:\.|\b)(?:\s*,\s*[A-Z]\.?)?\s*$', before) \
                    or re.search(r'[a-z\u00e0-\u00ff]{2,}\s*$', before):
                     candidate = re.sub(r'[\s,;]+eds?\.?\s*$', '', before, flags=re.IGNORECASE).strip()
+                    # FIXED: also normalise PDF space-before-dot artifacts in author list
+                    candidate = re.sub(r'([A-Z])\s+\.\s*', r'\1. ', candidate)
                     entry.authors = candidate
                     rest = after
 
@@ -1217,12 +1223,29 @@ def _check_completeness(entry: BibEntry) -> None:
     entry_type = entry.entry_type or "unknown"
     lookup_type = "proceedings" if entry_type == "inproceedings" else entry_type
     required = REQUIRED_FIELDS.get(lookup_type, REQUIRED_FIELDS["unknown"])
+    
+    # FIX: Before marking as unknown, check if entry looks like real paper
     if entry_type == "unknown":
-        entry.completeness_issues.append(
-            "Entry type could not be determined (no journal, booktitle, "
-            "or publisher field found) — LNI requires a classifiable "
-            "venue for every entry."
-        )
+        # Check for keywords indicating real venue
+        venue_keywords = {"journal", "proceedings", "conference", "workshop", "springer",
+                         "wiley", "elsevier", "acm", "ieee", "international", "review"}
+        raw_lower = entry.raw_text.lower() if entry.raw_text else ""
+        venue_str = (entry.venue or "").lower() if entry.venue else ""
+        
+        has_venue_keyword = any(kw in raw_lower or kw in venue_str for kw in venue_keywords)
+        
+        if has_venue_keyword and entry.authors and entry.year:
+            # Likely real paper with real venue - don't mark as unknown
+            entry_type = "article"  # Default to article if not classifiable
+            lookup_type = "article"
+            required = REQUIRED_FIELDS.get("article", [])
+        else:
+            # Only mark incomplete if truly no venue indicators found
+            entry.completeness_issues.append(
+                "Entry type could not be determined (no journal, booktitle, "
+                "or publisher field found) — LNI requires a classifiable "
+                "venue for every entry."
+            )
     has_explicit_venue = bool(re.search(
         r'\bIn\s*:?\s*|\bProceedings\b|\bConference\b|\bWorkshop\b|\bSymposium\b|\bTagung\b|\bKonferenz\b',
         entry.raw_text,

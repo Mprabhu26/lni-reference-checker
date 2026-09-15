@@ -21,6 +21,7 @@ import re
 import os
 import signal
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
@@ -232,18 +233,15 @@ def _search_web_with_timeout(title: str, authors: str = "",
     On Windows (or when called off the main thread), fall back to running the
     search directly — the DDGS client has its own internal timeouts.
     """
+    # On Windows (or any platform without SIGALRM) run the DDGS search in a
+    # worker thread and enforce a hard wall-clock timeout. Otherwise a single
+    # slow DuckDuckGo query can hang the whole verifier indefinitely.
     if not hasattr(signal, "SIGALRM"):
-        try:
-            return search_web_for_paper(title, authors)
-        except Exception:
-            return []
+        return _ddgs_with_thread_timeout(title, authors, timeout)
 
-    # SIGALRM can only be set from the main thread of the main interpreter.
+    # SIGALRM can only fire on the main thread of the main interpreter.
     if threading.current_thread() is not threading.main_thread():
-        try:
-            return search_web_for_paper(title, authors)
-        except Exception:
-            return []
+        return _ddgs_with_thread_timeout(title, authors, timeout)
 
     def _handle(signum, frame):
         raise TimeoutError("Web search timed out")
@@ -257,6 +255,34 @@ def _search_web_with_timeout(title: str, authors: str = "",
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, prev)
+
+
+def _ddgs_with_thread_timeout(title: str, authors: str = "",
+                              timeout: float = 8.0) -> List[Dict]:
+    """Run search_web_for_paper in a worker thread with a hard timeout.
+
+    Used on platforms without POSIX SIGALRM (e.g. Windows) and when called
+    from a non-main thread. Returns whatever finished before `timeout`
+    seconds, or [] if the search did not complete in time. NEVER blocks on
+    teardown: the executor is shut down with wait=False so a hung DDGS
+    socket is abandoned rather than waited for.
+    """
+    _ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ddgs-timeout")
+    try:
+        fut = _ex.submit(search_web_for_paper, title, authors)
+        try:
+            return fut.result(timeout=timeout) or []
+        except TimeoutError:
+            fut.cancel()
+            return []
+        except Exception:
+            return []
+    finally:
+        # wait=False => do NOT wait for a possibly-stuck worker.
+        try:
+            _ex.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
 
 def llm_verify_with_web_search(

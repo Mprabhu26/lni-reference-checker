@@ -732,14 +732,23 @@ def verify_reference_comprehensive(
     overall_conf = 0.0
 
     overall_conf += weights["author"] * (author_conf if author_exists else 0.1)
-    overall_conf += weights["venue"] * (venue_conf if venue_exists else 0.1)
+    if venue_name:
+        # Venue was actually cited: weight it normally.
+        overall_conf += weights["venue"] * (venue_conf if venue_exists else 0.1)
+    else:
+        # No venue in the citation - do not penalise for it; redistribute the
+        # venue weight onto the author and author-venue buckets instead.
+        rebalanced = weights["venue"]
+        overall_conf += rebalanced * (author_conf if author_exists else 0.5)
+        # match bucket is not measurable without a venue; carry author conf.
+        overall_conf += rebalanced * (author_conf if author_exists else 0.5)
     overall_conf += weights["match"] * (venue_match_conf if author_venue_match else 0.1)
 
     # ── STEP 7: Apply penalties ─────────────────────────────────────────────
     if not author_exists:
         overall_conf -= 0.2
         warnings.append("Author does not exist in academic databases")
-    if not venue_exists:
+    if venue_name and not venue_exists:
         overall_conf -= 0.15
         warnings.append("Venue does not exist in academic databases")
     if author_exists and venue_exists and not author_venue_match:
