@@ -6,6 +6,7 @@ robust academic fuzzy matching, and automatic plausibility promotion.
 """
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -76,10 +77,36 @@ def _rate_limit(host: str, min_interval: float) -> None:
 # Title normalisation + similarity
 # ---------------------------------------------------------------------------
 
+def _normalize_metadata_text(value: Any) -> str:
+    """Decode HTML entities and normalize whitespace before metadata comparison."""
+    if value is None:
+        return ""
+    text = html.unescape(str(value)).replace("\u00a0", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\b([A-Z])\s+and\s+([A-Z])\b", r"\1&\2", text, flags=re.IGNORECASE)
+
+
+def _format_api_authors(authors: list, limit: int = 15) -> Optional[str]:
+    names = []
+    for author in (authors or [])[:limit]:
+        family = str(author.get("family") or "").strip()
+        given = str(author.get("given") or "").strip()
+        if not family:
+            organization = str(author.get("name") or "").strip()
+            # CrossRef sometimes places an author's affiliation or a malformed
+            # institutional contributor in the author array. LNI author checks
+            # must compare people, not affiliations.
+            if organization and "," not in organization and len(organization.split()) <= 4:
+                family = organization
+        if not family:
+            continue
+        names.append(f"{family}, {given}" if given else family)
+    return "; ".join(names) or None
+
 def _normalize_title(t: str) -> str:
     if not t:
         return ""
-    t = t.lower().strip()
+    t = _normalize_metadata_text(t).lower()
     for src, dst in [
         ('ä','ae'),('ö','oe'),('ü','ue'),('ß','ss'),
         ('à','a'),('á','a'),('â','a'),('ã','a'),
@@ -254,8 +281,8 @@ def _full_combination_match(entry: BibEntry, source: dict) -> Tuple[bool, Dict[s
     }
 
     # ========== TITLE VALIDATION ==========
-    cited_title = (entry.title or "").strip()
-    src_title = (source.get("title") or "").strip()
+    cited_title = _normalize_metadata_text(entry.title)
+    src_title = _normalize_metadata_text(source.get("title"))
     title_ok = False
     title_sim = 0.0
 
@@ -266,7 +293,10 @@ def _full_combination_match(entry: BibEntry, source: dict) -> Tuple[bool, Dict[s
         threshold = 0.65 if (entry.doi and source.get("doi") and
                            entry.doi.strip().lower() == source["doi"].strip().lower()) else 0.80
         title_ok = (sim >= threshold)
-        checks["title"] = (title_ok, round(sim, 4))
+        if title_ok:
+            checks["title"] = (True, f"title match: {sim:.4f} >= {threshold:.2f}")
+        else:
+            checks["title"] = (False, f"title mismatch: similarity {sim:.4f} < {threshold:.2f}")
     elif not cited_title and not src_title:
         # Both missing: cannot validate, skip
         title_ok = True
@@ -278,8 +308,8 @@ def _full_combination_match(entry: BibEntry, source: dict) -> Tuple[bool, Dict[s
         return (False, checks)  # Early exit: incomplete reference
 
     # ========== AUTHOR VALIDATION (STRICT) ==========
-    cited_authors = (entry.authors or "").strip()
-    src_authors = (source.get("authors") or "").strip()
+    cited_authors = _normalize_metadata_text(entry.authors)
+    src_authors = _normalize_metadata_text(source.get("authors"))
     authors_ok = False  # CRITICAL: Default to False (was True!)
 
     if cited_authors and src_authors:
@@ -287,43 +317,38 @@ def _full_combination_match(entry: BibEntry, source: dict) -> Tuple[bool, Dict[s
         src_surnames = _extract_source_surnames(src_authors)
 
         if cited_surnames and src_surnames:
-            # Count exact matches
             matched_count = sum(1 for c in cited_surnames
                               if any(_surnames_match(c, s) for s in src_surnames))
             n_cited = len(cited_surnames)
 
-            # CRITICAL FIX: Use denominator = number CITED (not minimum)
-            # If reference lists 1-2 authors, ALL of them must match the source
-            # If reference lists 3+, at least 60% of cited authors must match
-            # (accounts for "et al." abbreviation)
             if n_cited <= 2:
                 overlap_ratio = matched_count / n_cited if n_cited > 0 else 0
-                threshold = 1.0  # 100% match required for 1-2 authors
-                reason = f"1-2 cited authors: {matched_count}/{n_cited} must match exactly"
+                threshold = 1.0
+                reason = f"author mismatch: {matched_count}/{n_cited} cited authors matched; expected 100% match"
             else:
                 overlap_ratio = matched_count / n_cited if n_cited > 0 else 0
-                threshold = 0.60  # 60% for 3+ (accounts for et al.)
-                reason = f"{n_cited} cited authors: {matched_count}/{n_cited} ({overlap_ratio*100:.0f}%) must match >= {threshold*100:.0f}%"
+                threshold = 0.60
+                reason = f"author mismatch: {matched_count}/{n_cited} cited authors matched; expected >= {threshold*100:.0f}%"
 
             authors_ok = (overlap_ratio >= threshold)
-            checks["authors"] = (authors_ok, reason)
+            if authors_ok:
+                checks["authors"] = (True, f"author match: {matched_count}/{n_cited} surnames matched")
+            else:
+                checks["authors"] = (False, reason)
         else:
-            # Cannot extract surnames: FAIL
             authors_ok = False
-            checks["authors"] = (False, "cannot extract surnames from one or both sides")
+            checks["authors"] = (False, "author mismatch: cannot extract surnames from one or both sides")
     elif not cited_authors and not src_authors:
-        # Both missing: skip (cannot validate)
         authors_ok = True
         checks["authors"] = (True, "no authors on either side (skipped)")
     else:
-        # ONE side has authors, other doesn't: FAIL (incomplete)
         authors_ok = False
-        checks["authors"] = (False, "authors missing on one side (INCOMPLETE)")
-        return (False, checks)  # Early exit: incomplete reference
+        checks["authors"] = (False, "author mismatch: authors missing on one side (INCOMPLETE)")
+        return (False, checks)
 
     # ========== YEAR VALIDATION ==========
-    cited_year = str(entry.year or "").strip()
-    src_year = str(source.get("year") or "").strip()
+    cited_year = _normalize_metadata_text(entry.year)
+    src_year = _normalize_metadata_text(source.get("year"))
     year_ok = True
 
     if cited_year and src_year:
@@ -331,21 +356,21 @@ def _full_combination_match(entry: BibEntry, source: dict) -> Tuple[bool, Dict[s
         m_s = re.search(r'\d{4}', src_year)
         if m_c and m_s:
             diff = abs(int(m_c.group()) - int(m_s.group()))
-            year_ok = (diff <= 1)  # Allow 1-year difference
-            checks["year"] = (year_ok, f"{m_c.group()} vs {m_s.group()}")
+            year_ok = (diff == 0)
+            if year_ok:
+                checks["year"] = (True, f"year match: {m_c.group()} vs {m_s.group()}")
+            else:
+                checks["year"] = (False, f"year mismatch: {m_c.group()} vs {m_s.group()} (diff={diff})")
         else:
-            # Year malformed on at least one side: skip
             checks["year"] = (True, "year not comparable (skipped)")
     elif not cited_year and not src_year:
-        # Both missing: skip
         checks["year"] = (True, "no year on either side (skipped)")
     else:
-        # ONE side has year, other doesn't: skip (not critical)
         checks["year"] = (True, "year missing on one side (skipped)")
 
     # ========== VENUE VALIDATION (OPTIONAL) ==========
-    cited_venue = (entry.journal or entry.booktitle or "").strip()
-    src_venue = (source.get("venue") or "").strip()
+    cited_venue = _normalize_metadata_text(entry.journal or entry.booktitle)
+    src_venue = _normalize_metadata_text(source.get("venue"))
     venue_ok = True
 
     if cited_venue and src_venue:
@@ -381,6 +406,11 @@ def _full_combination_match(entry: BibEntry, source: dict) -> Tuple[bool, Dict[s
     #   - Venue and DOI are OPTIONAL (nice-to-have)
     #   - If ANY required field FAILS, the match is REJECTED
     is_matched = title_ok and year_ok and authors_ok
+
+    if not is_matched:
+        for key in ["title", "authors", "year"]:
+            if key in checks and isinstance(checks[key], tuple) and not _check_ok(checks[key]):
+                checks[key] = (False, checks[key][1])
 
     return (is_matched, checks)
 
@@ -486,9 +516,7 @@ def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
         work = resp.json().get("message", {})
         title = (work.get("title") or [""])[0]
         authors = work.get("author", [])
-        author_str = "; ".join(
-            f"{a.get('family','')}, {a.get('given','')}" for a in authors[:10]
-        ) if authors else None
+        author_str = _format_api_authors(authors, limit=10)
         issued = work.get("issued", {}).get("date-parts", [[None]])[0]
         year = str(issued[0]) if issued and issued[0] else None
         container = (work.get("container-title") or [""])[0]
@@ -533,7 +561,7 @@ def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
                 corrected_title=title, corrected_authors=author_str,
                 corrected_year=year, corrected_journal=container or None,
                 field_checks=checks,
-                consistency_issues=[k for k, v in checks.items() if v and not _check_ok(v)],
+                consistency_issues=[_field_mismatch_label(k) for k, v in checks.items() if v and not _check_ok(v)],
             )
 
         return VerificationResult(
@@ -552,14 +580,27 @@ def _lookup_by_doi(entry: BibEntry) -> Optional[VerificationResult]:
         return None
 
 
+def _field_mismatch_label(key: str) -> str:
+    labels = {
+        "title": "title mismatch",
+        "authors": "author mismatch",
+        "year": "year mismatch",
+        "venue": "venue mismatch",
+        "doi": "doi mismatch",
+    }
+    return labels.get(key, f"{key} mismatch")
+
+
 def _fails_summary(checks: Dict[str, Any]) -> str:
     out = []
     for k, v in checks.items():
         if v is None:
             continue
         if not _check_ok(v):
-            out.append(k)
-    return ", ".join(out) if out else "unknown"
+            label = _field_mismatch_label(k)
+            detail = v[1] if isinstance(v, tuple) else str(v)
+            out.append(f"{label}: {detail}")
+    return "; ".join(out) if out else "unknown"
 
 
 def _check_ok(v: Any) -> bool:
@@ -628,6 +669,76 @@ def _lookup_by_arxiv_id(entry: BibEntry) -> Optional[VerificationResult]:
 
 
 def _search_openalex(entry: BibEntry) -> Optional[VerificationResult]:
+    if not entry.title:
+        return None
+    _rate_limit("api.openalex.org", 0.2)
+    params = {
+        "search": entry.title[:200],
+        "per-page": 10,
+        "mailto": get_openalex_email() or get_crossref_email() or "",
+    }
+    try:
+        resp = requests.get(
+            "https://api.openalex.org/works",
+            params=params,
+            timeout=10,
+            headers={"User-Agent": _build_ua()},
+        )
+        if resp.status_code != 200:
+            return None
+        for work in resp.json().get("results", [])[:10]:
+            title = work.get("title") or ""
+            if not title:
+                continue
+            authors = []
+            for authorship in work.get("authorships", []):
+                author = authorship.get("author") or {}
+                name = (author.get("display_name") or "").strip()
+                if name:
+                    if "," in name:
+                        family, given = [part.strip() for part in name.split(",", 1)]
+                    else:
+                        name_parts = name.split()
+                        family = name_parts[-1]
+                        given = " ".join(name_parts[:-1])
+                    authors.append({"family": family, "given": given})
+            author_str = _format_api_authors(authors)
+            year = str(work.get("publication_year")) if work.get("publication_year") else None
+            primary_location = work.get("primary_location") or {}
+            source = primary_location.get("source") or {}
+            venue = source.get("display_name") or None
+            doi_url = work.get("doi") or ""
+            doi = re.sub(r"^https?://doi.org/", "", doi_url, flags=re.IGNORECASE) or None
+            record = {
+                "title": title,
+                "authors": author_str,
+                "year": year,
+                "venue": venue,
+                "doi": doi,
+                "url": doi_url or work.get("id"),
+            }
+            ok, checks = _full_combination_match(entry, record)
+            if not ok:
+                continue
+            return VerificationResult(
+                key=entry.key,
+                title=entry.title or "",
+                status="verified",
+                confidence=0.94,
+                matched_title=title,
+                doi=doi,
+                open_access_url=(work.get("open_access") or {}).get("oa_url"),
+                note="OpenAlex: every cited field matched.",
+                sources_checked=["OpenAlex"],
+                correct_authors=author_str,
+                corrected_title=title,
+                corrected_authors=author_str,
+                corrected_year=year,
+                corrected_journal=venue,
+                field_checks=checks,
+            )
+    except Exception:
+        return None
     return None
 
 
@@ -669,6 +780,7 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
             else:
                 return None  # Both attempts failed
         # Got results, break out of retry loop
+        print(f"  [CrossRef DEBUG] {len(_items)} items returned (attempt {attempt+1})")
         break
 
     try:
@@ -677,9 +789,7 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
             if not title:
                 continue
             authors = item.get("author", [])
-            author_str = "; ".join(
-                f"{a.get('family','')}, {a.get('given','')}" for a in authors[:15]
-            ) if authors else None
+            author_str = _format_api_authors(authors, limit=15)
             issued = item.get("issued", {}).get("date-parts", [[None]])[0]
             year = str(issued[0]) if issued and issued[0] else None
             container = (item.get("container-title") or [""])[0]
@@ -690,6 +800,8 @@ def _search_crossref(entry: BibEntry) -> Optional[VerificationResult]:
                    "url": f"https://doi.org/{doi}" if doi else None}
             ok, checks = _full_combination_match(entry, rec)
             if not ok:
+                fails = [k for k, v in checks.items() if v and not _check_ok(v)]
+                print(f"  [CrossRef DEBUG] NO MATCH title={title[:60]!r} year={year} fails={fails}")
                 continue
             return VerificationResult(
                 key=entry.key, title=entry.title or "",
@@ -728,8 +840,11 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
                     "fields": "title,authors,year,venue,publicationVenue,openAccessPdf,externalIds"},
             timeout=12, headers=headers)
         if resp.status_code != 200:
+            print(f"  [SS DEBUG] HTTP {resp.status_code} for: {clean_title[:60]!r}")
             return None
-        for paper in resp.json().get("data", [])[:8]:
+        results = resp.json().get("data", [])
+        print(f"  [SS DEBUG] {len(results)} results for: {clean_title[:60]!r}")
+        for paper in results[:8]:
             title = paper.get("title", "")
             if not title:
                 continue
@@ -746,6 +861,7 @@ def _search_semantic_scholar(entry: BibEntry) -> Optional[VerificationResult]:
                    "venue": venue, "doi": doi, "url": oa}
             ok, checks = _full_combination_match(entry, rec)
             if not ok:
+                print(f"  [SS DEBUG] NO MATCH title={title[:50]!r} year={year} venue={venue!r}")
                 continue
             return VerificationResult(
                 key=entry.key, title=entry.title or "",
@@ -776,6 +892,7 @@ def _search_dblp(entry: BibEntry) -> Optional[VerificationResult]:
         if resp.status_code != 200:
             return None
         hits = resp.json().get("result", {}).get("hits", {}).get("hit", [])
+        print(f"  [DBLP DEBUG] {len(hits)} results for: {entry.title[:60]!r}")
         for hit in hits:
             info = hit.get("info", {})
             title = info.get("title", "").rstrip('.')
@@ -1773,9 +1890,10 @@ def verify_reference(
             key=entry.key, title=entry.title or "",
             status="manual_review",
             confidence=0.0,
-            note=f"Not confirmed by any academic database after trying: {', '.join(tried) or 'no sources'}. "
-                 f"Pending AI review by app layer. Requires manual verification by professor.",
-            sources_checked=["api_exhausted"])
+              note=f"No exact metadata match was found. Sources tried: {', '.join(tried) or 'none'}. "
+                  f"AI review was requested because the academic-source checks did not establish identity; "
+                  f"manual review is required only to resolve the remaining uncertainty.",
+              sources_checked=tried or ["api_exhausted"])
 
     except Exception as e:
         return VerificationResult(

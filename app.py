@@ -8,6 +8,7 @@ for the professor to review and manually confirm/penalize.
 """
 
 import os
+import html
 import re
 import sys
 from pathlib import Path
@@ -185,7 +186,7 @@ def _vr_to_dicts(api_results_raw: list) -> list:
             "key": vr.key,
             "status": vr.status,
             "confidence": round(vr.confidence, 2),
-            "matched_title": vr.matched_title,
+            "matched_title": html.unescape(vr.matched_title) if vr.matched_title else vr.matched_title,
             "doi": vr.doi,
             "open_access_url": vr.open_access_url,
             "note": vr.note,
@@ -197,10 +198,10 @@ def _vr_to_dicts(api_results_raw: list) -> list:
             "is_retracted": getattr(vr, "is_retracted", False),
             "retraction_doi": getattr(vr, "retraction_doi", None),
             "retraction_note": getattr(vr, "retraction_note", None),
-            "corrected_title": getattr(vr, "corrected_title", None),
+            "corrected_title": html.unescape(getattr(vr, "corrected_title", None)) if getattr(vr, "corrected_title", None) else None,
             "corrected_authors": getattr(vr, "corrected_authors", None),
             "corrected_year": getattr(vr, "corrected_year", None),
-            "corrected_journal": getattr(vr, "corrected_journal", None),
+            "corrected_journal": html.unescape(getattr(vr, "corrected_journal", None)) if getattr(vr, "corrected_journal", None) else None,
             "corrected_publisher": getattr(vr, "corrected_publisher", None),
             "corrected_volume": getattr(vr, "corrected_volume", None),
             "corrected_pages": getattr(vr, "corrected_pages", None),
@@ -257,6 +258,7 @@ def _verified_result_without_ai(bib_dicts: list, api_results_raw: list) -> dict:
 
 
 def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) -> list:
+    from checker import _normalize_metadata_text
     import re as _re
     from checker import author_overlap_score
     warnings = []
@@ -271,8 +273,8 @@ def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) 
     corrected_year = str(vr_dict.get("corrected_year") or "").strip()
     cited_publisher = (entry_dict.get("publisher") or "").strip()
     corrected_publisher = (vr_dict.get("corrected_publisher") or "").strip()
-    cited_journal = (entry_dict.get("journal") or "").strip()
-    corrected_journal = (vr_dict.get("corrected_journal") or "").strip()
+    cited_journal = _normalize_metadata_text(entry_dict.get("journal"))
+    corrected_journal = _normalize_metadata_text(vr_dict.get("corrected_journal"))
 
     _has_et_al = bool(_re.search(r'\bet\.?\s*al\.?', cited_authors, _re.IGNORECASE))
 
@@ -280,12 +282,22 @@ def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) 
         overlap = author_overlap_score(cited_authors, correct_authors)
         if overlap is not None:
             def _count_authors(s):
+                affiliation_markers = (
+                    "university", "college", "institute", "department", "faculty",
+                    "engineering", "indonesia", "yogyakarta", "hospital", "school",
+                    "organization", "laboratory", "laboratories", "centre", "center",
+                )
                 parts = [
                     p.strip()
                     for p in _re.split(r';|\band\b|\bund\b', s, flags=_re.IGNORECASE)
                     if p.strip()
                 ]
-                return [p for p in parts if not _re.match(r'^et\.?\s*al\.?$', p.lower())]
+                return [
+                    p for p in parts
+                    if not _re.match(r'^et\.?\s*al\.?$', p.lower())
+                    and _re.search(r'[A-Za-zÀ-ÿ]{2,}', p)
+                    and not any(marker in p.lower() for marker in affiliation_markers)
+                ]
 
             cited_list = _count_authors(cited_authors)
             correct_list = _count_authors(correct_authors)
@@ -362,9 +374,14 @@ def _compute_metadata_warnings(entry_dict: dict, vr_dict: dict, bib_entry=None) 
                 "detail": "Cited publisher differs from database record",
             })
 
-    if cited_journal and corrected_journal:
-        cj_norm = cited_journal.lower().replace(" ", "")
-        dj_norm = corrected_journal.lower().replace(" ", "")
+    publisher_markers = (
+        "springer", "wiley", "elsevier", "verlag", "press", "publishers",
+        "cambridge", "oxford", "routledge", "sage", "de gruyter", "mit press",
+    )
+    if (cited_journal and corrected_journal
+            and not any(marker in cited_journal.lower() for marker in publisher_markers)):
+        cj_norm = _re.sub(r"[^a-z0-9]+", "", cited_journal.lower())
+        dj_norm = _re.sub(r"[^a-z0-9]+", "", corrected_journal.lower())
         if cj_norm not in dj_norm and dj_norm not in cj_norm:
             warnings.append({
                 "type": "journal_mismatch",
@@ -484,7 +501,8 @@ def _assemble_result(
         _real_db_sources = {
             "CrossRef (DOI)", "CrossRef", "OpenAlex", "Semantic Scholar",
             "DBLP", "arXiv (ID)", "arXiv", "PubMed", "DataCite", "OpenAIRE",
-            "BASE", "Google Scholar", "ResearchGate",
+            "BASE", "Google Scholar", "ResearchGate", "local_db",
+            "landmark_detection", "professor_review",
         }
         _verified_from_db = (
             vr.status == "verified"

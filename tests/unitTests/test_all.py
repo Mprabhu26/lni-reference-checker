@@ -164,6 +164,34 @@ class TestParserKeyValidation:
 
 
 @pytest.mark.skipif(not PARSER_AVAILABLE, reason="parser.py unavailable")
+def test_checker_reports_explicit_author_year_mismatch_for_manual_review():
+    """If the title matches but the author/year do not, the check must name the mismatches explicitly."""
+    from checker import BibEntry, _full_combination_match
+
+    entry = BibEntry(
+        key="HS24",
+        raw_text="",
+        authors="Hoessler, S.; Carbon, C.-C.",
+        title="A qualitative study on structural ambidexterity and strategic leadership in digital transformation",
+        year="2024",
+        journal="Journal of Entrepreneurship, Management and Innovation",
+    )
+    source = {
+        "title": "A qualitative study on structural ambidexterity and strategic leadership in digital transformation",
+        "authors": "Smith, J.; Doe, A.",
+        "year": "2025",
+        "venue": "Journal of Entrepreneurship, Management and Innovation",
+        "doi": "",
+    }
+
+    ok, checks = _full_combination_match(entry, source)
+    assert ok is False
+    assert "author" in (checks["authors"][1].lower())
+    assert "mismatch" in (checks["authors"][1].lower())
+    assert "year" in (checks["year"][1].lower())
+    assert "mismatch" in (checks["year"][1].lower())
+
+
 class TestParserBibExtraction:
     """P13-P30: Bibliography entry extraction correctness."""
 
@@ -635,6 +663,53 @@ class TestTitleSimilarity:
             "Smith Jones A Paper"
         )
         assert score >= 0.8
+
+    def test_C19b_encoded_ampersand_matches_plain_ampersand(self):
+        """Encoded and literal ampersands must compare as the same metadata."""
+        assert _title_similarity("R&amp;D Management", "R&D Management") >= 0.9
+
+    def test_C19c_encoded_venue_matches_plain_venue(self):
+        """Encoded venue text must not create a false venue mismatch."""
+        from checker import _full_combination_match
+        from parser import BibEntry
+
+        entry = BibEntry(
+            key="SJ23", raw_text="", authors="Smith, J.", title="A study", year="2023",
+            journal="R&D Management",
+        )
+        ok, checks = _full_combination_match(entry, {
+            "title": "A study", "authors": "Smith, J.", "year": "2023",
+            "venue": "R&amp;D Management", "doi": "",
+        })
+        assert ok is True
+        assert checks["venue"][0] is True
+
+    def test_C19d_initial_and_variant_matches_ampersand(self):
+        """OCR-style 'R And D' must match the journal name 'R&D'."""
+        from checker import _full_combination_match
+        from parser import BibEntry
+
+        entry = BibEntry(
+            key="SJ23", raw_text="", authors="Smith, J.", title="A study", year="2023",
+            journal="R And D Management",
+        )
+        ok, checks = _full_combination_match(entry, {
+            "title": "A study", "authors": "Smith, J.", "year": "2023",
+            "venue": "R&D Management", "doi": "",
+        })
+        assert ok is True
+        assert checks["venue"][0] is True
+
+    def test_C19e_crossref_affiliation_is_not_counted_as_author(self):
+        """Institutional affiliation records must not become LNI authors."""
+        from checker import _format_api_authors
+
+        authors = _format_api_authors([
+            {"name": "Master of Industrial Engineering, Islamic University of Indonesia"},
+            {"family": "Sutra", "given": "Debi"},
+            {"family": "Mansur", "given": "Agus"},
+        ])
+        assert authors == "Sutra, Debi; Mansur, Agus"
 
     def test_C20_score_bounded_zero_to_one(self):
         """Score is always in [0.0, 1.0] regardless of input."""

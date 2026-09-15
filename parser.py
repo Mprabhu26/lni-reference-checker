@@ -27,6 +27,7 @@ v7.4 (preserved):
 """
 
 import re
+import html
 import datetime
 import unicodedata
 from dataclasses import dataclass, field
@@ -121,6 +122,15 @@ def _normalize_unicode(text: str) -> str:
     if not text:
         return text
     return unicodedata.normalize('NFC', text)
+
+
+def _normalize_metadata_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = html.unescape(str(value)).replace('\u00a0', ' ')
+    value = re.sub(r'\s+', ' ', value).strip()
+    value = re.sub(r'\b([A-Z])\s+and\s+([A-Z])\b', r'\1&\2', value, flags=re.IGNORECASE)
+    return value or None
 
 
 def _normalize_key_semantically(key: str) -> str:
@@ -474,6 +484,8 @@ def parse_bibliography(bib_text: str) -> list:
             continue
         entry = BibEntry(key=key, raw_text=raw)
         _classify_and_parse(entry, raw)
+        for field_name in ('authors', 'title', 'journal', 'booktitle', 'publisher'):
+            setattr(entry, field_name, _normalize_metadata_value(getattr(entry, field_name)))
         _check_completeness(entry)
         _validate_key_vs_metadata(entry)
         if original_key and original_key != key:

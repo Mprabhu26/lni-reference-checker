@@ -620,6 +620,13 @@ function showError(msg) {
   showToast('Error: ' + msg.slice(0,60), 'error');
 }
 
+function normalizeDisplayMetadata(value) {
+  const decoded = unescapeHtml(String(value || ''));
+  return decoded.toLowerCase().trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\b([a-z])\s+and\s+([a-z])\b/g, '$1&$2');
+}
+
 function renderResults(data) {
   const sc = data.score || {};
   const s = data.summary || {};
@@ -825,8 +832,8 @@ function renderVerifyTab(data) {
   // Helper function to detect title differences (case only or minor punctuation)
   function hasTitleDifference(v) {
     if (!v.matched_title || v.matched_title === v.title) return false;
-    const citedN = (v.title || '').toLowerCase().trim();
-    const foundN = v.matched_title.toLowerCase().trim();
+    const citedN = normalizeDisplayMetadata(v.title);
+    const foundN = normalizeDisplayMetadata(v.matched_title);
     const isCaseOnly = citedN === foundN;
     const isMinorDiff = !isCaseOnly && citedN.replace(/[^a-z0-9]/g, '') === foundN.replace(/[^a-z0-9]/g, '');
     return isCaseOnly || isMinorDiff;
@@ -850,8 +857,8 @@ function renderVerifyTab(data) {
       if (hasError) return 0; // metadata error — show first
       if (hasWarn)  return 1; // metadata warning — show second
       if (!v.matched_title || v.matched_title === v.title) return 4; // clean
-      const cN = (v.title || '').toLowerCase().trim();
-      const fN = v.matched_title.toLowerCase().trim();
+      const cN = normalizeDisplayMetadata(v.title);
+      const fN = normalizeDisplayMetadata(v.matched_title);
       if (cN === fN) return 3; // case difference only
       if (cN.replace(/[^a-z0-9]/g, '') === fN.replace(/[^a-z0-9]/g, '')) return 3;
       return 2; // title differs
@@ -986,7 +993,7 @@ function verifyCard(v) {
           ${(()=>{
             if (!v.matched_title || v.matched_title === v.title) return '';
             // Normalise both sides: lowercase, collapse whitespace, strip leading/trailing punctuation
-            const normTitle = t => t.toLowerCase().trim()
+            const normTitle = t => normalizeDisplayMetadata(t)
               .replace(/\s+/g, ' ')               // collapse internal whitespace
               .replace(/[.,:;!?'"\u2013\u2014\-]+$/g, '')  // strip trailing punctuation
               .replace(/^[.,:;!?'"\u2013\u2014\-]+/g, ''); // strip leading punctuation
@@ -1021,8 +1028,8 @@ function verifyCard(v) {
         ${apiNoteText ? `<div class="detail-section"><div class="detail-title">🔍 Verification Detail</div><div class="explanation-box" style="border-left-color:${verdict==='REAL'?'var(--success)':verdict==='FAKE'?'var(--error)':'var(--warning)'};">${escapeHtml(apiNoteText)}</div></div>` : ''}
         ${(()=>{
           if (!v.matched_title || v.matched_title === v.title) return '';
-          const citedN = (v.title||'').toLowerCase().trim();
-          const foundN = v.matched_title.toLowerCase().trim();
+          const citedN = normalizeDisplayMetadata(v.title);
+          const foundN = normalizeDisplayMetadata(v.matched_title);
           const isCaseOnly = citedN === foundN;
           const isMinorDiff = !isCaseOnly && citedN.replace(/[^a-z0-9]/g,'') === foundN.replace(/[^a-z0-9]/g,'');
           let flag = '';
@@ -1446,7 +1453,7 @@ function refreshVerdictBanner() {
   document.getElementById('verdictScore').textContent = scoreLabel3 + adj.score + '/100';
 }
 
-function escapeHtml(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escapeHtml(s) { if (!s) return ''; const decoded = unescapeHtml(String(s)); return decoded.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function unescapeHtml(s) { if (!s) return ''; const t = document.createElement('textarea'); t.innerHTML = s; return t.value; }
 
 document.getElementById('mainFile').addEventListener('change', e => handleMainFile(e.target));
